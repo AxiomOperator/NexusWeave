@@ -39,7 +39,7 @@ pub struct Sym {
 
 /// One step of a control-flow walk from `?1`: calls, constructions, callbacks passed, and
 /// dynamic dispatch from an interface/base method to its implementations.
-pub const FLOW_STEP_SQL: &str = "SELECT target_id, kind FROM refs WHERE (src_id=?1 OR src_owner_id=?1) AND target_id IS NOT NULL AND kind IN (0, 1, 7, 10)
+pub const FLOW_STEP_SQL: &str = "SELECT target_id, kind FROM refs WHERE (src_id=?1 OR src_owner_id=?1) AND target_id IS NOT NULL AND kind IN (0, 1, 7, 10, 12)
      UNION SELECT src_id, 9 FROM refs WHERE target_id=?1 AND kind = 8";
 
 pub const SYM_COLS: &str = "n.id, n.kind, n.name, n.qname, f.path, n.start_line, n.end_line, n.signature, n.doc, n.exported, n.file_id, n.parent_id, f.is_test, f.lang";
@@ -62,7 +62,7 @@ pub struct Edge {
 
 /// Find the project root: nearest ancestor with `.xgraph/graph.db`.
 pub fn find_root(start: &Path) -> Option<PathBuf> {
-    let start = std::fs::canonicalize(start).ok()?;
+    let start = crate::canonical(start).ok()?;
     let mut cur = Some(start.as_path());
     while let Some(d) = cur {
         if crate::db::db_path(d).exists() { return Some(d.to_path_buf()); }
@@ -83,6 +83,10 @@ impl Graph {
         }
         Ok(Graph { db, root: root.to_path_buf() })
     }
+
+    /// Whether `.xgraph/graph.db` has been replaced (rebuilt by `xgraph index`) or removed since
+    /// this graph opened it; long-lived holders reopen instead of serving the old file.
+    pub fn is_replaced(&self) -> bool { crate::db::file_id(&crate::db::db_path(&self.root)) != self.db.file }
 
     pub fn discover(start: &Path) -> Result<Graph> {
         match find_root(start) {
@@ -105,7 +109,7 @@ impl Graph {
     pub fn match_path(&self, p: &str) -> Result<Option<String>> {
         let p = p.trim().trim_start_matches("./").replace('\\', "/");
         let p = p.split(':').next().unwrap_or(&p).to_string();
-        let rel = Path::new(&p).strip_prefix(&self.root).map(|r| r.to_string_lossy().to_string()).unwrap_or(p.clone());
+        let rel = Path::new(&p).strip_prefix(&self.root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or(p.clone());
         let exact: Option<String> = self.db.conn.prepare_cached("SELECT path FROM files WHERE path=?")?.query_row([&rel], |r| r.get(0)).optional()?;
         if exact.is_some() { return Ok(exact); }
         let mut q = self.db.conn.prepare_cached("SELECT path FROM files WHERE path LIKE ? ESCAPE '\\' LIMIT 3")?;
@@ -123,22 +127,29 @@ impl Graph {
         };
         let norm = q.replace("::", ".").replace('#', ".").replace("->", ".");
         let (qual, name) = match norm.rsplit_once('.') { Some((a, b)) => (Some(a.to_string()), b.to_string()), None => (None, norm.clone()) };
-        let mut st = self.db.conn.prepare_cached(&format!(
-            "SELECT {SYM_COLS} FROM nodes n JOIN files f ON f.id=n.file_id WHERE n.name=? COLLATE NOCASE AND n.kind != 0 LIMIT 500"))?;
-        let mut v: Vec<Sym> = st.query_map([&name], sym_row)?.collect::<rusqlite::Result<_>>()?;
-        if let Some(fh) = &file_hint {
-            let fh = fh.trim_start_matches("./");
-            v.retain(|s| s.path == fh || s.path.ends_with(&format!("/{fh}")) || s.path.contains(fh));
-        }
-        if let Some(qual) = &qual {
-            let qual_l = qual.to_ascii_lowercase();
-            let tail = qual_l.rsplit('.').next().unwrap_or(&qual_l).to_string();
-            let filt: Vec<Sym> = v.iter().filter(|s| {
-                let qn = s.qname.replace("::", ".").to_ascii_lowercase();
-                qn.ends_with(&format!("{qual_l}.{}", name.to_ascii_lowercase())) || qn.contains(&format!("{tail}."))
-                    || s.path.to_ascii_lowercase().contains(&tail)
-            }).cloned().collect();
-            v = filt;
+        let lookup = |name: &str| -> Result<Vec<Sym>> {
+            let mut st = self.db.conn.prepare_cached(&format!(
+                "SELECT {SYM_COLS} FROM nodes n JOIN files f ON f.id=n.file_id WHERE n.name=? COLLATE NOCASE AND n.kind != 0 LIMIT 500"))?;
+            let mut v: Vec<Sym> = st.query_map([name], sym_row)?.collect::<rusqlite::Result<_>>()?;
+            if let Some(fh) = &file_hint {
+                let fh = fh.trim_start_matches("./");
+                v.retain(|s| s.path == fh || s.path.ends_with(&format!("/{fh}")) || s.path.contains(fh));
+            }
+            if let Some(qual) = &qual {
+                let qual_l = qual.to_ascii_lowercase();
+                let tail = qual_l.rsplit('.').next().unwrap_or(&qual_l).to_string();
+                v.retain(|s| {
+                    let qn = s.qname.replace("::", ".").to_ascii_lowercase();
+                    qn.ends_with(&format!("{qual_l}.{}", name.to_ascii_lowercase())) || qn.contains(&format!("{tail}."))
+                        || s.path.to_ascii_lowercase().contains(&tail)
+                });
+            }
+            Ok(v)
+        };
+        let mut v = lookup(&name)?;
+        if v.is_empty() && !name.starts_with('#') {
+            // TS/JS private members are named `#dispatch`
+            v = lookup(&format!("#{name}"))?;
         }
         // exact-case first, definitions with bodies first, non-test first
         v.sort_by_key(|s| (s.name != name, s.is_test, s.kind == NodeKind::Variable, std::cmp::Reverse(s.end_line - s.start_line)));

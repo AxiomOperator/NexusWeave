@@ -118,6 +118,16 @@ impl LangHooks for Ruby {
                         _ => {}
                     }
                 }
+                // ActiveSupport::Notifications.subscribe("name") { ... } / .instrument("name")
+                if recv.is_some() && (event_register(method) || event_emit(method))
+                    && let Some(ev) = first_arg.and_then(|a| string_lit(cx, a)) {
+                    cx.add_ref(RefKind::Call, method, recv.map(|r| cx.text(r)), n.child_by_field_name("method").unwrap_or(n));
+                    if event_register(method) {
+                        return Visit::Def(Def::new(NodeKind::Event, ev).body(n.child_by_field_name("block")));
+                    }
+                    cx.add_ref(RefKind::Emit, &ev, None, n);
+                    return Visit::Continue;
+                }
                 if method == "new" && let Some(r) = recv && matches!(r.kind(), "constant" | "scope_resolution") {
                     let (q, nm) = split_qual(cx.text(r));
                     cx.add_ref(RefKind::Instantiate, nm, q, r);

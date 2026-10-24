@@ -10,6 +10,8 @@ namespace App.Services
         private readonly IRepo _repo;
         public UserService(IRepo repo) { _repo = repo; }
 
+        public User Fetch<TRepo>(TRepo repo, int id) where TRepo : IRepo { return repo.Find(id); }
+
         public User Get(int id)
         {
             var u = _repo.Find(id);

@@ -1,0 +1,109 @@
+# Built-in return-type stubs for libraries that aren't part of the indexed project.
+#
+# A *family* marks "model" classes by an external base class (matched on its last name segment,
+# anywhere up the project's own inheritance chain). Members listed below then return either the
+# model itself ("self") or a collection/query of it ("set"); members of a "set" are looked up in
+# `set_members`. This is what lets `User.objects.filter(...).first().greet()` resolve `greet` on
+# the project's `User`, although every step in between is library code.
+#
+# Projects can add families in `xgraph.stubs.toml` at the project root (or `.xgraph/stubs.toml`
+# for local-only stubs) using the same format.
+
+[[family]]
+name = "django-orm"
+bases = ["Model"]
+[family.members]
+objects = "set"
+_default_manager = "set"
+_base_manager = "set"
+refresh_from_db = "self"
+[family.set_members]
+get = "self"
+first = "self"
+last = "self"
+latest = "self"
+earliest = "self"
+create = "self"
+aget = "self"
+afirst = "self"
+alast = "self"
+acreate = "self"
+filter = "set"
+exclude = "set"
+all = "set"
+order_by = "set"
+select_related = "set"
+prefetch_related = "set"
+annotate = "set"
+distinct = "set"
+using = "set"
+only = "set"
+defer = "set"
+none = "set"
+reverse = "set"
+select_for_update = "set"
+alias = "set"
+
+[[family]]
+name = "activerecord"
+bases = ["ActiveRecord::Base", "Base", "ApplicationRecord"]
+[family.members]
+find = "self"
+find_by = "self"
+"find_by!" = "self"
+first = "self"
+last = "self"
+take = "self"
+create = "self"
+"create!" = "self"
+new = "self"
+find_or_create_by = "self"
+find_or_initialize_by = "self"
+reload = "self"
+where = "set"
+order = "set"
+includes = "set"
+joins = "set"
+left_joins = "set"
+limit = "set"
+offset = "set"
+all = "set"
+select = "set"
+group = "set"
+distinct = "set"
+eager_load = "set"
+preload = "set"
+rewhere = "set"
+not = "set"
+[family.set_members]
+first = "self"
+last = "self"
+take = "self"
+find = "self"
+find_by = "self"
+create = "self"
+new = "self"
+where = "set"
+order = "set"
+includes = "set"
+joins = "set"
+limit = "set"
+offset = "set"
+select = "set"
+group = "set"
+distinct = "set"
+not = "set"
+
+[[family]]
+name = "pydantic"
+bases = ["BaseModel", "RootModel"]
+[family.members]
+model_validate = "self"
+model_validate_json = "self"
+model_validate_strings = "self"
+model_construct = "self"
+model_copy = "self"
+parse_obj = "self"
+parse_raw = "self"
+construct = "self"
+copy = "self"

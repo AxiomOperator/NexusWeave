@@ -22,3 +22,16 @@ schedule -> tick
 schedule -> double
 MemRepo.find -> Repo.find
 !schedule -> setTimeout
+UserService.getUser -> User.label
+useRepo -> MemRepo.find
+GET /api/users/:id -> listUsers
+createUser -> user:created
+user:created -> onUserCreated
+user:created -> audit
+# a language builtin qualifier never falls back to a same-named project member
+!checkList -> isArray
+# a local closure / parameter shadows a same-named function
+!runLocal -> helperFn
+# functions used as values in literals, template interpolations, and `.bind`
+label -> escapeIt
+Poller.start -> Poller.poll

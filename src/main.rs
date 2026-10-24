@@ -23,7 +23,7 @@ enum Cmd {
     /// Rebuild the graph from scratch
     Index { path: Option<PathBuf>, #[arg(short, long)] quiet: bool },
     /// Incrementally update the graph
-    Sync { path: Option<PathBuf>, #[arg(short, long)] quiet: bool },
+    Sync { path: Option<PathBuf>, #[arg(short, long)] quiet: bool, #[arg(long, help = "re-resolve every reference (after config/stub changes)")] resolve: bool },
     /// Show index statistics
     Status { path: Option<PathBuf>, #[arg(short, long)] json: bool },
     /// Search symbols
@@ -44,6 +44,19 @@ enum Cmd {
         #[arg(short, long)] filter: Option<String>, #[arg(short, long)] json: bool, #[arg(short, long)] quiet: bool },
     /// List indexed files
     Files { path: Option<String>, #[arg(long)] symbols: bool },
+    /// Whole-graph analyses: dead | cycles | entry | hotspots
+    Analyze { what: String, #[arg(short, long, default_value_t = 50)] limit: usize,
+        #[arg(long, help = "dead: include exported symbols")] exported: bool, #[arg(short, long)] json: bool },
+    /// What the current change touches: changed symbols, callers, affected routes and tests
+    DiffImpact {
+        #[arg(long, default_value = "HEAD", help = "git ref to diff against")] base: String,
+        #[arg(long, help = "only staged changes")] staged: bool,
+        #[arg(long, help = "read a unified diff from stdin instead of running git")] stdin: bool,
+        #[arg(short, long, default_value_t = 2)] depth: u32,
+        #[arg(short, long)] json: bool,
+    },
+    /// Shared per-repo background process used by `serve`: run | status | stop
+    Daemon { action: Option<String>, path: Option<PathBuf> },
     /// Watch the project and keep the graph in sync
     Watch { path: Option<PathBuf> },
     /// Run the MCP server on stdio
@@ -51,9 +64,17 @@ enum Cmd {
     /// Open the graph viewer in a browser
     Ui { path: Option<PathBuf>, #[arg(long, default_value_t = 7878)] port: u16, #[arg(long)] no_open: bool },
     /// Register the MCP server with coding agents (Claude Code, Cursor, Codex, ...)
-    Install { #[arg(long)] target: Vec<String>, #[arg(long)] print: bool },
-    /// Remove the MCP server registration
+    Install { #[arg(long)] target: Vec<String>, #[arg(long)] print: bool,
+              #[arg(long, help = "also add a Claude Code PreToolUse hook that suggests xgraph_explore for symbol greps")] hooks: bool },
+    /// Remove the MCP server registration (and the Claude Code hook)
     Uninstall { #[arg(long)] target: Vec<String> },
+    /// Replace this binary with the latest GitHub release (checksum-verified)
+    Upgrade { #[arg(long, help = "install this release tag instead of the latest")] version: Option<String>,
+              #[arg(long, help = "only report whether an update exists")] check: bool,
+              #[arg(long, help = "reinstall even when already up to date")] force: bool },
+    /// Agent hook entry points (`pretool`), invoked by Claude Code
+    #[command(hide = true)]
+    Hook { event: String },
     /// Debug: dump extraction for a file
     #[command(hide = true)]
     Dump { file: PathBuf },
@@ -68,9 +89,12 @@ enum Cmd {
     Debug { what: String, #[arg(short, long, default_value_t = 40)] n: usize, #[arg(short, long)] lang: Option<String>, #[arg(short, long)] kind: Option<String> },
 }
 
+/// Escape `%`, `_` and `\` for a `LIKE … ESCAPE '\'` prefix match.
+fn like_escape(s: &str) -> String { s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_") }
+
 fn root_arg(p: Option<PathBuf>) -> Result<PathBuf> {
     let p = p.unwrap_or_else(|| PathBuf::from("."));
-    Ok(std::fs::canonicalize(&p)?)
+    Ok(xgraph::canonical(&p)?)
 }
 
 fn graph_here() -> Result<Graph> { Graph::discover(Path::new(".")) }
@@ -88,8 +112,10 @@ fn pick(g: &Graph, symbol: &str, file: Option<&str>) -> Result<Vec<query::Sym>> 
 
 fn print_stats(st: &index::Stats, quiet: bool) {
     if quiet { return; }
-    eprintln!("indexed {} files ({} changed, {} removed) · {} symbols · {} refs · {} resolved · {} ms (discover {} / parse {} / resolve {})",
-        st.files_scanned, st.files_indexed, st.files_removed, st.nodes, st.refs, st.resolved, st.ms_total, st.ms_discover, st.ms_parse, st.ms_resolve);
+    // symbol/ref counts are for the files (re)parsed this run
+    eprintln!("{} scanned ({} changed, {} removed) · {} · {} · {} resolved · {} ms (discover {} / parse {} / resolve {})",
+        count(st.files_scanned, "file"), st.files_indexed, st.files_removed, count(st.nodes, "symbol"), count(st.refs, "ref"),
+        st.resolved, st.ms_total, st.ms_discover, st.ms_parse, st.ms_resolve);
 }
 
 fn progress(quiet: bool) -> impl FnMut(usize, usize) {
@@ -113,9 +139,10 @@ fn main() -> Result<()> {
             let d = root.join(".xgraph");
             if d.exists() { std::fs::remove_dir_all(&d)?; eprintln!("removed {}", d.display()); } else { eprintln!("no .xgraph/ in {}", root.display()); }
         }
-        Cmd::Sync { path, quiet } => {
+        Cmd::Sync { path, quiet, resolve } => {
             let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).unwrap_or(root_arg(None)?) };
-            let st = index::sync(&root, None)?;
+            let mut st = index::sync(&root, None)?;
+            if resolve { let r = index::reresolve(&root)?; st.resolved = r.resolved; st.ms_resolve += r.ms_resolve; st.ms_total += r.ms_total; }
             print_stats(&st, quiet);
         }
         Cmd::Status { path, json } => {
@@ -157,7 +184,7 @@ fn main() -> Result<()> {
             let v = g.impact(&ids, depth, 2000)?;
             if json { println!("{}", serde_json::to_string_pretty(&v.iter().map(|(s, d)| serde_json::json!({"symbol": s, "depth": d})).collect::<Vec<_>>())?); }
             else {
-                println!("impact of {} — {} dependents (depth {depth})", symbol, v.len());
+                println!("impact of {} — {} (depth {depth})", symbol, count(v.len(), "dependent"));
                 let mut by_file: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
                 for (s, d) in &v { by_file.entry(&s.path).or_default().push(format!("{}:{} (d{d})", s.name, s.start_line)); }
                 for (f, syms) in by_file { println!("  {f}\n    {}", syms.join(", ")); }
@@ -171,17 +198,58 @@ fn main() -> Result<()> {
             let (tests, traversed) = g.affected_tests(&files, depth, &is_test)?;
             if json { println!("{}", serde_json::json!({"changedFiles": files, "affectedTests": tests, "totalDependentsTraversed": traversed})); }
             else if quiet { for t in tests { println!("{t}"); } }
-            else { println!("{} affected test files ({} files traversed)", tests.len(), traversed); for t in tests { println!("  {t}"); } }
+            else { println!("{} ({} traversed)", count(tests.len(), "affected test file"), count(traversed, "file")); for t in tests { println!("  {t}"); } }
         }
         Cmd::Files { path, symbols } => {
             let g = graph_here()?;
-            let mut st = g.db.conn.prepare("SELECT path, node_count FROM files WHERE path LIKE ? ORDER BY path")?;
-            let pat = format!("{}%", path.unwrap_or_default().trim_start_matches("./"));
+            let mut st = g.db.conn.prepare("SELECT path, node_count FROM files WHERE path LIKE ? ESCAPE '\\' ORDER BY path")?;
+            let pat = format!("{}%", like_escape(path.unwrap_or_default().trim_start_matches("./")));
             for r in st.query_map([pat], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
                 let (p, n) = r?;
-                println!("{p} ({} symbols)", n - 1);
+                println!("{p} ({})", count((n - 1).max(0) as usize, "symbol"));
                 if symbols { for s in g.file_symbols(&p)? { if s.parent_id.is_some_and(|_| true) { println!("    {:<10} {}:{}", s.kind.as_str(), explore::display_name(&s), s.start_line); } } }
             }
+        }
+        Cmd::Analyze { what, limit, exported, json } => {
+            let g = graph_here()?;
+            if json {
+                let v = match what.as_str() {
+                    "dead" => serde_json::to_value(g.dead_code(exported, limit)?)?,
+                    "cycles" => serde_json::to_value(g.cycles(limit)?)?,
+                    "entry" => serde_json::to_value(g.entry_points(limit)?)?,
+                    "hotspots" => serde_json::to_value(g.hotspots(limit)?)?,
+                    other => bail!("unknown analysis `{other}` (dead | cycles | entry | hotspots)"),
+                };
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                print!("{}", analyze::render(&g, &what, limit, exported)?);
+            }
+        }
+        Cmd::DiffImpact { base, staged, stdin, depth, json } => {
+            let root = query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `xgraph init`"))?;
+            index::sync(&root, None)?;  // analyse the working tree as it is now
+            let g = Graph::open(&root)?;
+            let diff = if stdin { let mut s = String::new(); std::io::stdin().read_to_string(&mut s)?; s } else { impact::git_diff(&root, &base, staged)? };
+            let r = g.diff_impact(&diff, depth)?;
+            if json { println!("{}", serde_json::to_string_pretty(&r)?); } else { print!("{}", impact::render(&r)); }
+        }
+        Cmd::Daemon { action, path } => {
+            let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `xgraph init`"))? };
+            #[cfg(unix)]
+            match action.as_deref().unwrap_or("status") {
+                "run" => daemon::run(&root)?,
+                "status" => match daemon::connect(&root) {
+                    Some(mut c) => println!("{}", serde_json::to_string_pretty(&c.status()?)?),
+                    None => println!("no daemon running for {}", root.display()),
+                },
+                "stop" => match daemon::connect(&root) {
+                    Some(mut c) => { let _ = c.stop(); println!("stopped"); }
+                    None => println!("no daemon running for {}", root.display()),
+                },
+                other => bail!("unknown daemon action `{other}` (run | status | stop)"),
+            }
+            #[cfg(not(unix))]
+            { let _ = (action, root); bail!("the shared daemon needs Unix sockets; `xgraph serve` runs in-process on this platform"); }
         }
         Cmd::Watch { path } => {
             let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).unwrap_or(root_arg(None)?) };
@@ -198,18 +266,24 @@ fn main() -> Result<()> {
             let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `xgraph init`"))? };
             ui::serve(&root, port, !no_open)?;
         }
-        Cmd::Install { target, print } => install::install(&target, print)?,
+        Cmd::Install { target, print, hooks } => install::install(&target, print, hooks)?,
+        Cmd::Upgrade { version, check, force } => upgrade::run(version.as_deref(), check, force)?,
+        Cmd::Hook { event } => match event.as_str() {
+            "pretool" => hook::pretool()?,
+            other => bail!("unknown hook event {other:?}"),
+        },
         Cmd::Uninstall { target } => install::uninstall(&target)?,
         Cmd::Debug { what, n, lang, kind } => {
             let g = graph_here()?;
             let lang_clause = lang.as_deref().and_then(model::Lang::parse).map(|l| format!(" AND f.lang = {}", l as i64)).unwrap_or_default();
             let kind_clause = kind.as_deref().and_then(model::RefKind::parse).map(|k| format!(" AND r.kind = {}", k as i64)).unwrap_or_default();
+            let strs = db::REF_STRS;
             let sql = match what.as_str() {
-                "miss" => format!("SELECT f.path, r.line, r.kind, r.name, r.qualifier, r.recv_type, (SELECT COUNT(*) FROM nodes x WHERE x.name = r.name AND x.kind != 0), 0
-                    FROM refs r JOIN files f ON f.id = r.file_id WHERE r.target_id IS NULL{lang_clause}{kind_clause}
+                "miss" => format!("SELECT f.path, r.line, r.kind, r.name, sq.s, sr.s, (SELECT COUNT(*) FROM nodes x WHERE x.name = r.name AND x.kind != 0), 0
+                    FROM refs r JOIN files f ON f.id = r.file_id {strs} WHERE r.target_id IS NULL{lang_clause}{kind_clause}
                     AND EXISTS (SELECT 1 FROM nodes x WHERE x.name = r.name AND x.kind != 0) ORDER BY random() LIMIT {n}"),
-                _ => format!("SELECT f.path, r.line, r.kind, r.name, r.qualifier, r.recv_type, r.confidence, t.qname || ' @' || tf.path
-                    FROM refs r JOIN files f ON f.id = r.file_id JOIN nodes t ON t.id = r.target_id JOIN files tf ON tf.id = t.file_id
+                _ => format!("SELECT f.path, r.line, r.kind, r.name, sq.s, sr.s, r.confidence, t.qname || ' @' || tf.path
+                    FROM refs r JOIN files f ON f.id = r.file_id JOIN nodes t ON t.id = r.target_id JOIN files tf ON tf.id = t.file_id {strs}
                     WHERE r.confidence < 70{lang_clause}{kind_clause} ORDER BY random() LIMIT {n}"),
             };
             let mut st = g.db.conn.prepare(&sql)?;

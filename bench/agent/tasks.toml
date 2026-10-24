@@ -1,0 +1,146 @@
+# Agent evaluation tasks (roadmap 3.3). Each task runs in a clean checkout of a bench/corpus.toml
+# repo at its pinned commit. `rubric` is a list of facts the answer must contain; each fact is a
+# list of acceptable spellings (case-insensitive substring match). Every fact was checked against
+# the source at the pinned commit.
+#
+# kind: flow (how does X reach Y), explain (how does X work), impact (what depends on X)
+
+[[task]]
+id = "flask-request-flow"
+repo = "flask"
+kind = "flow"
+prompt = "In Flask, trace how an incoming request is handled from the WSGI entry point to the returned response. Name the methods in order, and say where before_request handlers run and where exceptions are turned into responses."
+rubric = [["wsgi_app"], ["full_dispatch_request"], ["preprocess_request"], ["dispatch_request"], ["finalize_request"], ["handle_user_exception", "handle_exception"]]
+
+[[task]]
+id = "flask-url-for"
+repo = "flask"
+kind = "explain"
+prompt = "How does flask.url_for build a URL? Which methods and objects does it go through, and what happens when building fails?"
+rubric = [["url_adapter", "MapAdapter"], ["create_url_adapter"], ["build("], ["handle_url_build_error"]]
+
+[[task]]
+id = "flask-blueprint-register"
+repo = "flask"
+kind = "flow"
+prompt = "When a Flask Blueprint is registered on an app, how do its routes end up as URL rules on the app? Trace the calls."
+rubric = [["register_blueprint"], ["make_setup_state", "BlueprintSetupState"], ["deferred"], ["add_url_rule"]]
+
+[[task]]
+id = "httpx-get-flow"
+repo = "httpx"
+kind = "flow"
+prompt = "In httpx, trace what happens when you call httpx.get(url): the chain of functions and methods from the top-level function down to the transport."
+rubric = [["Client"], ["send"], ["_send_handling_auth"], ["_send_handling_redirects"], ["_send_single_request"], ["handle_request"]]
+
+[[task]]
+id = "httpx-redirects"
+repo = "httpx"
+kind = "explain"
+prompt = "How does httpx follow redirects? Which method builds the next request, how are its method, URL and headers derived, and what limits the number of redirects?"
+rubric = [["_send_handling_redirects"], ["_build_redirect_request"], ["_redirect_method"], ["_redirect_url"], ["_redirect_headers"], ["max_redirects", "TooManyRedirects"]]
+
+[[task]]
+id = "gin-routing-flow"
+repo = "gin"
+kind = "flow"
+prompt = "In gin, trace how an HTTP request reaches the route handlers, starting from Engine.ServeHTTP. What happens when no route matches?"
+rubric = [["ServeHTTP"], ["handleHTTPRequest"], ["getValue"], ["Next"], ["pool"], ["serveError"]]
+
+[[task]]
+id = "gin-abort"
+repo = "gin"
+kind = "explain"
+prompt = "How do gin's Context.Next and Context.Abort control the handler chain? Explain the mechanism."
+rubric = [["index"], ["abortIndex"], ["handlers"], ["IsAborted"]]
+
+[[task]]
+id = "gin-render-callers"
+repo = "gin"
+kind = "impact"
+prompt = "Which public methods of gin's Context call Context.Render? If Render's behavior changed, which response helpers would be affected?"
+rubric = [["JSON"], ["HTML"], ["XML"], ["String"], ["YAML"], ["Redirect"], ["IndentedJSON", "SecureJSON", "PureJSON", "AsciiJSON"], ["ProtoBuf", "TOML", "BSON", "PDF"]]
+
+[[task]]
+id = "hono-dispatch"
+repo = "hono"
+kind = "flow"
+prompt = "Trace how a Hono app handles a request from app.fetch to the matched handler, including how middleware is composed and how errors and not-found are handled."
+rubric = [["fetch"], ["dispatch"], ["match("], ["compose"], ["errorHandler", "onError"], ["notFound"]]
+
+[[task]]
+id = "hono-router"
+repo = "hono"
+kind = "explain"
+prompt = "Which router does a default `new Hono()` use, and how does that router pick the implementation it ends up using?"
+rubric = [["SmartRouter"], ["RegExpRouter"], ["TrieRouter"], ["UnsupportedPathError"]]
+
+[[task]]
+id = "hono-compose"
+repo = "hono"
+kind = "explain"
+prompt = "How does hono's compose() run a middleware chain? Explain dispatch and next, and what happens if next() is called twice."
+rubric = [["dispatch"], ["next"], ["multiple times"], ["onError", "errorHandler"], ["onNotFound", "notFound"]]
+
+[[task]]
+id = "express-handle"
+repo = "express"
+kind = "flow"
+prompt = "In Express, which function first receives every request and what does it delegate to? How is the final response produced when no route handles the request?"
+rubric = [["app.handle", "handle("], ["router.handle"], ["finalhandler"]]
+
+[[task]]
+id = "express-send"
+repo = "express"
+kind = "explain"
+prompt = "How does Express's res.send decide the Content-Type and the ETag, and when does it respond with 304?"
+rubric = [["Content-Type"], ["setCharset", "html"], ["etag fn", "generateETag", "etagFn"], ["fresh"], ["304"]]
+
+[[task]]
+id = "express-send-callers"
+repo = "express"
+kind = "impact"
+prompt = "Which Express response methods are implemented on top of res.send, so that a change to res.send would affect them?"
+rubric = [["res.json", "json("], ["jsonp"], ["sendStatus"]]
+
+[[task]]
+id = "rg-parallel"
+repo = "ripgrep"
+kind = "flow"
+prompt = "How does ripgrep decide between single-threaded and parallel search, and how does the parallel search path work? Name the functions involved."
+rubric = [["threads"], ["search_parallel"], ["build_parallel", "WalkParallel"], ["fn run", "run("]]
+
+[[task]]
+id = "rg-gitignore"
+repo = "ripgrep"
+kind = "flow"
+prompt = "When ripgrep walks a directory, how does it decide that a path is ignored by a .gitignore file? Name the types and functions involved."
+rubric = [["Ignore"], ["matched_dir_entry", "matched_ignore"], ["Gitignore"], ["matched"], ["GlobSet", "glob"]]
+
+[[task]]
+id = "rg-json"
+repo = "ripgrep"
+kind = "explain"
+prompt = "How does ripgrep produce --json output? Which types implement it, and which callbacks emit the begin, match and end messages?"
+rubric = [["JSONSink"], ["Sink"], ["begin"], ["matched"], ["finish"]]
+
+[[task]]
+id = "cg-index-flow"
+repo = "codegraph"
+kind = "flow"
+prompt = "In codegraph, trace what `codegraph index` does, from the CLI command through extraction to reference resolution. Name the classes and methods involved."
+rubric = [["recreate"], ["indexAll"], ["ExtractionOrchestrator", "orchestrator"], ["resolveReferencesBatched", "resolveReferences"]]
+
+[[task]]
+id = "cg-watcher"
+repo = "codegraph"
+kind = "flow"
+prompt = "How does codegraph's file watcher turn file changes into a re-index? Name the class and the methods involved."
+rubric = [["FileWatcher"], ["fs.watch"], ["handleChange"], ["scheduleSync", "debounce"], ["flush"], ["sync"]]
+
+[[task]]
+id = "cg-resolve-callers"
+repo = "codegraph"
+kind = "impact"
+prompt = "If the signature of CodeGraph.resolveReferencesBatched changed, which non-test call sites in codegraph would need updating? Name the enclosing methods."
+rubric = [["indexAll"], ["sync"]]

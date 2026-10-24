@@ -23,11 +23,26 @@ fn ctor_type<'a>(cx: &Cx<'a>, v: Node<'_>) -> Option<&'a str> {
     last.chars().next().filter(|c| c.is_uppercase()).map(|_| t)
 }
 
+/// String value of the first matching keyword argument.
+fn kwarg_str(cx: &Cx<'_>, args: Node<'_>, names: &[&str]) -> Option<String> {
+    let mut c = args.walk();
+    args.named_children(&mut c).filter(|k| k.kind() == "keyword_argument")
+        .find(|k| cx.field_text(*k, "name").is_some_and(|n| names.contains(&n)))
+        .and_then(|k| k.child_by_field_name("value")).and_then(|v| string_lit(cx, v))
+}
+
 impl Py {
     /// Flask / FastAPI / Starlette: `@app.get("/users/{id}")`, `@bp.route("/x", methods=["POST"])`.
     fn decorator_route(&self, deco: Node<'_>, call: Node<'_>, cx: &mut Cx<'_>) {
         let Some(f) = call.child_by_field_name("function").filter(|f| f.kind() == "attribute") else { return };
         let attr = cx.field_text(f, "attribute").unwrap_or("");
+        // @sio.on("message") / @emitter.on("x") — an event listener, not a route
+        if event_register(attr) && let Some(ev) = call.child_by_field_name("arguments").and_then(|a| a.named_child(0)).and_then(|a| string_lit(cx, a))
+            && let Some(func) = deco.parent().filter(|p| p.kind() == "decorated_definition").and_then(|p| p.child_by_field_name("definition"))
+            && let Some(name) = cx.field_text(func, "name") {
+            cx.add_event(&ev, deco, Some((None, name)));
+            return;
+        }
         let Some(mut method) = http_method(attr) else { return };
         let Some(args) = call.child_by_field_name("arguments") else { return };
         let Some(path) = args.named_child(0).and_then(|a| string_lit(cx, a)) else { return };
@@ -41,7 +56,8 @@ impl Py {
         let Some(func) = deco.parent().filter(|p| p.kind() == "decorated_definition").and_then(|p| p.child_by_field_name("definition")) else { return };
         let Some(name) = cx.field_text(func, "name") else { return };
         let q = if cx.cur().kind == NodeKind::Class { Some("self") } else { None };
-        cx.add_route(method, &path, deco, Some((q, name)));
+        let binding = f.child_by_field_name("object").map(|o| cx.text(o).to_string());
+        cx.add_route_on(binding.as_deref(), method, &path, deco, Some((q, name)));
     }
 }
 
@@ -53,7 +69,17 @@ impl LangHooks for Py {
             "function_definition" => {
                 let name = cx.field_text(n, "name").unwrap_or("");
                 let in_class = cx.cur().kind == NodeKind::Class;
+                // @property / @cached_property / @x.setter: an accessor, read like a field
+                let is_prop = in_class && n.parent().filter(|p| p.kind() == "decorated_definition").is_some_and(|p| {
+                    let mut c = p.walk();
+                    p.named_children(&mut c).filter(|x| x.kind() == "decorator").any(|d| {
+                        let t = cx.text(d).trim_start_matches('@').trim();
+                        let last = t.rsplit('.').next().unwrap_or(t);
+                        matches!(last, "property" | "cached_property" | "setter" | "getter" | "deleter" | "hybrid_property" | "computed_field")
+                    })
+                });
                 let kind = match (in_class, name) {
+                    (true, _) if is_prop => NodeKind::Property,
                     (true, "__init__") => NodeKind::Constructor,
                     (true, _) => NodeKind::Method,
                     _ => NodeKind::Function,
@@ -87,6 +113,15 @@ impl LangHooks for Py {
             }
             "assignment" => {
                 let (Some(l), r) = (n.child_by_field_name("left"), n.child_by_field_name("right")) else { return Visit::Continue };
+                // bp = Blueprint("auth", __name__, url_prefix="/auth") / router = APIRouter(prefix="/items")
+                if let Some(rv) = r.filter(|rv| rv.kind() == "call") && l.kind() == "identifier"
+                    && let Some(fname) = rv.child_by_field_name("function").map(|f| cx.text(f))
+                    && matches!(fname.rsplit('.').next(), Some("Blueprint" | "APIRouter"))
+                    && let Some(args) = rv.child_by_field_name("arguments")
+                    && let Some(prefix) = kwarg_str(cx, args, &["url_prefix", "prefix"]) {
+                    let name = cx.text(l).to_string();
+                    cx.set_route_prefix(&name, &prefix);
+                }
                 let ty_owned = n.child_by_field_name("type").map(|t| cx.text(t).to_string())
                     .or_else(|| r.and_then(|r| ctor_type(cx, r)).map(str::to_string))
                     .or_else(|| r.and_then(|r| cx.value_path(if r.kind() == "await" { r.named_child(0).unwrap_or(r) } else { r })));
@@ -94,6 +129,7 @@ impl LangHooks for Py {
                 match l.kind() {
                     "identifier" => {
                         let name = cx.text(l);
+                        cx.declare_local(name);
                         if let Some(t) = ty { cx.bind_var(name, t); }
                         let scope = cx.cur().kind;
                         if matches!(scope, NodeKind::File | NodeKind::Class) && n.parent().is_some_and(|p| p.kind() == "expression_statement") {
@@ -161,7 +197,32 @@ impl LangHooks for Py {
                 }
                 Visit::Skip
             }
+            "call" if n.child_by_field_name("function").filter(|f| f.kind() == "attribute")
+                .and_then(|f| f.child_by_field_name("attribute")).is_some_and(|a| event_register(cx.text(a)) || event_emit(cx.text(a)))
+                && n.child_by_field_name("arguments").and_then(|a| a.named_child(0)).and_then(|a| string_lit(cx, a)).is_some() => {
+                let f = n.child_by_field_name("function").unwrap();
+                let attr = cx.field_text(f, "attribute").unwrap_or("").to_string();
+                let args = n.child_by_field_name("arguments").unwrap();
+                let name = args.named_child(0).and_then(|a| string_lit(cx, a)).unwrap_or_default();
+                let obj = cx.field_text(f, "object").map(str::to_string);
+                cx.add_ref(RefKind::Call, &attr, obj.as_deref(), f);
+                if event_register(&attr) && args.named_child_count() >= 2 {
+                    return Visit::Def(Def::new(NodeKind::Event, name));  // handler args become callbacks of the event
+                }
+                cx.add_ref(RefKind::Emit, &name, None, n);
+                Visit::Continue
+            }
             "call" => {
+                // app.register_blueprint(bp, url_prefix="/x") / app.include_router(router, prefix="/x")
+                if let Some(f) = n.child_by_field_name("function").filter(|f| f.kind() == "attribute")
+                    && matches!(cx.field_text(f, "attribute"), Some("register_blueprint" | "include_router" | "mount"))
+                    && let Some(args) = n.child_by_field_name("arguments")
+                    && let Some(child) = args.named_child(0).filter(|c| matches!(c.kind(), "identifier" | "attribute")) {
+                    let prefix = kwarg_str(cx, args, &["url_prefix", "prefix", "path"]).unwrap_or_default();
+                    let parent = cx.field_text(f, "object").unwrap_or("").to_string();
+                    let child = cx.text(child).to_string();
+                    cx.add_mount(&parent, &child, &prefix, n);
+                }
                 // Django urls.py: path("users/<int:id>/", views.detail)
                 if let Some(f) = n.child_by_field_name("function") && matches!(cx.text(f), "path" | "re_path" | "url")
                     && cx.out.nodes[0].name == "urls.py"
@@ -171,6 +232,18 @@ impl LangHooks for Py {
                 if let Some(f) = n.child_by_field_name("function") && let Some((q, name)) = callee_parts(cx, f) {
                     let kind = if q.is_none() && name.chars().next().is_some_and(|c| c.is_uppercase()) { RefKind::Instantiate } else { RefKind::Call };
                     cx.add_ref(kind, name, q.map(short_qual), f);
+                }
+                Visit::Continue
+            }
+            // `obj.prop` read (not a call target, not an assignment target): links to accessors
+            "attribute" => {
+                let parent = n.parent();
+                let is_callee = parent.is_some_and(|p| p.kind() == "call" && p.child_by_field_name("function").is_some_and(|f| f.id() == n.id()));
+                let is_target = parent.is_some_and(|p| matches!(p.kind(), "assignment" | "augmented_assignment") && p.child_by_field_name("left").is_some_and(|l| l.id() == n.id()));
+                if !is_callee && !is_target
+                    && let (Some(o), Some(a)) = (n.child_by_field_name("object"), n.child_by_field_name("attribute")) {
+                    let (o, a) = (cx.text(o), cx.text(a));
+                    cx.add_ref(RefKind::Read, a, Some(short_qual(o)), n.child_by_field_name("attribute").unwrap());
                 }
                 Visit::Continue
             }

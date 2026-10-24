@@ -1,0 +1,9 @@
+# project stub: mongoengine documents
+[[family]]
+name = "mongoengine"
+bases = ["Document"]
+[family.members]
+objects = "set"
+[family.set_members]
+get = "self"
+filter = "set"

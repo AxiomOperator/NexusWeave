@@ -213,7 +213,7 @@ pub fn full_index(root: &Path, mut progress: impl FnMut(usize, usize)) -> Result
         let mut busy = std::time::Duration::ZERO;
         let pending = &mut pending;
         parse_stream(cands, |p| {
-            st.nodes += p.ex.nodes.len();
+            st.nodes += p.ex.nodes.len().saturating_sub(1); // the file node isn't a symbol
             st.refs += p.ex.refs.len();
             let t = Instant::now();
             w.insert_with(&p.meta, &p.ex, Some(pending))?;
@@ -236,11 +236,28 @@ pub fn full_index(root: &Path, mut progress: impl FnMut(usize, usize)) -> Result
     st.ms_resolve = t2.elapsed().as_millis();
     db.set_meta("indexed_at", &now_ms().to_string())?;
     db.set_meta("version", env!("CARGO_PKG_VERSION"))?;
-    db.conn.execute_batch("INSERT INTO nodes_fts(nodes_fts) VALUES('optimize'); PRAGMA journal_mode=WAL; ANALYZE;")?;
+    let t = Instant::now();
+    db.conn.execute_batch("INSERT INTO nodes_fts(nodes_fts) VALUES('optimize');")?;
+    let t_opt = t.elapsed();
+    let t = Instant::now();
+    // sampled statistics: the planner only needs rough row counts per index
+    db.conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA analysis_limit=1000; ANALYZE;")?;
+    if std::env::var_os("XGRAPH_TRACE").is_some() { eprintln!("[index] fts optimize {} ms, analyze {} ms", t_opt.as_millis(), t.elapsed().as_millis()); }
     drop(db);
     for ext in ["-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{ext}", path.display())); }
     std::fs::rename(&tmp, &path)?;
     st.ms_total = t0.elapsed().as_millis();
+    Ok(st)
+}
+
+/// Re-resolve every reference (after module configuration or stub changes).
+pub fn reresolve(root: &Path) -> Result<Stats> {
+    let t0 = Instant::now();
+    let mut db = Db::open(&db_path(root))?;
+    db.ensure_sync_indexes()?;
+    let mut st = Stats { resolved: crate::resolve::resolve(&mut db, root, crate::resolve::Scope::All)?, ..Default::default() };
+    st.ms_resolve = t0.elapsed().as_millis();
+    st.ms_total = st.ms_resolve;
     Ok(st)
 }
 
@@ -255,7 +272,12 @@ struct Known { id: i64, hash: u64, size: u64, mtime: i64 }
 pub fn sync(root: &Path, only: Option<&[String]>) -> Result<Stats> { sync_with(root, only, None) }
 
 /// Incremental update that reuses resolver state across calls (see [`crate::resolve::Cache`]).
-pub fn sync_with(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Option<crate::resolve::Cache>>) -> Result<Stats> {
+pub fn sync_with(root: &Path, only: Option<&[String]>, cache: Option<&mut Option<crate::resolve::Cache>>) -> Result<Stats> {
+    sync_inner(root, only, cache, false)
+}
+
+/// `force`: re-extract the `only` files even if their content is unchanged.
+fn sync_inner(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Option<crate::resolve::Cache>>, force: bool) -> Result<Stats> {
     let t0 = Instant::now();
     let path = db_path(root);
     let rebuild = |cache: &mut Option<&mut Option<crate::resolve::Cache>>| {
@@ -268,6 +290,8 @@ pub fn sync_with(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Op
         drop(db);
         return rebuild(&mut cache);
     }
+    if let Some(c) = cache.as_mut() && c.as_ref().is_some_and(|c| c.db_file != db.file) { **c = None; } // re-indexed meanwhile
+    db.ensure_sync_indexes()?;
     let mut st = Stats::default();
     let mut known: HashMap<String, Known> = HashMap::new();
     {
@@ -297,7 +321,7 @@ pub fn sync_with(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Op
         Some(paths) => paths.iter().filter(|p| !present.contains(p.as_str())).filter_map(|p| known.get(p).map(|k| k.id)).collect(),
     };
     // Cheap pre-filter on size+mtime, then confirm by content hash.
-    let maybe: Vec<&Candidate> = cands.iter().filter(|c| match known.get(&c.rel) {
+    let maybe: Vec<&Candidate> = cands.iter().filter(|c| force || match known.get(&c.rel) {
         Some(k) => k.size != c.size || k.mtime != c.mtime,
         None => true,
     }).collect();
@@ -305,7 +329,7 @@ pub fn sync_with(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Op
         let src = std::fs::read(&c.abs).ok()?;
         let hash = xxhash_rust::xxh3::xxh3_64(&src);
         match known.get(&c.rel) {
-            Some(k) if k.hash == hash => Some((Some(k.id), None, c.mtime)),
+            Some(k) if k.hash == hash && !force => Some((Some(k.id), None, c.mtime)),
             k => Some((k.map(|k| k.id), Some(parse_bytes(c, &src, hash)), c.mtime)),
         }
     }).collect());
@@ -357,6 +381,8 @@ pub fn sync_with(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Op
         let mut q = db.conn.prepare_cached("SELECT r.id FROM nodes n JOIN refs r ON r.via_id = n.id WHERE n.file_id = ?")?;
         for f in &changed_ids { for r in q.query_map([f], |r| r.get(0))? { via_refs.push(r?); } }
     }
+    let old_names: HashSet<String> = affected_names.clone();
+    let mut new_names: HashSet<String> = HashSet::new();
     let mut new_file_ids = Vec::new();
     {
         let mut w = Writer::new(&mut db)?;
@@ -365,8 +391,8 @@ pub fn sync_with(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Op
             match parsed {
                 None => { if let Some(id) = id { w.touch(*id, *m)?; } }
                 Some(p) => {
-                    for n in &p.ex.nodes { if n.kind != NodeKind::File { affected_names.insert(n.name.clone()); } }
-                    st.nodes += p.ex.nodes.len();
+                    for n in &p.ex.nodes { if n.kind != NodeKind::File { affected_names.insert(n.name.clone()); new_names.insert(n.name.clone()); } }
+                    st.nodes += p.ex.nodes.len().saturating_sub(1); // the file node isn't a symbol
                     st.refs += p.ex.refs.len();
                     new_file_ids.push(w.insert(&p.meta, &p.ex)?);
                 }
@@ -378,11 +404,48 @@ pub fn sync_with(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Op
     st.files_removed = removed.len();
     st.ms_parse = t1.elapsed().as_millis();
     let t2 = Instant::now();
+    // What can make a dropped value ref resolvable: a name that didn't exist before (a new
+    // function, member or export — re-defining an existing name changes nothing for a ref that
+    // failed while it existed), and import aliases when files appeared or disappeared (what an
+    // import binds to changed).
+    let files_came_or_went = !removed.is_empty() || results.iter().any(|r| r.0.is_none() && r.1.is_some());
+    let name_hashes: Vec<i64> = new_names.difference(&old_names)
+        .chain(aliases.iter().map(|(_, l)| l).filter(|_| files_came_or_went))
+        .map(|n| crate::db::name_hash(n)).collect::<HashSet<_>>().into_iter().collect();
+    let fresh_ids: HashSet<i64> = new_file_ids.iter().copied().collect();
     st.resolved = crate::resolve::resolve_with(&mut db, root, crate::resolve::Scope::Incremental {
         files: new_file_ids, names: affected_names.into_iter().collect(), removed: changed_ids, aliases, via_refs,
-    }, cache)?;
+    }, cache.as_deref_mut())?;
     st.ms_resolve = t2.elapsed().as_millis();
     db.set_meta("indexed_at", &now_ms().to_string())?;
+    // Unchanged files that pass or read one of the names just (re)defined as a bare value: their
+    // value refs weren't stored, so re-extract them (one extra pass, never recursive).
+    if !force && !name_hashes.is_empty() {
+        let mut again: Vec<String> = Vec::new();
+        {
+            let mut q = db.conn.prepare_cached("SELECT DISTINCT f.id, f.path FROM value_names v JOIN files f ON f.id = v.file_id WHERE v.name_h = ?")?;
+            let mut seen = HashSet::new();
+            for h in &name_hashes {
+                for r in q.query_map([h], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
+                    let (id, p) = r?;
+                    if !fresh_ids.contains(&id) && seen.insert(id) { again.push(p); }
+                }
+            }
+        }
+        // bounded: a brand-new but very common name (`dispose`) must not stall the watcher for
+        // seconds; past the cap the remaining edges appear at the next full index
+        const MAX_REEXTRACT: usize = 400;
+        if again.len() > MAX_REEXTRACT {
+            if std::env::var_os("XGRAPH_TRACE").is_some() { eprintln!("[sync] {} files pass a new name as a value; re-extracting the first {MAX_REEXTRACT}", again.len()); }
+            again.truncate(MAX_REEXTRACT);
+        }
+        if !again.is_empty() {
+            drop(db);
+            let more = sync_inner(root, Some(&again), cache, true)?;
+            st.resolved += more.resolved;
+            st.files_indexed += more.files_indexed;
+        }
+    }
     st.ms_total = t0.elapsed().as_millis();
     Ok(st)
 }

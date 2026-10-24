@@ -3,16 +3,22 @@
 
 mod c;
 mod csharp;
+mod dart;
 mod go;
 mod java;
 mod js;
+mod kotlin;
+mod lua;
 mod php;
 mod python;
 mod ruby;
 mod rust;
+mod scala;
+mod sfc;
+mod swift;
 
 use crate::model::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 const MAX_DEPTH: u32 = 1500;
@@ -70,6 +76,8 @@ pub struct Scope {
     pub vars: HashMap<String, String>,
     /// First inferable `return` value type seen in this callable's body.
     pub ret: Option<String>,
+    /// Local bindings (parameters, `let`, assignments) that shadow outer names in this callable.
+    pub locals: HashSet<String>,
 }
 
 pub struct Cx<'a> {
@@ -116,14 +124,16 @@ impl<'a> Cx<'a> {
 
     pub fn bind_var(&mut self, name: &str, ty: &str) {
         if ty.contains("()") { return self.bind_var_path(name, ty); }
-        let ty = normalize_type(ty);
+        let mut ty = normalize_type(ty);
+        if let Some(b) = self.type_param_bound(&ty) { ty = b.to_string(); }
         if ty.is_empty() || name.is_empty() { return; }
         if let Some(s) = self.scopes.last_mut() { s.vars.insert(name.to_string(), ty); }
     }
 
     /// Bind a member field type on the nearest type scope (`this.name` lookups).
     pub fn bind_field(&mut self, name: &str, ty: &str) {
-        let ty = if ty.contains("()") { ty.to_string() } else { normalize_type(ty) };
+        let mut ty = if ty.contains("()") { ty.to_string() } else { normalize_type(ty) };
+        if let Some(b) = self.type_param_bound(&ty) { ty = b.to_string(); }
         if ty.is_empty() || name.is_empty() { return; }
         if let Some(owner) = self.enclosing_type() {
             let owner = owner.to_string();
@@ -212,16 +222,64 @@ impl<'a> Cx<'a> {
     /// A route node (`GET /users/{id}`) declared at `at`, optionally linked to a handler
     /// (`qualifier.name`; use qualifier `this` for a method of the enclosing class).
     pub fn add_route(&mut self, method: &str, path: &str, at: Node<'_>, handler: Option<(Option<&str>, &str)>) {
-        let name = route_name(method, path);
+        self.add_route_on(None, method, path, at, handler);
+    }
+
+    /// Like [`Cx::add_route`], for a route registered on router `binding` (`bp`, `router`): the
+    /// binding's local prefix is applied now, and mounts of it elsewhere are applied at resolve time.
+    pub fn add_route_on(&mut self, binding: Option<&str>, method: &str, path: &str, at: Node<'_>, handler: Option<(Option<&str>, &str)>) {
+        let path = match binding { Some(b) => join_route(&self.route_prefix(b), path), None => path.to_string() };
+        let name = route_name(method, &path);
+        let hint = binding.map(|b| format!("@{b}|{name}"));
         let id = self.out.nodes.len() as u32;
         let line = compact_ws(self.text(at).lines().next().unwrap_or(""));
         self.out.nodes.push(ExNode {
             kind: NodeKind::Route, qname: name.clone(), name, parent: Some(self.cur_node()), owner: None,
             start_line: at.start_position().row as u32 + 1, end_line: at.end_position().row as u32 + 1,
             start_byte: at.start_byte() as u32, end_byte: at.end_byte() as u32, exported: true,
-            signature: Some(truncate(&line, SIG_MAX)), doc: None, type_hint: None, ext_of: None,
+            signature: Some(truncate(&line, SIG_MAX)), doc: None, type_hint: hint, ext_of: None,
         });
         if let Some((q, h)) = handler { self.add_ref_from(id, RefKind::Handles, h, q, at); }
+    }
+
+    /// An event listener registered at `at` (decorator style), linked to its handler.
+    pub fn add_event(&mut self, name: &str, at: Node<'_>, handler: Option<(Option<&str>, &str)>) {
+        let id = self.out.nodes.len() as u32;
+        let line = compact_ws(self.text(at).lines().next().unwrap_or(""));
+        self.out.nodes.push(ExNode {
+            kind: NodeKind::Event, qname: name.to_string(), name: name.to_string(), parent: Some(self.cur_node()), owner: None,
+            start_line: at.start_position().row as u32 + 1, end_line: at.end_position().row as u32 + 1,
+            start_byte: at.start_byte() as u32, end_byte: at.end_byte() as u32, exported: true,
+            signature: Some(truncate(&line, SIG_MAX)), doc: None, type_hint: None, ext_of: None,
+        });
+        if let Some((q, h)) = handler { self.add_ref_from(id, RefKind::Callback, h, q, at); }
+    }
+
+    /// A route Def (call-style registration whose inline handler becomes the route's scope).
+    pub fn route_def<'t>(&self, binding: Option<&str>, method: &str, path: &str, body: Option<Node<'t>>) -> Def<'t> {
+        let path = match binding { Some(b) => join_route(&self.route_prefix(b), path), None => path.to_string() };
+        let name = route_name(method, &path);
+        let mut d = Def::new(NodeKind::Route, name.clone()).body(body);
+        d.type_hint = binding.map(|b| format!("@{b}|{name}"));
+        d
+    }
+
+    /// Local path prefix of a router binding (`v1 := r.Group("/v1")`, `Blueprint(url_prefix=..)`).
+    pub fn route_prefix(&self, binding: &str) -> String {
+        let key = format!("@route:{}", binding.trim());
+        self.scopes.iter().rev().find_map(|s| s.vars.get(&key)).cloned().unwrap_or_default()
+    }
+
+    pub fn set_route_prefix(&mut self, binding: &str, prefix: &str) {
+        if let Some(s) = self.scopes.last_mut() { s.vars.insert(format!("@route:{}", binding.trim()), prefix.to_string()); }
+    }
+
+    pub fn add_mount(&mut self, parent: &str, child: &str, prefix: &str, at: Node<'_>) {
+        let (parent, child) = (parent.trim(), child.trim());
+        if child.is_empty() || child.len() > 120 || parent.len() > 120 { return; }
+        // a mount on a router with its own local prefix (`v1.Mount("/x", r)`) includes it
+        let prefix = join_route(&self.route_prefix(parent), prefix);
+        self.out.mounts.push(ExMount { parent: parent.to_string(), child: child.to_string(), prefix, line: at.start_position().row as u32 + 1 });
     }
 
     /// Callback arguments: functions/methods passed by name (`app.use(auth)`, `sorted(xs, key=by_name)`,
@@ -229,17 +287,23 @@ impl<'a> Cx<'a> {
     pub fn note_callbacks(&mut self, args: Node<'_>) {
         let mut c = args.walk();
         let items: Vec<Node<'_>> = args.named_children(&mut c).collect();
-        for a in items {
+        for a in items { self.note_value(a); }
+    }
+
+    /// One value position (an argument, an array element, an object value): a function or method
+    /// named there is passed, not called.
+    pub fn note_value(&mut self, a: Node<'_>) {
+        {
             let a = match a.kind() {
                 "argument" | "keyword_argument" | "pair" => a.child_by_field_name("value").or_else(|| a.named_child(a.named_child_count().saturating_sub(1))).unwrap_or(a),
                 _ => a,
             };
             match a.kind() {
-                "identifier" => {
+                "identifier" | "shorthand_property_identifier" => {
                     let name = self.text(a);
-                    if self.var_type(name).is_some() || is_common_value(name) { continue; }
+                    if self.var_type(name).is_some() || is_common_value(name) || self.is_local(name) { return; }
                     if matches!(self.lang, Lang::Java | Lang::CSharp | Lang::Cpp | Lang::C)
-                        && self.enclosing_type().is_some_and(|o| self.fields.contains_key(&(o.to_string(), name.to_string()))) { continue; }
+                        && self.enclosing_type().is_some_and(|o| self.fields.contains_key(&(o.to_string(), name.to_string()))) { return; }
                     self.add_ref(RefKind::Callback, name, None, a);
                 }
                 "simple_symbol" if self.lang == Lang::Ruby => {
@@ -271,6 +335,17 @@ impl<'a> Cx<'a> {
         if let Some(s) = self.scopes.last_mut() { s.vars.insert(name.to_string(), path.to_string()); }
     }
 
+    /// A local binding in the current callable: unqualified calls to it are calls to a closure
+    /// or function value, never to a project symbol of the same name.
+    pub fn declare_local(&mut self, name: &str) {
+        if !shadowing_locals(self.lang) || !is_ident(name) { return; }
+        if let Some(s) = self.scopes.last_mut() && s.kind.is_callable() { s.locals.insert(name.to_string()); }
+    }
+
+    fn is_local(&self, name: &str) -> bool {
+        self.scopes.iter().rev().take_while(|s| s.kind.is_callable()).any(|s| s.locals.contains(name))
+    }
+
     pub fn add_ref(&mut self, kind: RefKind, name: &str, qualifier: Option<&str>, at: Node<'_>) {
         let from = self.cur_node();
         self.add_ref_from(from, kind, name, qualifier, at);
@@ -279,6 +354,7 @@ impl<'a> Cx<'a> {
     pub fn add_ref_from(&mut self, from: u32, kind: RefKind, name: &str, qualifier: Option<&str>, at: Node<'_>) {
         let name = name.trim();
         if name.is_empty() || name.len() > 200 { return; }
+        if kind == RefKind::Call && qualifier.is_none() && self.is_local(name) { return; }
         let qualifier = qualifier.map(str::trim).filter(|q| !q.is_empty() && q.len() <= 200);
         let recv_type = qualifier.and_then(|q| self.infer(q))
             .or_else(|| if matches!(kind, RefKind::Implements | RefKind::Extends) && self.cur_node() == 0 {
@@ -291,13 +367,34 @@ impl<'a> Cx<'a> {
         });
     }
 
-    /// Declare generic type parameters (`<T, K extends X>`) in the current scope.
+    /// Declare generic type parameters (`<T, K extends X>`, `T: Bound`, `[T Bound]`) in the current
+    /// scope, remembering each one's first bound so `x: T` can resolve members on the bound.
     pub fn declare_type_params(&mut self, params: Node<'_>) {
         let mut c = params.walk();
-        let names: Vec<String> = params.named_children(&mut c).filter_map(|p| {
-            p.child_by_field_name("name").or_else(|| p.named_child(0)).map(|x| self.text(x).to_string())
-        }).collect();
-        if let Some(s) = self.scopes.last_mut() { for n in names { s.vars.insert(format!("<{n}>"), String::new()); } }
+        let mut decls: Vec<(String, String)> = Vec::new();
+        for p in params.named_children(&mut c) {
+            let Some(name) = p.child_by_field_name("name").or_else(|| p.named_child(0)) else { continue };
+            let bound = p.child_by_field_name("constraint").or_else(|| p.child_by_field_name("bounds"))
+                .or_else(|| p.child_by_field_name("type"))
+                .or_else(|| { let mut c2 = p.walk(); p.named_children(&mut c2).find(|x| x.kind() == "type_bound") })
+                .and_then(|b| first_type_name(self, b)).unwrap_or_default();
+            decls.push((self.text(name).to_string(), bound));
+        }
+        if let Some(s) = self.scopes.last_mut() { for (n, b) in decls { s.vars.insert(format!("<{n}>"), b); } }
+    }
+
+    /// `where T: Bound` / `where T : IBound` — set (or refine) a declared parameter's bound.
+    pub fn bound_type_param(&mut self, param: &str, bound: Node<'_>) {
+        let Some(b) = first_type_name(self, bound) else { return };
+        let key = format!("<{param}>");
+        if let Some(s) = self.scopes.iter_mut().rev().find(|s| s.vars.contains_key(&key)) { s.vars.insert(key, b); }
+        else if let Some(s) = self.scopes.last_mut() { s.vars.insert(key, b); }
+    }
+
+    /// The bound of an in-scope generic parameter, if it has one.
+    pub fn type_param_bound(&self, name: &str) -> Option<&str> {
+        let key = format!("<{name}>");
+        self.scopes.iter().rev().find_map(|s| s.vars.get(&key)).map(String::as_str).filter(|b| !b.is_empty())
     }
 
     /// A type name that refers to an in-scope generic parameter, not a declared type.
@@ -332,10 +429,21 @@ pub fn hooks(lang: Lang) -> &'static dyn LangHooks {
         Lang::C | Lang::Cpp => &c::C,
         Lang::Ruby => &ruby::Ruby,
         Lang::Php => &php::Php,
+        Lang::Vue | Lang::Svelte => &js::Js,
+        Lang::Kotlin => &kotlin::Kotlin,
+        Lang::Swift => &swift::Swift,
+        Lang::Dart => &dart::Dart,
+        Lang::Scala => &scala::Scala,
+        Lang::Lua => &lua::Lua,
     }
 }
 
 pub fn extract(lang: Lang, path: &str, src: &[u8]) -> FileExtraction {
+    if matches!(lang, Lang::Vue | Lang::Svelte) { return sfc::extract(lang, path, src); }
+    extract_src(lang, path, src)
+}
+
+fn extract_src(lang: Lang, path: &str, src: &[u8]) -> FileExtraction {
     let Some(tree) = crate::lang::parse(lang, src) else { return FileExtraction::default() };
     let h = hooks(lang);
     let root = tree.root_node();
@@ -346,7 +454,7 @@ pub fn extract(lang: Lang, path: &str, src: &[u8]) -> FileExtraction {
         start_line: 1, end_line: root.end_position().row as u32 + 1, start_byte: 0,
         end_byte: src.len() as u32, exported: true, signature: None, doc: None, type_hint: None, ext_of: None,
     });
-    cx.scopes.push(Scope { node: 0, kind: NodeKind::File, name: String::new(), vars: HashMap::new(), ret: None });
+    cx.scopes.push(Scope { node: 0, kind: NodeKind::File, name: String::new(), vars: HashMap::new(), ret: None, locals: HashSet::new() });
     if root.has_error() { cx.out.parse_errors = count_errors(root); }
     walk_children(h, root, &mut cx, 0);
     cx.out
@@ -375,10 +483,43 @@ fn walk_children<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, depth: u32
     }
 }
 
+/// String literals are opaque to the hooks, but their interpolations are code:
+/// `${foo()}` (JS, Dart, Kotlin), f"{foo()}" (Python), "#{foo}" (Ruby), $"{Foo()}" (C#),
+/// "\(foo())" (Swift), "{$o->foo()}" (PHP).
+fn is_string_node(k: &str) -> bool {
+    (k.contains("string") && !k.contains("type") && !k.ends_with("_content") && !k.ends_with("_fragment")) || k == "heredoc_body" || k == "heredoc"
+}
+
+fn walk_interpolations<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, depth: u32) {
+    if depth > MAX_DEPTH { return; }
+    let mut c = n.walk();
+    let kids: Vec<Node<'t>> = n.named_children(&mut c).collect();
+    for ch in kids {
+        match ch.kind() {
+            "interpolation" | "template_substitution" | "interpolated_expression" | "raw_str_interpolation" => walk_children(h, ch, cx, depth + 1),
+            k if is_string_node(k) => walk_interpolations(h, ch, cx, depth + 1),
+            "member_call_expression" | "function_call_expression" | "scoped_call_expression" if cx.lang == Lang::Php => walk(h, ch, cx, depth + 1),
+            _ => {}
+        }
+    }
+}
+
 pub fn walk<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, depth: u32) {
+    if is_string_node(n.kind()) { walk_interpolations(h, n, cx, depth); return; }
+    let js_py = cx.lang.family() == Lang::TypeScript.family() || cx.lang == Lang::Python;
     match n.kind() {
         "return_statement" | "return_expression" | "return" => cx.note_return(n),
         "arguments" | "argument_list" => cx.note_callbacks(n),
+        // `[label, formatShell]`, `{ save, load: loadAll }`, `handlers = {"x": on_x}`
+        "array" | "object" | "list" | "dictionary" if js_py => cx.note_callbacks(n),
+        // `this.poll.bind(this)` / `fn.call(ctx)` pass the function
+        "call_expression" if js_py => {
+            if let Some(f) = n.child_by_field_name("function") && f.kind() == "member_expression"
+                && matches!(cx.field_text(f, "property"), Some("bind" | "call" | "apply"))
+                && let Some(o) = f.child_by_field_name("object") { cx.note_value(o); }
+        }
+        // `handler as *const ()` / `f as fn()`
+        "type_cast_expression" if cx.lang == Lang::Rust => { if let Some(v) = n.child_by_field_name("value") { cx.note_value(v); } }
         _ => {}
     }
     match h.visit(n, cx) {
@@ -387,10 +528,20 @@ pub fn walk<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, depth: u32) {
         Visit::Def(d) => {
             if d.name.is_empty() { walk_children(h, n, cx, depth); return; }
             let id = push_def(cx, n, &d);
-            cx.scopes.push(Scope { node: id, kind: d.kind, name: d.name.clone(), vars: HashMap::new(), ret: None });
+            cx.scopes.push(Scope { node: id, kind: d.kind, name: d.name.clone(), vars: HashMap::new(), ret: None, locals: HashSet::new() });
+            if d.kind.is_callable() && shadowing_locals(cx.lang) { declare_params(n, cx); }
             for (k, name) in &d.heritage {
                 let (q, base) = split_qual(name);
                 cx.add_ref(*k, base, q, n);
+            }
+            // generic parameters and their bounds come first: parameter types may refer to them
+            let mut early: Vec<usize> = Vec::new();
+            {
+                let mut c = n.walk();
+                let generics: Vec<Node<'_>> = n.named_children(&mut c)
+                    .filter(|ch| matches!(ch.kind(), "type_parameters" | "type_parameter_list" | "type_parameter_constraints_clause" | "where_clause"))
+                    .collect();
+                for ch in generics { early.push(ch.id()); walk(h, ch, cx, depth + 1); }
             }
             h.after_def(n, cx);
             match d.body {
@@ -398,8 +549,15 @@ pub fn walk<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, depth: u32) {
                     // Walk non-body children too (parameters, decorators, default values).
                     let mut c = n.walk();
                     for ch in n.named_children(&mut c) {
+                        if early.contains(&ch.id()) { continue; }
                         if ch.id() == b.id() { walk(h, ch, cx, depth + 1); }
                         else { walk_aux(h, ch, cx, depth + 1, d.name_node_id(n)); }
+                    }
+                }
+                _ if !early.is_empty() => {
+                    let mut c = n.walk();
+                    for ch in n.named_children(&mut c) {
+                        if !early.contains(&ch.id()) && ch.is_named() { walk(h, ch, cx, depth + 1); }
                     }
                 }
                 _ => walk_children(h, n, cx, depth),
@@ -433,7 +591,7 @@ fn push_def(cx: &mut Cx<'_>, n: Node<'_>, d: &Def<'_>) -> u32 {
         (Some(o), p) => format!("{p}{sep}{o}"),
         (None, p) => p,
     };
-    let qname = if prefix.is_empty() || d.kind == NodeKind::Route { d.name.clone() } else { format!("{prefix}{sep}{}", d.name) };
+    let qname = if prefix.is_empty() || matches!(d.kind, NodeKind::Route | NodeKind::Event) { d.name.clone() } else { format!("{prefix}{sep}{}", d.name) };
     let sig_end = d.body.map(|b| b.start_byte()).unwrap_or(n.end_byte()).min(n.end_byte());
     let sig_start = n.start_byte();
     let signature = if sig_end > sig_start {
@@ -494,6 +652,27 @@ fn leading_doc(cx: &Cx<'_>, n: Node<'_>) -> Option<String> {
 }
 
 // ---------------------------------------------------------------- helpers
+
+/// Languages where a local binding shadows a same-named function for a bare call (`f()`).
+/// Not Java/C#/Kotlin/Ruby/PHP/C: there methods/functions and locals live in separate namespaces.
+fn shadowing_locals(lang: Lang) -> bool {
+    matches!(lang, Lang::Rust | Lang::TypeScript | Lang::Tsx | Lang::JavaScript | Lang::Vue | Lang::Svelte | Lang::Python | Lang::Go | Lang::Lua)
+}
+
+/// Declare a callable's parameters as locals (`fn f(pick: impl Fn())`, `def f(cb)`, `(cb) => cb()`).
+fn declare_params(n: Node<'_>, cx: &mut Cx<'_>) {
+    let ps = n.child_by_field_name("parameters").or_else(|| n.child_by_field_name("signature").and_then(|s| s.child_by_field_name("parameters")));
+    let Some(ps) = ps else { return };
+    let mut c = ps.walk();
+    let names: Vec<String> = ps.named_children(&mut c).filter_map(|p| {
+        let id = if matches!(p.kind(), "identifier" | "shorthand_property_identifier_pattern") { Some(p) } else {
+            p.child_by_field_name("pattern").or_else(|| p.child_by_field_name("name"))
+                .or_else(|| { let mut c2 = p.walk(); p.named_children(&mut c2).find(|x| x.kind() == "identifier") })
+        };
+        id.filter(|x| x.kind() == "identifier").map(|x| cx.text(x).to_string())
+    }).collect();
+    for nm in names { cx.declare_local(&nm); }
+}
 
 pub fn compact_ws(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -590,6 +769,25 @@ pub fn type_ref(t: &str) -> (Option<String>, String) {
     (qual, last.to_string())
 }
 
+/// First non-builtin nominal type mentioned under `n` (skipping `comparable`, `Clone`, …).
+fn first_type_name(cx: &Cx<'_>, n: Node<'_>) -> Option<String> {
+    let mut stack = vec![n];
+    while let Some(x) = stack.pop() {
+        if matches!(x.kind(), "type_identifier" | "identifier" | "scoped_type_identifier" | "qualified_name" | "generic_type") {
+            let t = normalize_type(cx.text(x));
+            if !t.is_empty() && !is_builtin_type(&t) && !matches!(t.as_str(), "comparable" | "any" | "Clone" | "Copy" | "Send" | "Sync"
+                | "Debug" | "Sized" | "Default" | "class" | "struct" | "notnull" | "unmanaged" | "object") {
+                return Some(t);
+            }
+            if x.kind() == "generic_type" { continue; }
+        }
+        let mut c = x.walk();
+        let kids: Vec<_> = x.named_children(&mut c).collect();
+        stack.extend(kids.into_iter().rev());
+    }
+    None
+}
+
 fn is_common_value(name: &str) -> bool {
     matches!(name, "undefined" | "null" | "nil" | "None" | "true" | "false" | "True" | "False" | "self" | "this" | "err" | "ctx" | "req" | "res" | "e" | "i" | "x")
 }
@@ -606,6 +804,15 @@ pub fn http_method(name: &str) -> Option<&'static str> {
         "all" | "any" | "route" | "handle" | "handlefunc" | "match" | "api_route" | "request" | "methods" | "websocket" => "ANY",
         _ => return None,
     })
+}
+
+/// Listener registration / emission method names (`bus.on("x", h)`, `bus.emit("x")`).
+pub fn event_register(name: &str) -> bool {
+    matches!(name, "on" | "once" | "addListener" | "addEventListener" | "prependListener" | "prependOnceListener"
+        | "subscribe" | "add_listener" | "listen" | "addEventHandler")
+}
+pub fn event_emit(name: &str) -> bool {
+    matches!(name, "emit" | "emitAsync" | "trigger" | "dispatch_event" | "publish" | "instrument" | "fire" | "broadcast")
 }
 
 pub fn route_name(method: &str, path: &str) -> String {

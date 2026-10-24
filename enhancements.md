@@ -9,6 +9,56 @@ This document has four parts:
 
 Effort scale: **S** ≈ half a day, **M** ≈ 1–3 days, **L** ≈ a week or more.
 
+## 0. Status after the 2.x / 3.x pass
+
+Every limitation in section 2 and every roadmap item in section 3 is now implemented.
+
+| item | status | where | result |
+|---|---|---|---|
+| 2: event emitters | ✅ | `add_event`, kinds `Event` / `Emit` / `Triggers` | `pay -> order:paid -> ship` flows (fixtures in TS, Python, C#, Ruby) |
+| 2: Django ORM / library types | ✅ via stubs | `resolve/stubs.toml`, `xgraph.stubs.toml` | fixture `py` |
+| 2: C++ templates | ✅ via SCIP import | `src/scip.rs` | — |
+| 2: route prefixes | ✅ | `mounts` table, route renaming | Flask blueprints, FastAPI routers, Express `use`, gin `Group`, chi `Mount` |
+| 2: generic bounds | ✅ | `declare_type_params`, `bound_type_param` | `T: Repo` / `T extends Repo` / `where T : Repo` fixtures |
+| 3.1 accuracy benchmark | ✅ | `bench/` | section 4 |
+| 3.2 SCIP import | ✅ | `src/scip.rs`, confidence 100 | hono recall 79.0 → 84.3%, ripgrep 81.7 → 91.6% |
+| 3.3 agent evaluation | ✅ | `bench/agent/` | section 6 |
+| 3.4 diff-impact / PR mode | ✅ | `src/impact.rs`, `xgraph_diff_impact`, `.github/workflows/pr-impact.yml` | — |
+| 3.5 session-aware explore | ✅ | `explore::Seen`, staleness guard | — |
+| 3.6 framework stubs | ✅ | `resolve/stubs.toml` | — |
+| 3.7 event topics | ✅ | see section 2 row | — |
+| 3.8 analysis views | ✅ | `src/analyze.rs`, viewer Insights tab | — |
+| 3.9 viewer upgrades | ✅ | Routes, Flow (trails, Markdown/Mermaid export), file code view | — |
+| 3.10 shared daemon | ✅ | `src/daemon.rs` (Unix; Windows serves in-process) | — |
+| 3.11 more languages | ✅ | `extract/{kotlin,swift,dart,scala,lua,sfc}.rs` | fixtures + warm-sync equivalence for all seven |
+| 3.12 distribution | ✅ | `release.yml`, `scripts/install.sh`, `xgraph upgrade`, CI on Linux/macOS/Windows | — |
+| 3.13 Claude Code hook | ✅ | `src/hook.rs`, `xgraph install --hooks` | — |
+| 3.14 faster full index | ✅ partly | deferred sync indexes, no FTS prefix indexes, sampled ANALYZE, refidx-driven sync scope | below |
+| 3.15 smaller database | ✅ partly | interned `qualifier` / `recv_type` | below |
+
+**Performance now** (release build, 10 cores, quiet machine):
+
+| | before this pass | now |
+|---|---:|---:|
+| vscode full index | ~14.2 s (busy machine) | **9.8 s** |
+| vscode database | 440 MB | **405 MB** |
+| vscode warm resync, hub file (`lifecycle.ts`, 17k import aliases) | 2.5 s | **1.3 s** |
+| vscode warm resync, ordinary file | 0.5 s | **0.12 s** |
+| django full index / warm resync | 1.0 s / 0.22 s | **0.85 s / 0.15 s** |
+
+(Measured with load average < 1; the earlier 12.6 s figure was taken on a busy machine.)
+
+Not done from 3.14/3.15, with the reason:
+- *FTS from one `INSERT … SELECT`, split writer databases*: FTS is ~1.4 s of the 3.3 s writer;
+  the remaining cost is FTS5's own tokenizing and segment building, which neither change removes.
+- *Drop the FTS `doc` column for symbols without docs*: FTS5 stores a NULL column at near-zero
+  cost, so there is nothing to save.
+- *Unresolved refs as compressed blobs*: every resolve scope reads those rows; this is a resolver
+  redesign, not a storage change.
+
+The hub-file resync is still well above the ~0.45 s recorded before the accuracy work. A hub
+change re-resolves every ref that names one of its 17k import aliases anywhere in the repo.
+
 ---
 
 ## 1. Gaps closed in this pass
@@ -226,11 +276,60 @@ The benchmark also caught several problems in the scorer and the ground truth, a
 | Low-confidence name fallback for unknown receivers is 18% precise on flask and 74% on gin | Python, Go | drop or demote it for those languages, or only allow it when the receiver name matches the owner type |
 | Object-literal keys matching interface members (`{ mkdir: vi.fn() }`) | TS tests | contextual typing of object literals against a declared interface |
 
-## Suggested order
+## 5. Review pass with xgraph itself
 
-1. Agent evaluation (3). The benchmark (1) is done, so the remaining work can now be measured.
-2. Diff-impact (4) and session-aware explore (5): the most direct agent value.
-3. Event topics (7) and route mounting (section 2): finish the framework story.
-4. Shared daemon (10) and distribution (12): needed before wider use.
-5. SCIP import (2) and stubs (6): accuracy ceiling raisers, guided by the benchmark.
-6. Analysis views and viewer upgrades (8, 9), plus more languages (11), as time allows.
+xgraph was used to review its own code and the vscode index. These were found and fixed:
+
+| finding | effect | fix |
+|---|---|---|
+| `Array.isArray` fell through to the unknown-receiver name guess | 2,379 vscode calls bound to an extension's jQuery typings | no name guess when the qualifier is a language builtin (`Array`, `Response`, `HashMap::`, `os.`, …) |
+| Bare calls to local closures/parameters resolved globally | `let pick = \|…\|; pick()` → an unrelated `fn pick` | locals shadow functions in Rust, JS/TS, Python, Go, Lua |
+| Calls inside string interpolation were never extracted | `` `${escape(x)}` ``, f-strings, `#{}` … | interpolations walked in every language |
+| Functions used as values in literals, `.bind`, casts | missing `passes` edges; such code looked dead | value positions noted |
+| `json!({"k": f(x)})` macro bodies dropped | calls inside serde `json!` missing | object keys blanked before the macro re-parse |
+| Dead-code false positives | trait-impl members, `#[cfg]` platform twins, attribute-macro items, names used by unresolved refs | excluded |
+| Resolver panic on vscode | import targets without a file node | guarded |
+| Unresolved value refs never came back incrementally | `app.use(auth)` stayed unlinked after `auth` was defined | `value_names` + targeted re-extraction |
+| Viewer: Graph tab empty until switching tabs | first page drew nothing | default root, ResizeObserver, redesign |
+| Upgrade used a predictable temp path | local archive swap between checksum and extract | private 0700 directory, created exclusively |
+| Long-lived processes kept the replaced database open | after `xgraph index`, a running daemon/viewer served the old file: stale symbols and wrong line ranges until restart | file identity checked per call; graph reopened, resolver cache dropped |
+| The daemon outlived binary upgrades | `cargo install` left the old build serving every session | the daemon exits between calls once its executable is replaced; clients respawn the new one |
+
+Recall rose on four repos (codegraph 92.8 → 93.9, express 86.9 → 89.8, flask 73.8 → 75.7,
+httpx 81.1 → 82.5) with precision unchanged or higher.
+
+## 6. Agent evaluation (roadmap 3.3)
+
+`bench/agent/run.py`: 20 questions over the 7 corpus repos × {baseline: Read/Grep/Glob,
+xgraph: the same + the MCP server} × 2 repeats = 80 headless Claude Code sessions (default
+model, read-only, no user settings). Total spend ≈ $17.
+
+| condition | rubric score | total tokens | uncached input | cost | turns | tool calls | wall |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| baseline | 100% | 138,362 | 15,134 | $0.211 | 8.5 | 7.5 | 37 s |
+| xgraph | 100% | 121,613 | 17,726 | $0.221 | 6.3 | 5.3 | 33 s |
+| **delta** | 0 | **−12%** | +17% | **+5%** | −26% | **−30%** | −10% |
+
+What this shows, and what it doesn't:
+
+- **The rubric saturated.** Both conditions named every required fact in all 80 sessions. These
+  questions don't tell the conditions apart on correctness. They are well-scoped questions with
+  distinctive names that grep finds easily.
+- **Fewer steps, but not cheaper.** xgraph saves 30% of tool calls, 26% of turns, 12% of total
+  tokens and 10% of wall time, yet costs 5% more. The savings are in cheap cache reads. Explore
+  output arrives as uncached input, and the MCP tools load lazily (33 `ToolSearch` calls, an extra
+  round trip per session).
+- **It pays off with repository size.** On codegraph (1.2k files) xgraph is cheaper on every
+  task: `cg-index-flow` $0.75 → $0.56 with half the tool calls (22 → 11), `cg-watcher` $0.34 →
+  $0.21. On the small repos (express, flask, gin: 80–140 files) baseline is usually cheaper.
+- **The agent doesn't rely on xgraph alone.** In the xgraph sessions: 45 explore calls, 80 `Read`
+  and 54 `Grep`. Often it explores, then re-reads the same code anyway.
+
+The token-efficiency claim holds for tool calls and large repos. On small repos it does not hold
+for cost. Next steps, each measurable with the harness:
+
+1. Size explore's budget to the repository: small repos get small answers.
+2. Make the answer self-sufficient enough that the follow-up `Read` isn't needed (or say so).
+3. List `xgraph_explore` eagerly instead of behind `ToolSearch`.
+4. Harder tasks, where grep struggles: cross-file dispatch, callers through interfaces, impact
+   on large repos (vscode, django). Grade with an LLM judge as well as the keyword rubric.

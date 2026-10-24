@@ -154,19 +154,50 @@ impl Js {
         for (m, path, d) in routes { cx.add_route(m, &join_route(&prefix, &path), d, Some((Some("this"), method_name))); }
     }
 
+    /// `bus.on("user:created", handler)` → event node (inline handler is its scope);
+    /// `bus.emit("user:created")` / `el.dispatchEvent(new Event("x"))` → emit site.
+    fn event_call<'t>(&self, n: Node<'t>, cx: &mut Cx<'_>) -> Option<Visit<'t>> {
+        let f = n.child_by_field_name("function").filter(|f| f.kind() == "member_expression")?;
+        let prop = cx.field_text(f, "property")?;
+        let args = n.child_by_field_name("arguments")?;
+        let first = args.named_child(0)?;
+        if event_register(prop) && args.named_child_count() >= 2 && let Some(name) = string_lit(cx, first).filter(|s| !s.is_empty() && !s.starts_with('/')) {
+            let obj = f.child_by_field_name("object").map(|o| cx.text(o));
+            cx.add_ref(RefKind::Call, prop, obj, f);
+            let last = args.named_child(args.named_child_count() - 1).filter(|l| is_fn_value(l.kind()));
+            return Some(Visit::Def(Def::new(NodeKind::Event, name).body(last.and_then(|l| l.child_by_field_name("body")))));
+        }
+        let emitted = if event_emit(prop) { string_lit(cx, first) }
+            else if prop == "dispatchEvent" && first.kind() == "new_expression" {
+                // dispatchEvent(new CustomEvent("x", ...))
+                first.child_by_field_name("arguments").and_then(|a| a.named_child(0)).and_then(|a| string_lit(cx, a))
+            } else { None };
+        if let Some(name) = emitted.filter(|s| !s.is_empty()) { cx.add_ref(RefKind::Emit, &name, None, first); }
+        None
+    }
+
     /// Express / Koa / Fastify / Hono style `app.get('/x', auth, handler)` — the route becomes the scope of an inline handler.
     fn call_route<'t>(&self, n: Node<'t>, cx: &mut Cx<'_>) -> Option<Visit<'t>> {
         let f = n.child_by_field_name("function").filter(|f| f.kind() == "member_expression")?;
         let prop = cx.field_text(f, "property")?;
-        let method = http_method(prop)?;
         let args = n.child_by_field_name("arguments")?;
+        // mounts: app.use("/api", router) (Express/Koa), app.route("/books", books) (Hono)
+        if matches!(prop, "use" | "route" | "register" | "mount") && args.named_child_count() >= 2
+            && let Some(p) = args.named_child(0).and_then(|a| string_lit(cx, a)).filter(|p| p.starts_with('/'))
+            && let Some(child) = args.named_child(args.named_child_count() - 1).filter(|c| matches!(c.kind(), "identifier" | "member_expression"))
+            && let Some(obj) = f.child_by_field_name("object") {
+            let (o, c) = (cx.text(obj).to_string(), cx.text(child).to_string());
+            cx.add_mount(&o, &c, &p, n);
+            return None;
+        }
+        let method = http_method(prop)?;
         let path = args.named_child(0).and_then(|a| string_lit(cx, a)).filter(|p| p.starts_with('/') || p == "*")?;
         if args.named_child_count() < 2 { return None; }
         // the registration is still a call (`router.get` → Router.get)
         let obj = f.child_by_field_name("object").map(|o| cx.text(o));
         cx.add_ref(RefKind::Call, prop, obj, f);
         let last = args.named_child(args.named_child_count() - 1).filter(|l| is_fn_value(l.kind()));
-        Some(Visit::Def(Def::new(NodeKind::Route, route_name(method, &path)).body(last.and_then(|l| l.child_by_field_name("body")))))
+        Some(Visit::Def(cx.route_def(obj, method, &path, last.and_then(|l| l.child_by_field_name("body")))))
     }
 }
 
@@ -240,7 +271,8 @@ impl LangHooks for Js {
                 let name = cx.field_text(n, "name").unwrap_or("");
                 if n.kind() == "method_definition" { self.decorator_routes(n, cx, name); }
                 let ctor = name == "constructor";
-                let kind = if ctor { NodeKind::Constructor } else { NodeKind::Method };
+                let accessor = { let mut c = n.walk(); n.children(&mut c).any(|ch| !ch.is_named() && matches!(ch.kind(), "get" | "set")) };
+                let kind = if ctor { NodeKind::Constructor } else if accessor { NodeKind::Property } else { NodeKind::Method };
                 let private = name.starts_with('#') || cx.text(n).starts_with("private ");
                 let rt = cx.field_text(n, "return_type").map(|t| t.trim_start_matches(':').trim().to_string());
                 Visit::Def(Def::new(kind, name).body(n.child_by_field_name("body")).exported(!private).hint(rt))
@@ -262,6 +294,8 @@ impl LangHooks for Js {
             "variable_declarator" => {
                 let Some(nm) = n.child_by_field_name("name") else { return Visit::Continue };
                 let value = n.child_by_field_name("value");
+                // function-valued locals become nodes of their own; other locals shadow outer names
+                if nm.kind() == "identifier" && !value.is_some_and(|v| is_fn_value(v.kind())) { let l = cx.text(nm).to_string(); cx.declare_local(&l); }
                 // require(): const x = require("m") / const {a, b} = require("m")
                 if let Some(v) = value && v.kind() == "call_expression"
                     && v.child_by_field_name("function").is_some_and(|f| cx.text(f) == "require")
@@ -320,6 +354,13 @@ impl LangHooks for Js {
                 }
             }
             "arrow_function" | "function_expression" | "function" => { self.params(n, cx, false); Visit::Continue }
+            "assignment_expression" if n.child_by_field_name("left").is_some_and(|l| cx.text(l) == "module.exports")
+                && n.child_by_field_name("right").is_some_and(|r| r.kind() == "identifier") => {
+                // CommonJS `module.exports = router`
+                let r = n.child_by_field_name("right").unwrap();
+                cx.add_import(ImportKind::ReExport, "", cx.text(r), "default", n);
+                Visit::Continue
+            }
             "assignment_expression" => {
                 // this.x = new Foo()  → field type fact
                 if let (Some(l), Some(r)) = (n.child_by_field_name("left"), n.child_by_field_name("right"))
@@ -337,12 +378,18 @@ impl LangHooks for Js {
             }
             "import_statement" => { self.import(n, cx); Visit::Skip }
             "export_statement" => {
+                // `export default router` — the default export is a local binding
+                if let Some(v) = n.child_by_field_name("value") && v.kind() == "identifier" {
+                    cx.add_import(ImportKind::ReExport, "", cx.text(v), "default", n);
+                    return Visit::Skip;
+                }
                 if n.child_by_field_name("declaration").is_none() && n.child_by_field_name("value").is_none() && self.export(n, cx) {
                     return Visit::Skip;
                 }
                 Visit::Continue
             }
             "call_expression" => {
+                if let Some(d) = self.event_call(n, cx) { return d; }
                 if let Some(d) = self.call_route(n, cx) { return d; }
                 if let Some(f) = n.child_by_field_name("function") {
                     if f.kind() == "import" {
@@ -352,6 +399,19 @@ impl LangHooks for Js {
                         let q = q.map(short_qual);
                         cx.add_ref(RefKind::Call, name, q, f);
                     }
+                }
+                Visit::Continue
+            }
+            // `obj.prop` read (not a call target / assignment target): links to getters & properties
+            "member_expression" => {
+                let parent = n.parent();
+                let is_callee = parent.is_some_and(|p| p.kind() == "call_expression" && p.child_by_field_name("function").is_some_and(|f| f.id() == n.id()));
+                let is_target = parent.is_some_and(|p| matches!(p.kind(), "assignment_expression" | "augmented_assignment_expression") && p.child_by_field_name("left").is_some_and(|l| l.id() == n.id()));
+                let is_new = parent.is_some_and(|p| p.kind() == "new_expression");
+                if !is_callee && !is_target && !is_new
+                    && let (Some(o), Some(prop)) = (n.child_by_field_name("object"), n.child_by_field_name("property")) {
+                    let (o, name) = (cx.text(o), cx.text(prop));
+                    cx.add_ref(RefKind::Read, name, Some(short_qual(o)), prop);
                 }
                 Visit::Continue
             }

@@ -84,13 +84,70 @@ fn api(g: &Graph, path: &str, q: &HashMap<String, String>) -> Result<Value> {
                    "dependents": g.file_dependents(&p)?, "dependencies": g.file_dependencies(&p)?})
         }
         "/api/modules" => modules(g, q.get("depth").and_then(|d| d.parse().ok()).unwrap_or(2))?,
+        "/api/routes" => {
+            let mut st = g.db.conn.prepare(
+                "SELECT n.id, n.name, f.path, n.start_line,
+                        (SELECT group_concat(t.qname, ', ') FROM refs r JOIN nodes t ON t.id = r.target_id
+                          WHERE r.src_id = n.id AND r.kind IN (0, 7, 10)) AS handlers
+                 FROM nodes n JOIN files f ON f.id = n.file_id WHERE n.kind = 19 ORDER BY f.is_test, n.name LIMIT 5000")?;
+            let rows = st.query_map([], |r| Ok(json!({"id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "path": r.get::<_, String>(2)?,
+                "line": r.get::<_, i64>(3)?, "handlers": r.get::<_, Option<String>>(4)?})))?;
+            json!(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        }
+        "/api/filecode" => {
+            let p = q.get("path").cloned().unwrap_or_default();
+            let Some(p) = g.match_path(&p)? else { return Ok(json!({"error": "unknown file"})) };
+            let src = g.read_source(&p).unwrap_or_default();
+            let mut st = g.db.conn.prepare(
+                "SELECT r.line, r.col, r.name, r.kind, r.target_id, t.qname FROM refs r JOIN files f ON f.id = r.file_id
+                 JOIN nodes t ON t.id = r.target_id WHERE f.path = ? AND r.kind NOT IN (8, 11) ORDER BY r.line, r.col")?;
+            let refs: Vec<Value> = st.query_map([&p], |r| Ok(json!({"line": r.get::<_, i64>(0)?, "col": r.get::<_, i64>(1)?, "name": r.get::<_, String>(2)?,
+                "kind": RefKind::from_i64(r.get(3)?), "target": r.get::<_, i64>(4)?, "qname": r.get::<_, String>(5)?})))?.collect::<rusqlite::Result<_>>()?;
+            json!({"path": p, "lines": src.lines().collect::<Vec<_>>(), "refs": refs})
+        }
         "/api/flow" => {
             let from = g.find_symbols(q.get("from").map(String::as_str).unwrap_or(""), None, 6)?;
             let to = g.find_symbols(q.get("to").map(String::as_str).unwrap_or(""), None, 6)?;
             json!({"path": flow(g, &from, &to)?.iter().map(sym_json).collect::<Vec<_>>()})
         }
-        "/api/explore" => json!({"text": g.explore(q.get("q").map(String::as_str).unwrap_or(""), &Default::default())?}),
-        _ => json!({"error": "unknown endpoint", "endpoints": ["/api/stats", "/api/search?q", "/api/node?id", "/api/graph?id&depth", "/api/source?path&from&to", "/api/file?path", "/api/modules?depth", "/api/flow?from&to", "/api/explore?q"]}),
+        "/api/analyze" => {
+            let what = q.get("what").map(String::as_str).unwrap_or("hotspots");
+            let lim = limit.max(50);
+            match what {
+                "dead" => serde_json::to_value(g.dead_code(q.get("exported").is_some_and(|v| v == "1"), lim)?)?,
+                "cycles" => serde_json::to_value(g.cycles(lim)?)?,
+                "entry" => json!(g.entry_points(lim)?.iter().map(|(w, s)| json!({"why": w, "sym": sym_json(s)})).collect::<Vec<_>>()),
+                _ => json!(g.hotspots(lim)?.iter().map(|h| json!({"sym": sym_json(&h.symbol), "fan_in": h.fan_in, "lines": h.lines, "churn": h.churn, "score": h.score})).collect::<Vec<_>>()),
+            }
+        }
+        "/api/explore" => {
+            let mut opts = crate::explore::Opts::default();
+            if let Some(b) = q.get("budget").and_then(|b| b.parse::<usize>().ok()) { opts.max_chars = b.clamp(500, 40_000) * 4; }
+            json!({"text": g.explore(q.get("q").map(String::as_str).unwrap_or(""), &opts)?})
+        }
+        "/api/start" => {
+            // A good first graph: among the hot spots, the function with the most balanced mix of
+            // callers and callees (a tiny helper called from everywhere makes a one-sided hairball).
+            let mut fo = g.db.conn.prepare_cached("SELECT COUNT(DISTINCT target_id) FROM refs WHERE (src_id = ?1 OR src_owner_id = ?1) AND target_id IS NOT NULL AND kind IN (0, 1, 7)")?;
+            let mut best: Option<(f64, i64)> = None;
+            for h in g.hotspots(120)? {
+                if !matches!(h.symbol.kind, NodeKind::Function | NodeKind::Method) || h.symbol.is_test { continue; }
+                let out: i64 = fo.query_row([h.symbol.id], |r| r.get(0))?;
+                let score = (h.fan_in.min(30) as f64).sqrt() * (out.min(30) as f64).sqrt();
+                if best.is_none_or(|(b, _)| score > b) { best = Some((score, h.symbol.id)); }
+            }
+            json!({"id": best.map(|(_, id)| id)})
+        }
+        "/api/dir" => {
+            // files under a directory prefix, largest first
+            let dir = q.get("path").map(|p| p.trim_matches('/').to_string()).unwrap_or_default();
+            let pat = if dir.is_empty() || dir == "(root)" { "%".to_string() } else { format!("{}/%", dir.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")) };
+            let mut st = g.db.conn.prepare("SELECT path, node_count - 1, lang, is_test FROM files WHERE path LIKE ? ESCAPE '\\' ORDER BY node_count DESC LIMIT 400")?;
+            let rows = st.query_map([&pat], |r| Ok(json!({"path": r.get::<_, String>(0)?, "symbols": r.get::<_, i64>(1)?,
+                "lang": crate::model::Lang::from_i64(r.get(2)?).map(|l| l.as_str()).unwrap_or(""), "test": r.get::<_, bool>(3)?})))?;
+            json!({"path": dir, "files": rows.collect::<rusqlite::Result<Vec<_>>>()?})
+        }
+        _ => json!({"error": "unknown endpoint", "endpoints": ["/api/stats", "/api/search?q", "/api/node?id", "/api/graph?id&depth", "/api/source?path&from&to", "/api/file?path", "/api/modules?depth", "/api/flow?from&to", "/api/explore?q", "/api/routes", "/api/filecode?path", "/api/analyze?what"]}),
     })
 }
 
@@ -185,7 +242,7 @@ fn flow(g: &Graph, from: &[Sym], to: &[Sym]) -> Result<Vec<Sym>> {
 }
 
 pub fn serve(root: &Path, port: u16, open: bool) -> Result<()> {
-    let g = Graph::open(root)?;
+    let mut g = Graph::open(root)?;
     let server = tiny_http::Server::http(("127.0.0.1", port)).map_err(|e| anyhow::anyhow!("cannot bind 127.0.0.1:{port}: {e}"))?;
     let url = format!("http://127.0.0.1:{port}/");
     eprintln!("xgraph viewer for {} at {url}", root.display());
@@ -203,6 +260,7 @@ pub fn serve(root: &Path, port: u16, open: bool) -> Result<()> {
         let resp = if path == "/" || path == "/index.html" {
             tiny_http::Response::from_string(INDEX_HTML).with_header(hdr("Content-Type", "text/html; charset=utf-8"))
         } else if path.starts_with("/api/") {
+            if g.is_replaced() && let Ok(n) = Graph::open(root) { g = n; } // re-indexed meanwhile
             let body = match api(&g, &path, &qs(&url)) { Ok(v) => v.to_string(), Err(e) => json!({"error": format!("{e:#}")}).to_string() };
             tiny_http::Response::from_string(body).with_header(hdr("Content-Type", "application/json"))
         } else {
@@ -218,4 +276,66 @@ fn hdr(k: &str, v: &str) -> tiny_http::Header { tiny_http::Header::from_bytes(k.
 fn open_browser(url: &str) {
     let cmd = if cfg!(target_os = "macos") { "open" } else if cfg!(windows) { "explorer" } else { "xdg-open" };
     let _ = std::process::Command::new(cmd).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> (std::path::PathBuf, Graph) {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ts");
+        let dir = std::env::temp_dir().join(format!("xgraph-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        fn copy(a: &Path, b: &Path) {
+            std::fs::create_dir_all(b).unwrap();
+            for e in std::fs::read_dir(a).unwrap() {
+                let e = e.unwrap();
+                if e.file_type().unwrap().is_dir() { copy(&e.path(), &b.join(e.file_name())); } else { std::fs::copy(e.path(), b.join(e.file_name())).unwrap(); }
+            }
+        }
+        copy(&src, &dir);
+        crate::index::full_index(&dir, |_, _| {}).unwrap();
+        let g = Graph::open(&dir).unwrap();
+        (dir, g)
+    }
+
+    fn call(g: &Graph, path: &str, q: &[(&str, &str)]) -> Value {
+        let q: HashMap<String, String> = q.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let v = api(g, path, &q).unwrap_or_else(|e| panic!("{path}: {e:#}"));
+        assert!(v.get("error").is_none(), "{path} returned {v}");
+        v
+    }
+
+    /// Every endpoint the viewer uses answers without an error on a real index.
+    #[test]
+    fn endpoints() {
+        let (dir, g) = fixture();
+        assert!(call(&g, "/api/stats", &[])["symbols"].as_u64().unwrap() > 10);
+        let hits = call(&g, "/api/search", &[("q", "UserService"), ("limit", "5")]);
+        let id = hits[0]["id"].as_i64().expect("search finds UserService").to_string();
+        let node = call(&g, "/api/node", &[("id", &id)]);
+        let path = node["sym"]["path"].as_str().unwrap().to_string();
+        assert!(call(&g, "/api/graph", &[("id", &id), ("depth", "2")])["nodes"].as_array().unwrap().len() > 1);
+        assert!(!call(&g, "/api/source", &[("path", &path), ("from", "1"), ("to", "5")])["lines"].as_array().unwrap().is_empty());
+        call(&g, "/api/file", &[("path", &path)]);
+        assert!(!call(&g, "/api/filecode", &[("path", &path)])["refs"].as_array().unwrap().is_empty());
+        assert!(!call(&g, "/api/modules", &[("depth", "2")])["modules"].as_array().unwrap().is_empty());
+        assert!(!call(&g, "/api/routes", &[]).as_array().unwrap().is_empty());
+        assert!(!call(&g, "/api/flow", &[("from", "UserService.getUser"), ("to", "Database.query")])["path"].as_array().unwrap().is_empty());
+        for what in ["hotspots", "entry", "dead", "cycles"] { call(&g, "/api/analyze", &[("what", what)]); }
+        assert!(call(&g, "/api/explore", &[("q", "how does getUser work"), ("budget", "800")])["text"].as_str().unwrap().contains("getUser"));
+        assert!(call(&g, "/api/start", &[])["id"].as_i64().is_some(), "a default graph root exists");
+        assert!(!call(&g, "/api/dir", &[("path", "src")])["files"].as_array().unwrap().is_empty());
+        // `_` and `%` in a directory name are literal, not LIKE wildcards
+        assert!(call(&g, "/api/dir", &[("path", "s_c")])["files"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn query_decoding() {
+        let q = qs("/api/search?q=a%20b+c&limit=5&x");
+        assert_eq!(q["q"], "a b c");
+        assert_eq!(q["limit"], "5");
+        assert_eq!(q["x"], "");
+    }
 }

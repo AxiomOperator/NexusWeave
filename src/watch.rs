@@ -13,7 +13,8 @@ const DEBOUNCE: Duration = Duration::from_millis(300);
 
 struct State {
     root: PathBuf,
-    pending: Mutex<(HashSet<String>, bool)>,
+    /// (changed paths, reconcile whole tree, module config changed → re-resolve everything)
+    pending: Mutex<(HashSet<String>, bool, bool)>,
     /// Held while syncing; keeps resolver tables warm between syncs.
     syncing: Mutex<Option<crate::resolve::Cache>>,
 }
@@ -21,7 +22,7 @@ struct State {
 /// Files whose change alters module resolution: drop the warm resolver state.
 fn is_config(rel: &str) -> bool {
     let f = rel.rsplit('/').next().unwrap_or(rel);
-    matches!(f, "package.json" | "go.mod" | "Cargo.toml" | "compile_commands.json" | "jsconfig.json" | "pnpm-workspace.yaml")
+    matches!(f, "package.json" | "go.mod" | "Cargo.toml" | "compile_commands.json" | "jsconfig.json" | "pnpm-workspace.yaml" | "xgraph.stubs.toml" | "stubs.toml" | "index.scip")
         || f.starts_with("tsconfig") && f.ends_with(".json")
 }
 
@@ -33,13 +34,20 @@ pub struct Watcher {
 impl State {
     fn run(&self) -> Option<Stats> {
         let mut cache = self.syncing.lock().unwrap();
-        let (paths, full) = {
+        let (paths, full, config) = {
             let mut p = self.pending.lock().unwrap();
-            let out = (std::mem::take(&mut p.0), p.1);
+            let out = (std::mem::take(&mut p.0), p.1, p.2);
             p.1 = false;
+            p.2 = false;
             out
         };
-        if paths.is_empty() && !full { return None; }
+        if paths.is_empty() && !full && !config { return None; }
+        if config {
+            // imports may now resolve differently everywhere: sync files, then re-resolve all refs
+            *cache = None;
+            let r = index::sync_with(&self.root, None, None).and_then(|_| index::reresolve(&self.root));
+            return match r { Ok(st) => Some(st), Err(e) => { eprintln!("xgraph: re-resolve failed: {e:#}"); None } };
+        }
         let r = if full { index::sync_with(&self.root, None, Some(&mut cache)) } else {
             let v: Vec<String> = paths.into_iter().collect();
             index::sync_with(&self.root, Some(&v), Some(&mut cache))
@@ -58,7 +66,7 @@ impl Watcher {
 }
 
 pub fn start(root: &Path, on_sync: impl Fn(&Stats) + Send + 'static) -> Result<Watcher> {
-    let state = Arc::new(State { root: root.to_path_buf(), pending: Mutex::new((HashSet::new(), false)), syncing: Mutex::new(None) });
+    let state = Arc::new(State { root: root.to_path_buf(), pending: Mutex::new((HashSet::new(), false, false)), syncing: Mutex::new(None) });
     let st2 = state.clone();
     let root2 = root.to_path_buf();
     let mut deb = new_debouncer(DEBOUNCE, None, move |res: DebounceEventResult| {
@@ -72,9 +80,7 @@ pub fn start(root: &Path, on_sync: impl Fn(&Stats) + Send + 'static) -> Result<W
                     let Ok(rel) = path.strip_prefix(&root2) else { continue };
                     let rel = rel.to_string_lossy().replace('\\', "/");
                     if is_config(&rel) {
-                        // module resolution changed: reconcile everything with fresh resolver state
-                        *st2.syncing.lock().unwrap() = None;
-                        p.1 = true; any = true;
+                        p.2 = true; any = true;
                         continue;
                     }
                     if index::excluded(&root2, &rel) { continue; }

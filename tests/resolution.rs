@@ -57,3 +57,10 @@ fn check(lang: &str) {
 #[test] fn cpp() { check("cpp"); }
 #[test] fn ruby() { check("ruby"); }
 #[test] fn php() { check("php"); }
+#[test] fn kotlin() { check("kotlin"); }
+#[test] fn swift() { check("swift"); }
+#[test] fn dart() { check("dart"); }
+#[test] fn scala() { check("scala"); }
+#[test] fn lua() { check("lua"); }
+#[test] fn vue() { check("vue"); }
+#[test] fn svelte() { check("svelte"); }

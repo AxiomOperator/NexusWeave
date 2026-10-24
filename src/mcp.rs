@@ -20,13 +20,15 @@ Use `xgraph_explore` FIRST for almost any code question or before editing — in
 - Include a file path (optionally `path:10-40`) to read that file region in the same call.
 - Results are lexical+graph ranked, not semantic: if a name is reported as not in the index, try a different identifier.
 - Trust the returned source; it is read from disk at call time. Don't re-read the same ranges.
-Use `xgraph_node` to read one symbol (source + callers + callees) or a file with line numbers. If a project has no index, fall back to your normal tools — don't run `xgraph init` yourself unless asked.";
+- Source already sent earlier in this session comes back as a short \"already shown\" pointer (only while the file is unchanged); pass `fresh: true` if you need it again.
+Use `xgraph_node` to read one symbol (source + callers + callees) or a file with line numbers.
+Use `xgraph_diff_impact` after making changes (or when reviewing a branch) to see what they affect and which tests to run. If a project has no index, fall back to your normal tools — don't run `xgraph init` yourself unless asked.";
 
 fn tool_defs() -> Vec<Value> {
     let pp = json!({"type": "string", "description": "Absolute path of the project to query (defaults to the server's project)."});
     vec![
         json!({"name": "xgraph_explore", "description": "Answer a code question in one call: the relevant symbols' verbatim line-numbered source grouped by file, the call path among symbols you name, and a blast-radius summary of dependents. Use for 'how does X work', 'how does X reach Y', surveying an area, or before editing. Name files (optionally path:start-end) or symbols in the query to read them.",
-            "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "Question or identifiers, e.g. 'how does UserService.login validate the token'"}, "budget": {"type": "integer", "description": "Approximate output size in tokens (default scales with repo size)"}, "projectPath": pp}, "required": ["query"]}}),
+            "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "Question or identifiers, e.g. 'how does UserService.login validate the token'"}, "budget": {"type": "integer", "description": "Approximate output size in tokens (default scales with repo size)"}, "fresh": {"type": "boolean", "description": "Re-send source already shown earlier in this session (e.g. after context was compacted)"}, "projectPath": pp}, "required": ["query"]}}),
         json!({"name": "xgraph_node", "description": "One symbol's source, signature, callers and callees — or, given a file path, the file's line-numbered contents and outline.",
             "inputSchema": {"type": "object", "properties": {"symbol": {"type": "string", "description": "Symbol name (qualified ok: Class.method, mod::fn) or a file path"}, "file": {"type": "string", "description": "Disambiguate by file"}, "includeCode": {"type": "boolean", "default": true}, "offset": {"type": "integer", "description": "File mode: first line (1-based)"}, "limit": {"type": "integer", "description": "File mode: number of lines"}, "projectPath": pp}, "required": ["symbol"]}}),
         json!({"name": "xgraph_search", "description": "Find symbols by name or keywords. Returns kind, qualified name and location.",
@@ -39,6 +41,10 @@ fn tool_defs() -> Vec<Value> {
             "inputSchema": {"type": "object", "properties": {"symbol": {"type": "string"}, "file": {"type": "string"}, "depth": {"type": "integer", "default": 2}, "projectPath": pp}, "required": ["symbol"]}}),
         json!({"name": "xgraph_files", "description": "List indexed files under a directory prefix with symbol counts.",
             "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "projectPath": pp}}}),
+        json!({"name": "xgraph_diff_impact", "description": "Before committing or reviewing: which symbols the current change (git diff against `base`, default HEAD) touches, who calls them, the HTTP routes whose flows reach them, and the tests to run.",
+            "inputSchema": {"type": "object", "properties": {"base": {"type": "string", "description": "git ref to diff against (default HEAD = all uncommitted changes)"}, "depth": {"type": "integer", "default": 2}, "projectPath": pp}}}),
+        json!({"name": "xgraph_analyze", "description": "Whole-codebase analysis: `dead` (unreferenced code), `cycles` (import cycles), `entry` (routes, listeners, mains, package APIs), `hotspots` (fan-in × size × recent churn).",
+            "inputSchema": {"type": "object", "properties": {"what": {"type": "string", "enum": ["dead", "cycles", "entry", "hotspots"]}, "limit": {"type": "integer", "default": 50}, "projectPath": pp}, "required": ["what"]}}),
         json!({"name": "xgraph_status", "description": "Index statistics and freshness.",
             "inputSchema": {"type": "object", "properties": {"projectPath": pp}}}),
     ]
@@ -48,34 +54,61 @@ fn enabled_tools() -> Vec<String> {
     match std::env::var("XGRAPH_MCP_TOOLS") {
         Ok(v) if v.trim() == "all" => tool_defs().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect(),
         Ok(v) => v.split(',').map(|s| { let s = s.trim(); if s.starts_with("xgraph_") { s.to_string() } else { format!("xgraph_{s}") } }).collect(),
-        Err(_) => vec!["xgraph_explore".into(), "xgraph_node".into()],
+        Err(_) => vec!["xgraph_explore".into(), "xgraph_node".into(), "xgraph_diff_impact".into()],
     }
 }
 
-struct Server {
+/// Answers tool calls. Used in-process by `serve`, and by the shared daemon for many sessions.
+pub struct Server {
     default_root: Option<PathBuf>,
+    /// per (session, project) memory of what explore already sent
+    seen: HashMap<(u64, PathBuf), std::sync::Arc<std::sync::Mutex<crate::explore::Seen>>>,
     graphs: HashMap<PathBuf, Graph>,
-    _watcher: Option<crate::watch::Watcher>,
+    pub watcher: Option<crate::watch::Watcher>,
 }
 
 impl Server {
+    pub fn new(default_root: Option<PathBuf>, watcher: Option<crate::watch::Watcher>) -> Server {
+        Server { default_root, seen: HashMap::new(), graphs: HashMap::new(), watcher }
+    }
+
+    /// Forget a session's explore memory (its client disconnected).
+    pub fn end_session(&mut self, session: u64) { self.seen.retain(|(s, _), _| *s != session); }
+
+    /// Run one tool call for `session` (watcher changes are applied first); returns (text, is_error).
+    pub fn handle(&mut self, session: u64, name: &str, args: &Value) -> (String, bool) {
+        if let Some(w) = &self.watcher { w.flush(); }
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.call(session, name, args))) {
+            Ok(Ok(t)) => (t, false),
+            Ok(Err(e)) => (format!("{e:#}"), true),
+            Err(_) => ("internal error while answering; please retry or use built-in tools".to_string(), true),
+        }
+    }
+
     fn graph(&mut self, project: Option<&str>) -> Result<&Graph> {
         let root = match project {
             Some(p) => find_root(Path::new(p)).ok_or_else(|| anyhow!("{p} has no xgraph index. Use your built-in tools for that project."))?,
             None => self.default_root.clone().ok_or_else(|| anyhow!("This workspace has no xgraph index. Pass projectPath for an indexed project, or use your built-in tools."))?,
         };
-        if !self.graphs.contains_key(&root) { self.graphs.insert(root.clone(), Graph::open(&root)?); }
+        if self.graphs.get(&root).is_none_or(Graph::is_replaced) {
+            self.graphs.insert(root.clone(), Graph::open(&root)?);
+            self.seen.retain(|(_, r), _| *r != root); // line numbers in what was sent may have moved
+        }
         Ok(&self.graphs[&root])
     }
 
-    fn call(&mut self, name: &str, a: &Value) -> Result<String> {
+    fn call(&mut self, session: u64, name: &str, a: &Value) -> Result<String> {
         let s = |k: &str| a.get(k).and_then(Value::as_str);
         let n = |k: &str| a.get(k).and_then(Value::as_u64);
+        let dedup = std::env::var("XGRAPH_EXPLORE_DEDUP").map(|v| v != "0").unwrap_or(true)
+            && !a.get("fresh").and_then(Value::as_bool).unwrap_or(false);
+        let root = self.graph(s("projectPath"))?.root.clone();
+        let seen = dedup.then(|| self.seen.entry((session, root)).or_default().clone());
         let g = self.graph(s("projectPath"))?;
         let out = match name {
             "xgraph_explore" => {
                 let q = s("query").ok_or_else(|| anyhow!("query is required"))?;
-                g.explore(q, &Opts { max_chars: n("budget").map(|t| t as usize * 4).unwrap_or(0), ..Default::default() })?
+                g.explore(q, &Opts { max_chars: n("budget").map(|t| t as usize * 4).unwrap_or(0), seen, ..Default::default() })?
             }
             "xgraph_node" => node_text(g, s("symbol").or(s("file")).unwrap_or(""), s("file"), a.get("includeCode").and_then(Value::as_bool).unwrap_or(true), n("offset").map(|x| x as u32), n("limit").map(|x| x as u32))?,
             "xgraph_search" => {
@@ -108,7 +141,7 @@ impl Server {
                 let v = g.impact(&ids, n("depth").unwrap_or(2).clamp(1, 8) as u32, 600)?;
                 let mut by_file: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
                 for (x, d) in &v { by_file.entry(&x.path).or_default().push(format!("{}:{}{}", x.name, x.start_line, if *d > 1 { format!(" (d{d})") } else { String::new() })); }
-                let mut o = format!("**Impact of `{}`** — {} dependents in {} files\n", s("symbol").unwrap_or(""), v.len(), by_file.len());
+                let mut o = format!("**Impact of `{}`** — {} in {}\n", s("symbol").unwrap_or(""), crate::count(v.len(), "dependent"), crate::count(by_file.len(), "file"));
                 for (f, xs) in by_file { let _ = writeln!(o, "- {f}: {}", xs.join(", ")); }
                 o
             }
@@ -119,6 +152,11 @@ impl Server {
                 for r in st.query_map([pat], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? { let (p, c) = r?; let _ = writeln!(o, "{p} ({})", c - 1); }
                 o
             }
+            "xgraph_diff_impact" => {
+                let diff = crate::impact::git_diff(&g.root, s("base").unwrap_or("HEAD"), false)?;
+                crate::impact::render(&g.diff_impact(&diff, n("depth").unwrap_or(2).clamp(1, 6) as u32)?)
+            }
+            "xgraph_analyze" => crate::analyze::render(g, s("what").unwrap_or("hotspots"), n("limit").unwrap_or(50).min(500) as usize, false)?,
             "xgraph_status" => serde_json::to_string_pretty(&g.status()?)?,
             _ => return Err(anyhow!("unknown tool {name}")),
         };
@@ -151,7 +189,7 @@ pub fn node_text(g: &Graph, target: &str, file: Option<&str>, code: bool, offset
             for ln in start..=end { let _ = writeln!(o, "{ln}\t{}", lines[ln as usize - 1]); }
             let deps = g.file_dependents(&p)?;
             if !deps.is_empty() {
-                let _ = writeln!(o, "\nDepended on by {} files: {}{}", deps.len(), deps.iter().take(8).cloned().collect::<Vec<_>>().join(", "), if deps.len() > 8 { " …" } else { "" });
+                let _ = writeln!(o, "\nDepended on by {}: {}{}", crate::count(deps.len(), "file"), deps.iter().take(8).cloned().collect::<Vec<_>>().join(", "), if deps.len() > 8 { " …" } else { "" });
             }
             return Ok(cap(o));
         }
@@ -202,15 +240,28 @@ fn cap(mut s: String) -> String {
 }
 
 pub fn serve(root: Option<PathBuf>, watch: bool) -> Result<()> {
-    let watcher = match (&root, watch) {
-        (Some(r), true) => {
-            // Catch up on changes made while no server was running, then watch.
-            let _ = crate::index::sync(r, None);
-            crate::watch::start(r, |_| {}).ok()
-        }
+    // Prefer the project's shared daemon (one watcher + warm cache for every agent session);
+    // fall back to answering in-process.
+    #[cfg(unix)]
+    let mut daemon = match (&root, watch) {
+        (Some(r), true) if std::env::var_os("XGRAPH_NO_DAEMON").is_none() => crate::daemon::connect_or_spawn(r),
         _ => None,
     };
-    let mut srv = Server { default_root: root, graphs: HashMap::new(), _watcher: watcher };
+    #[cfg(not(unix))]
+    let daemon: Option<()> = None;
+    let mut local: Option<Server> = None;
+    let make_local = |root: &Option<PathBuf>| {
+        let watcher = match (root, watch) {
+            (Some(r), true) => {
+                // Catch up on changes made while no server was running, then watch.
+                let _ = crate::index::sync(r, None);
+                crate::watch::start(r, |_| {}).ok()
+            }
+            _ => None,
+        };
+        Server::new(root.clone(), watcher)
+    };
+    if daemon.is_none() { local = Some(make_local(&root)); }
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     let tools = enabled_tools();
@@ -228,7 +279,7 @@ pub fn serve(root: Option<PathBuf>, watch: bool) -> Result<()> {
         let result: Option<Result<Value, (i64, String)>> = match method {
             "initialize" => {
                 let v = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOL).to_string();
-                let instr = if srv.default_root.is_some() { INSTRUCTIONS.to_string() } else {
+                let instr = if root.is_some() { INSTRUCTIONS.to_string() } else {
                     format!("{INSTRUCTIONS}\n\nNOTE: the server's working directory has no index; pass projectPath to query an indexed project.")
                 };
                 Some(Ok(json!({"protocolVersion": v, "capabilities": {"tools": {"listChanged": false}},
@@ -239,13 +290,28 @@ pub fn serve(root: Option<PathBuf>, watch: bool) -> Result<()> {
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("").to_string();
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                // Pick up edits that landed between watcher ticks.
-                if let Some(w) = &srv._watcher { w.flush(); }
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| srv.call(&name, &args)));
-                let (text, is_err) = match r {
-                    Ok(Ok(t)) => (t, false),
-                    Ok(Err(e)) => (format!("{e:#}"), true),
-                    Err(_) => ("internal error while answering; please retry or use built-in tools".to_string(), true),
+                // Calls for other projects (projectPath) are answered in-process; the daemon owns this one.
+                let other_project = args.get("projectPath").and_then(Value::as_str)
+                    .is_some_and(|p| find_root(Path::new(p)) != root);
+                #[cfg(unix)]
+                let via_daemon = if other_project { None } else { daemon.as_mut().and_then(|d| d.call(&name, &args).ok()) };
+                #[cfg(not(unix))]
+                let via_daemon: Option<(String, bool)> = { let _ = (&daemon, other_project); None };
+                let (text, is_err) = match via_daemon {
+                    Some(r) => r,
+                    None => {
+                        #[cfg(unix)]
+                        if !other_project && daemon.is_some() {
+                            daemon = root.as_ref().and_then(crate::daemon::connect_or_spawn);  // daemon went away: reconnect
+                            if let Some(r) = daemon.as_mut().and_then(|d| d.call(&name, &args).ok()) {
+                                let resp = json!({"content": [{"type": "text", "text": r.0}], "isError": r.1});
+                                writeln!(stdout, "{}", json!({"jsonrpc": "2.0", "id": id, "result": resp}))?;
+                                stdout.flush()?;
+                                continue;
+                            }
+                        }
+                        local.get_or_insert_with(|| make_local(&root)).handle(0, &name, &args)
+                    }
                 };
                 Some(Ok(json!({"content": [{"type": "text", "text": text}], "isError": is_err})))
             }

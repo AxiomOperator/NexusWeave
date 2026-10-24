@@ -1,0 +1,32 @@
+name: pr-impact
+
+# Comments a change-impact report (changed symbols, callers, routes, tests to run) on pull requests.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  impact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: Impact report
+        run: |
+          ./target/release/xgraph init -q
+          ./target/release/xgraph diff-impact --base "origin/${{ github.base_ref }}" > impact.md
+          cat impact.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "<!-- xgraph-impact -->"; cat impact.md; } > body.md
+          gh pr comment "${{ github.event.pull_request.number }}" --edit-last --body-file body.md \
+            || gh pr comment "${{ github.event.pull_request.number }}" --body-file body.md

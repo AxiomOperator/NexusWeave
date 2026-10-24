@@ -49,6 +49,8 @@ int_enum!(NodeKind {
     Union = 18 => "union",
     // HTTP route registration (`GET /users/{id}`), linked to its handler.
     Route = 19 => "route",
+    // event topic registered by on("name", h) / addEventListener / `Evt += h`; listeners hang off it
+    Event = 20 => "event",
 });
 
 impl NodeKind {
@@ -83,6 +85,10 @@ int_enum!(
     Dispatch = 9 => "dispatches",
     // route → its handler (synthesized from a decorator / registration, no call site)
     Handles = 10 => "handles",
+    // raw emit site: emit("name") (never resolved itself; the resolver synthesizes `triggers`)
+    Emit = 11 => "emits",
+    // emit site → every event node with that name (synthesized)
+    Triggers = 12 => "triggers",
 });
 
 int_enum!(Lang {
@@ -98,6 +104,14 @@ int_enum!(Lang {
     Cpp = 9 => "cpp",
     Ruby = 10 => "ruby",
     Php = 11 => "php",
+    Kotlin = 12 => "kotlin",
+    Swift = 13 => "swift",
+    Dart = 14 => "dart",
+    Scala = 15 => "scala",
+    Lua = 16 => "lua",
+    // single-file components: the <script> block is TS/JS
+    Vue = 17 => "vue",
+    Svelte = 18 => "svelte",
 });
 
 impl Lang {
@@ -117,6 +131,13 @@ impl Lang {
             "cc" | "cpp" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "ipp" | "inl" => Lang::Cpp,
             "rb" | "rake" => Lang::Ruby,
             "php" | "phtml" => Lang::Php,
+            "kt" | "kts" => Lang::Kotlin,
+            "swift" => Lang::Swift,
+            "dart" => Lang::Dart,
+            "scala" | "sc" => Lang::Scala,
+            "lua" => Lang::Lua,
+            "vue" => Lang::Vue,
+            "svelte" => Lang::Svelte,
             _ => return None,
         })
     }
@@ -126,7 +147,7 @@ impl Lang {
     /// Languages that share one symbol/import namespace for resolution purposes.
     pub fn family(self) -> u8 {
         match self {
-            Lang::TypeScript | Lang::Tsx | Lang::JavaScript => 0,
+            Lang::TypeScript | Lang::Tsx | Lang::JavaScript | Lang::Vue | Lang::Svelte => 0,
             Lang::C | Lang::Cpp => 1,
             other => other as u8 + 10,
         }
@@ -210,11 +231,23 @@ pub struct ExImport {
     pub line: u32,
 }
 
+/// A router mounted under a path prefix: `app.use("/api", router)`, `register_blueprint(bp, url_prefix=..)`.
+#[derive(Debug, Clone)]
+pub struct ExMount {
+    /// Binding (as written) of the router/app the child is mounted on.
+    pub parent: String,
+    /// Binding (as written) of the mounted router.
+    pub child: String,
+    pub prefix: String,
+    pub line: u32,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct FileExtraction {
     pub nodes: Vec<ExNode>,
     pub refs: Vec<ExRef>,
     pub imports: Vec<ExImport>,
+    pub mounts: Vec<ExMount>,
     /// Package / namespace declared by the file (Go package, Java package, C# / PHP namespace).
     pub package: Option<String>,
     pub parse_errors: u32,

@@ -33,6 +33,41 @@ pub struct Modules {
     py: HashMap<String, Vec<u32>>,
     /// C/C++ include directories from compile_commands.json (project-relative).
     include_dirs: Vec<String>,
+    /// Library return-type stub families (built-in + `xgraph.stubs.toml` / `.xgraph/stubs.toml`).
+    pub stubs: Vec<StubFamily>,
+    /// Compiler-accurate references (`index.scip` / `.xgraph/index.scip`), when present.
+    pub scip: Option<crate::scip::Index>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct StubFile {
+    #[serde(default)]
+    family: Vec<StubFamily>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct StubFamily {
+    #[allow(dead_code)]
+    pub name: String,
+    pub bases: Vec<String>,
+    #[serde(default)]
+    pub members: HashMap<String, String>,
+    #[serde(default)]
+    pub set_members: HashMap<String, String>,
+}
+
+fn load_stubs(root: &Path) -> Vec<StubFamily> {
+    let mut v: Vec<StubFamily> = toml::from_str::<StubFile>(include_str!("stubs.toml")).map(|f| f.family).unwrap_or_default();
+    // `xgraph.stubs.toml` (committed with the project) and `.xgraph/stubs.toml` (local only)
+    for rel in ["xgraph.stubs.toml", ".xgraph/stubs.toml"] {
+        if let Ok(s) = std::fs::read_to_string(root.join(rel)) {
+            match toml::from_str::<StubFile>(&s) {
+                Ok(f) => v.extend(f.family),
+                Err(e) => eprintln!("xgraph: ignoring {rel}: {e}"),
+            }
+        }
+    }
+    v
 }
 
 fn norm(path: &str) -> String {
@@ -127,7 +162,7 @@ fn load_tsconfig(root: &Path, rel: &str, depth: u32) -> Option<TsConfig> {
 
 impl Modules {
     pub fn new(root: &Path, mem: &Mem) -> Modules {
-        let mut m = Modules { ts: vec![], js_packages: HashMap::new(), go_mods: vec![], crates: HashMap::new(), crate_dirs: vec![], py: HashMap::new(), include_dirs: vec![] };
+        let mut m = Modules { ts: vec![], js_packages: HashMap::new(), go_mods: vec![], crates: HashMap::new(), crate_dirs: vec![], py: HashMap::new(), include_dirs: vec![], stubs: load_stubs(root), scip: crate::scip::Index::load_for(root) };
         let has = |l: &[Lang]| mem.files.iter().any(|f| f.alive && l.contains(&f.lang));
         let need_js = has(&[Lang::TypeScript, Lang::Tsx, Lang::JavaScript]);
         for rel in config_files(root) {
@@ -366,11 +401,30 @@ impl Modules {
         let f = &mem.files[file as usize];
         if spec.is_empty() { return Target::None; }
         match f.lang {
-            Lang::TypeScript | Lang::Tsx | Lang::JavaScript => self.resolve_js(mem, &f.path, spec),
+            Lang::TypeScript | Lang::Tsx | Lang::JavaScript | Lang::Vue | Lang::Svelte => self.resolve_js(mem, &f.path, spec),
+            // Swift imports whole modules; files of one module see each other (resolved by name)
+            Lang::Swift => Target::None,
+            Lang::Dart => {
+                if spec.starts_with("dart:") { return Target::None; }
+                if let Some(rest) = spec.strip_prefix("package:") {
+                    // package:<name>/<path> → lib/<path> of that package
+                    let path = rest.split_once('/').map(|(_, p)| p).unwrap_or(rest);
+                    return self.by_suffix(mem, &f.path, &format!("lib/{path}"));
+                }
+                mem.file_by_path.get(&join(&f.dir, spec)).map_or(Target::None, |&x| Target::File(x))
+            }
+            Lang::Lua => {
+                let rel = spec.replace('.', "/");
+                for cand in [format!("{rel}.lua"), format!("{rel}/init.lua")] {
+                    if let Some(&x) = mem.file_by_path.get(&cand) { return Target::File(x); }
+                    if let t @ Target::File(_) = self.by_suffix(mem, &f.path, &cand) { return t; }
+                }
+                Target::None
+            }
             Lang::Python => self.resolve_py(mem, &f.path, spec),
             Lang::Go => self.resolve_go(mem, spec),
             Lang::Rust => self.resolve_rust(mem, &f.path, spec),
-            Lang::Java | Lang::CSharp | Lang::Php => {
+            Lang::Java | Lang::CSharp | Lang::Php | Lang::Kotlin | Lang::Scala => {
                 let sep = if f.lang == Lang::Php { '\\' } else { '.' };
                 match mem.by_package.get(spec) {
                     Some(v) => Target::Files(v.clone()),
@@ -426,7 +480,7 @@ fn compile_commands_includes(root: &Path) -> Vec<String> {
                     else { ["-I", "-isystem", "-iquote"].iter().find_map(|p| a.strip_prefix(p).map(str::to_string)) };
                 if let Some(p) = path {
                     let abs = if Path::new(&p).is_absolute() { std::path::PathBuf::from(&p) } else { Path::new(dir).join(&p) };
-                    let abs = std::fs::canonicalize(&abs).unwrap_or(abs);
+                    let abs = crate::canonical(&abs).unwrap_or(abs);
                     if let Ok(rel) = abs.strip_prefix(root) {
                         let r = rel.to_string_lossy().replace('\\', "/");
                         if !out.contains(&r) { out.push(r); }

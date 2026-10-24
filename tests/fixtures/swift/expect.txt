@@ -1,0 +1,10 @@
+User -> Person
+User -> Greeter
+Service.handle -> Repo.find
+Service.handle -> helper
+Service.handle -> User.greet
+Service.handle -> User.shout
+Service.direct -> Person.display
+Repo.find -> User
+User.shout -> User.greet
+User.greet -> Person.display

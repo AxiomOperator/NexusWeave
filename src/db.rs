@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
 /// Bump whenever the schema or extraction output changes; older indexes are rebuilt.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 12;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -44,6 +44,15 @@ CREATE TABLE IF NOT EXISTS nodes (
 );
 -- Every relationship except containment. `target_id` is filled by resolution;
 -- a ref whose target is deleted falls back to NULL and is re-resolved on sync.
+CREATE TABLE IF NOT EXISTS strs (id INTEGER PRIMARY KEY, s TEXT NOT NULL UNIQUE);
+-- Names passed or read as bare values that resolved to nothing (`app.use(auth)` before `auth`
+-- exists). Their ref rows aren't kept; when a sync defines one of these names, the file is
+-- re-extracted so the edge appears exactly as a full index would create it.
+CREATE TABLE IF NOT EXISTS value_names (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    name_h INTEGER NOT NULL,
+    PRIMARY KEY (file_id, name_h)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS refs (
     id INTEGER PRIMARY KEY,
     file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -52,8 +61,9 @@ CREATE TABLE IF NOT EXISTS refs (
     name TEXT NOT NULL,
     -- 63-bit hash of `name`: compact index for "refs that mention these names" during sync
     name_h INTEGER NOT NULL,
-    qualifier TEXT,
-    recv_type TEXT,
+    -- receiver text / inferred receiver type, interned in `strs` (few distinct values, many refs)
+    qual_id INTEGER,
+    recv_id INTEGER,
     line INTEGER NOT NULL,
     col INTEGER NOT NULL,
     target_id INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
@@ -75,8 +85,18 @@ CREATE TABLE IF NOT EXISTS imports (
     line INTEGER NOT NULL,
     target_file INTEGER REFERENCES files(id) ON DELETE SET NULL
 );
+-- Routers mounted under a prefix (`app.use("/api", router)`); used to compute full route paths.
+CREATE TABLE IF NOT EXISTS mounts (
+    id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    parent TEXT NOT NULL,
+    child TEXT NOT NULL,
+    prefix TEXT NOT NULL,
+    line INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mounts_file ON mounts(file_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
-    terms, qname, doc, path, content = '', contentless_delete = 1, tokenize = 'unicode61 remove_diacritics 2', prefix = '2 3'
+    terms, qname, doc, path, content = '', contentless_delete = 1, tokenize = 'unicode61 remove_diacritics 2'
 );
 "#;
 
@@ -89,21 +109,46 @@ CREATE INDEX IF NOT EXISTS idx_refs_src ON refs(src_id);
 CREATE INDEX IF NOT EXISTS idx_refs_target ON refs(target_id) WHERE target_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_refs_file ON refs(file_id);
 CREATE INDEX IF NOT EXISTS idx_refs_owner ON refs(src_owner_id) WHERE src_owner_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_id);
+CREATE INDEX IF NOT EXISTS idx_value_names_h ON value_names(name_h);
+CREATE INDEX IF NOT EXISTS idx_imports_target ON imports(target_file);
+"#;
+
+/// Read only by incremental sync / re-resolution, never by queries: a full index skips them and
+/// the first sync builds them (`ensure_sync_indexes`), saving ~1 s per full index on large repos.
+const SYNC_INDEXES: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_refs_via ON refs(via_id) WHERE via_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_refs_miss ON refs(miss_h) WHERE miss_h IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_refs_heritage ON refs(kind) WHERE kind IN (2, 3, 8);
-CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_id);
-CREATE INDEX IF NOT EXISTS idx_imports_target ON imports(target_file);
+CREATE INDEX IF NOT EXISTS idx_refs_heritage ON refs(kind) WHERE kind IN (2, 3, 8, 11, 12);
+CREATE INDEX IF NOT EXISTS idx_refs_recv ON refs(recv_id) WHERE recv_id IS NOT NULL;
 "#;
 
 pub struct Db {
     pub conn: Connection,
+    /// Identity of the file this connection opened; see [`file_id`].
+    pub file: Option<FileId>,
 }
 
 pub fn db_path(root: &Path) -> std::path::PathBuf { root.join(".xgraph").join("graph.db") }
 
+/// Which file a path currently names. A full index builds a new database and renames it over the
+/// old one, so a long-running process (daemon, viewer, watcher) compares this with [`Db::file`] to
+/// notice that its connection still reads the replaced file.
+pub type FileId = (u64, u64);
+
+pub fn file_id(path: &Path) -> Option<FileId> {
+    let m = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    { use std::os::unix::fs::MetadataExt; Some((m.dev(), m.ino())) }
+    #[cfg(not(unix))]
+    { m.created().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| (d.as_secs(), d.subsec_nanos() as u64)) }
+}
+
 impl Db {
     pub fn open(path: &Path) -> Result<Db> {
+        // taken before opening: a replacement in between then looks stale (a harmless reopen)
+        // rather than current
+        let file = file_id(path);
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.execute_batch(
@@ -111,7 +156,7 @@ impl Db {
              PRAGMA cache_size=-65536; PRAGMA mmap_size=268435456; PRAGMA foreign_keys=ON;",
         )?;
         conn.execute_batch("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")?;
-        let db = Db { conn };
+        let db = Db { conn, file: file.or_else(|| file_id(path)) };
         match db.meta("schema_version")? {
             None => {
                 db.conn.execute_batch(SCHEMA)?;
@@ -124,10 +169,11 @@ impl Db {
     }
 
     pub fn open_readonly(path: &Path) -> Result<Db> {
+        let file = file_id(path);
         let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.execute_batch("PRAGMA temp_store=MEMORY; PRAGMA cache_size=-32768; PRAGMA mmap_size=268435456;")?;
-        Ok(Db { conn })
+        Ok(Db { conn, file })
     }
 
     /// Whether this database was built by a compatible version.
@@ -135,9 +181,18 @@ impl Db {
         self.meta("schema_version").ok().flatten().and_then(|v| v.parse::<i64>().ok()) == Some(SCHEMA_VERSION)
     }
 
-    pub fn create_indexes(&self) -> Result<()> {
+    pub fn create_indexes(&self) -> Result<()> { self.run_indexes(INDEXES) }
+
+    /// Build the incremental-only indexes if a full index skipped them (no-op once present).
+    pub fn ensure_sync_indexes(&self) -> Result<()> {
+        let have: i64 = self.conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('idx_refs_via','idx_refs_miss','idx_refs_heritage','idx_refs_recv')", [], |r| r.get(0))?;
+        if have == 4 { return Ok(()); }
+        self.run_indexes(SYNC_INDEXES)
+    }
+
+    fn run_indexes(&self, sql: &str) -> Result<()> {
         let trace = std::env::var_os("XGRAPH_TRACE").is_some();
-        for stmt in INDEXES.lines().filter(|l| !l.trim().is_empty()) {
+        for stmt in sql.lines().filter(|l| !l.trim().is_empty()) {
             let t = std::time::Instant::now();
             self.conn.execute_batch(stmt)?;
             if trace { eprintln!("[index] {} ms  {}", t.elapsed().as_millis(), stmt.split_whitespace().nth(5).unwrap_or("")); }
@@ -145,7 +200,7 @@ impl Db {
         Ok(())
     }
     pub fn drop_indexes(&self) -> Result<()> {
-        for line in INDEXES.lines() {
+        for line in INDEXES.lines().chain(SYNC_INDEXES.lines()) {
             if let Some(name) = line.split_whitespace().nth(5) { self.conn.execute_batch(&format!("DROP INDEX IF EXISTS {name};"))?; }
         }
         Ok(())
@@ -249,9 +304,10 @@ impl<'c> Writer<'c> {
                 }
             }
             None => {
-                let mut st = tx.prepare_cached("INSERT INTO refs(file_id,src_id,kind,name,name_h,qualifier,recv_type,line,col) VALUES(?,?,?,?,?,?,?,?,?)")?;
+                let mut st = tx.prepare_cached("INSERT INTO refs(file_id,src_id,kind,name,name_h,qual_id,recv_id,line,col) VALUES(?,?,?,?,?,?,?,?,?)")?;
                 for r in &ex.refs {
-                    st.execute(params![file_id, base + r.from as i64, r.kind as i64, r.name, name_hash(&r.name), r.qualifier, r.recv_type, r.line, r.col])?;
+                    let (q, rt) = (intern(tx, r.qualifier.as_deref())?, intern(tx, r.recv_type.as_deref())?);
+                    st.execute(params![file_id, base + r.from as i64, r.kind as i64, r.name, name_hash(&r.name), q, rt, r.line, r.col])?;
                 }
             }
         }
@@ -260,6 +316,10 @@ impl<'c> Writer<'c> {
             for im in &ex.imports {
                 st.execute(params![file_id, im.kind as i64, im.module, im.imported, im.local, im.line])?;
             }
+        }
+        if !ex.mounts.is_empty() {
+            let mut st = tx.prepare_cached("INSERT INTO mounts(file_id,parent,child,prefix,line) VALUES(?,?,?,?,?)")?;
+            for m in &ex.mounts { st.execute(params![file_id, m.parent, m.child, m.prefix, m.line])?; }
         }
         Ok(file_id)
     }
@@ -294,3 +354,13 @@ fn path_terms(path: &str) -> String {
     }
     s
 }
+
+/// Id of `s` in the `strs` table, adding it when new.
+pub fn intern(conn: &Connection, s: Option<&str>) -> Result<Option<i64>> {
+    let Some(s) = s else { return Ok(None) };
+    let mut st = conn.prepare_cached("INSERT INTO strs(s) VALUES(?) ON CONFLICT(s) DO UPDATE SET s=excluded.s RETURNING id")?;
+    Ok(Some(st.query_row([s], |r| r.get(0))?))
+}
+
+/// SQL joins exposing a ref `r`'s interned strings as `sq.s` (qualifier) and `sr.s` (receiver type).
+pub const REF_STRS: &str = "LEFT JOIN strs sq ON sq.id = r.qual_id LEFT JOIN strs sr ON sr.id = r.recv_id";

@@ -34,3 +34,14 @@ func handleUser() { helper() }
 func routes(r *Router) {
 	r.GET("/users/:id", handleUser)
 }
+
+type Greeter interface{ Greet() string }
+
+func greetAll[T Greeter](t T) { t.Greet() }
+
+func (r *Router) Group(prefix string) *Router { return r }
+
+func v1Routes(r *Router) {
+	v1 := r.Group("/v1")
+	v1.GET("/ping", helper)
+}
