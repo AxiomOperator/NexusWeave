@@ -35,12 +35,23 @@ impl Graph {
                AND (?1 OR n.exported = 0)
                AND NOT EXISTS (SELECT 1 FROM refs r WHERE r.target_id = n.id)
                AND NOT EXISTS (SELECT 1 FROM refs o WHERE o.src_id = n.id AND o.kind = 8)
+               -- a same-named sibling that is referenced: platform variants (`#[cfg(windows)] fn f`
+               -- next to `#[cfg(unix)] fn f`), overload sets, conditional definitions
+               AND NOT EXISTS (SELECT 1 FROM nodes s JOIN refs r ON r.target_id = s.id
+                               WHERE s.file_id = n.file_id AND s.name = n.name AND s.parent_id = n.parent_id AND s.id != n.id)
              ORDER BY f.path, n.start_line");
+        // A name that some unresolved reference uses might be that reference's target (the
+        // receiver's type was unknown: `guard.record()` through `Mutex::lock`): not provably dead.
+        let mut maybe: std::collections::HashSet<String> = std::collections::HashSet::new();
+        {
+            let mut q = self.db.conn.prepare("SELECT DISTINCT name FROM refs WHERE target_id IS NULL")?;
+            for n in q.query_map([], |r| r.get::<_, String>(0))? { maybe.insert(n?); }
+        }
         let mut st = self.db.conn.prepare(&sql)?;
         let mut out = Vec::new();
         for s in st.query_map([include_exported], sym_row)? {
             let s = s?;
-            if implicit_entry(&s.name) { continue; }
+            if implicit_entry(&s.name) || maybe.contains(&s.name) { continue; }
             // in-file test modules (Rust `#[cfg(test)] mod tests`, nested test classes)
             if s.qname.contains("tests::") || s.qname.contains("tests.") || s.qname.starts_with("test") { continue; }
             // Go methods satisfy interfaces implicitly; Rust trait impls are wired through overrides

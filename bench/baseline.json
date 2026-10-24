@@ -4,27 +4,27 @@
     "hono": {
       "lang": "typescript",
       "commit": "5ca49b0720755c585c9a9835f0a479ceea36fb52",
-      "xgraph_index_s": 0.33,
+      "xgraph_index_s": 0.17,
       "truth_index_s": 0.0,
       "truth_refs": 9427,
-      "extracted": 8889,
-      "correct": 7444,
-      "wrong": 11,
-      "unresolved": 1438,
-      "unverifiable": 174,
+      "extracted": 8946,
+      "correct": 7453,
+      "wrong": 9,
+      "unresolved": 1485,
+      "unverifiable": 186,
       "truth_dropped": 3496,
-      "aligned_unscored": 7900,
-      "outside_truth": 3623,
+      "aligned_unscored": 8075,
+      "outside_truth": 3654,
       "truth_files_only": true,
       "accessor_refs": 1355,
-      "precision": 0.9985,
-      "recall": 0.7896,
-      "extraction": 0.9429,
+      "precision": 0.9988,
+      "recall": 0.7906,
+      "extraction": 0.949,
       "by_kind": {
         "calls": {
-          "correct": 1252,
-          "wrong": 6,
-          "precision": 0.9952
+          "correct": 1253,
+          "wrong": 3,
+          "precision": 0.9976
         },
         "extends": {
           "correct": 70,
@@ -42,12 +42,12 @@
           "precision": 1.0
         },
         "passes": {
-          "correct": 42,
-          "wrong": 0,
-          "precision": 1.0
+          "correct": 47,
+          "wrong": 1,
+          "precision": 0.9792
         },
         "references": {
-          "correct": 4938,
+          "correct": 4941,
           "wrong": 3,
           "precision": 0.9994
         }
@@ -55,8 +55,8 @@
       "precision_by_confidence": {
         "50\u201369": {
           "correct": 2,
-          "wrong": 3,
-          "precision": 0.4
+          "wrong": 0,
+          "precision": 1.0
         },
         "<50": {
           "correct": 51,
@@ -64,21 +64,21 @@
           "precision": 0.9623
         },
         "\u226590": {
-          "correct": 7391,
-          "wrong": 6,
-          "precision": 0.9992
+          "correct": 7400,
+          "wrong": 7,
+          "precision": 0.9991
         }
       },
       "recall_by_truth_kind": {
         "method": {
-          "hit": 2283,
+          "hit": 2289,
           "total": 2970,
-          "recall": 0.7687
+          "recall": 0.7707
         },
         "type": {
-          "hit": 5161,
+          "hit": 5164,
           "total": 6457,
-          "recall": 0.7993
+          "recall": 0.7998
         }
       },
       "overrides": {
@@ -92,27 +92,27 @@
     "codegraph": {
       "lang": "typescript",
       "commit": "3a93f57ae1796b47cf6f27e8685e58de957392c3",
-      "xgraph_index_s": 1.39,
+      "xgraph_index_s": 0.85,
       "truth_index_s": 0.0,
       "truth_refs": 19925,
-      "extracted": 18890,
-      "correct": 18491,
-      "wrong": 14,
+      "extracted": 19105,
+      "correct": 18703,
+      "wrong": 3,
       "unresolved": 399,
-      "unverifiable": 1044,
+      "unverifiable": 1042,
       "truth_dropped": 21917,
-      "aligned_unscored": 12849,
-      "outside_truth": 176570,
+      "aligned_unscored": 13297,
+      "outside_truth": 178768,
       "truth_files_only": true,
       "accessor_refs": 2874,
-      "precision": 0.9992,
-      "recall": 0.928,
-      "extraction": 0.9481,
+      "precision": 0.9998,
+      "recall": 0.9387,
+      "extraction": 0.9588,
       "by_kind": {
         "calls": {
-          "correct": 11760,
-          "wrong": 14,
-          "precision": 0.9988
+          "correct": 11926,
+          "wrong": 0,
+          "precision": 1.0
         },
         "extends": {
           "correct": 28,
@@ -130,9 +130,9 @@
           "precision": 1.0
         },
         "passes": {
-          "correct": 75,
-          "wrong": 0,
-          "precision": 1.0
+          "correct": 121,
+          "wrong": 3,
+          "precision": 0.9758
         },
         "references": {
           "correct": 6486,
@@ -148,20 +148,20 @@
         },
         "<50": {
           "correct": 175,
-          "wrong": 14,
-          "precision": 0.9259
-        },
-        "\u226590": {
-          "correct": 18225,
           "wrong": 0,
           "precision": 1.0
+        },
+        "\u226590": {
+          "correct": 18437,
+          "wrong": 3,
+          "precision": 0.9998
         }
       },
       "recall_by_truth_kind": {
         "method": {
-          "hit": 11935,
+          "hit": 12148,
           "total": 13161,
-          "recall": 0.9068
+          "recall": 0.923
         },
         "type": {
           "hit": 6556,
@@ -180,22 +180,22 @@
     "express": {
       "lang": "javascript",
       "commit": "1c6f1b0fe4000977b9a7b4f34097e4d527dd9824",
-      "xgraph_index_s": 0.1,
+      "xgraph_index_s": 0.05,
       "truth_index_s": 0.0,
       "truth_refs": 343,
-      "extracted": 304,
-      "correct": 298,
+      "extracted": 314,
+      "correct": 308,
       "wrong": 0,
       "unresolved": 6,
       "unverifiable": 1,
       "truth_dropped": 441,
-      "aligned_unscored": 130,
+      "aligned_unscored": 168,
       "outside_truth": 0,
       "truth_files_only": true,
       "accessor_refs": 2,
       "precision": 1.0,
-      "recall": 0.8688,
-      "extraction": 0.8863,
+      "recall": 0.898,
+      "extraction": 0.9155,
       "by_kind": {
         "calls": {
           "correct": 276,
@@ -208,23 +208,23 @@
           "precision": 1.0
         },
         "passes": {
-          "correct": 17,
+          "correct": 27,
           "wrong": 0,
           "precision": 1.0
         }
       },
       "precision_by_confidence": {
         "\u226590": {
-          "correct": 298,
+          "correct": 308,
           "wrong": 0,
           "precision": 1.0
         }
       },
       "recall_by_truth_kind": {
         "method": {
-          "hit": 299,
+          "hit": 309,
           "total": 343,
-          "recall": 0.8717
+          "recall": 0.9009
         }
       },
       "overrides": {
@@ -238,25 +238,25 @@
     "flask": {
       "lang": "python",
       "commit": "d086db856be187255b8ec61ef409357393020f32",
-      "xgraph_index_s": 0.1,
+      "xgraph_index_s": 0.06,
       "truth_index_s": 0.0,
       "truth_refs": 1143,
-      "extracted": 873,
-      "correct": 843,
+      "extracted": 895,
+      "correct": 865,
       "wrong": 0,
       "unresolved": 30,
-      "unverifiable": 968,
+      "unverifiable": 955,
       "truth_dropped": 3960,
-      "aligned_unscored": 188,
+      "aligned_unscored": 186,
       "outside_truth": 0,
       "truth_files_only": true,
       "accessor_refs": 0,
       "precision": 1.0,
-      "recall": 0.7375,
-      "extraction": 0.7638,
+      "recall": 0.7568,
+      "extraction": 0.783,
       "by_kind": {
         "calls": {
-          "correct": 357,
+          "correct": 359,
           "wrong": 0,
           "precision": 1.0
         },
@@ -271,12 +271,12 @@
           "precision": 1.0
         },
         "passes": {
-          "correct": 174,
+          "correct": 184,
           "wrong": 0,
           "precision": 1.0
         },
         "reads": {
-          "correct": 57,
+          "correct": 67,
           "wrong": 0,
           "precision": 1.0
         },
@@ -298,21 +298,21 @@
           "precision": 1.0
         },
         "\u226590": {
-          "correct": 836,
+          "correct": 858,
           "wrong": 0,
           "precision": 1.0
         }
       },
       "recall_by_truth_kind": {
         "method": {
-          "hit": 517,
+          "hit": 531,
           "total": 723,
-          "recall": 0.7151
+          "recall": 0.7344
         },
         "type": {
-          "hit": 355,
+          "hit": 363,
           "total": 420,
-          "recall": 0.8452
+          "recall": 0.8643
         }
       },
       "overrides": {
@@ -326,27 +326,27 @@
     "httpx": {
       "lang": "python",
       "commit": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254",
-      "xgraph_index_s": 0.08,
+      "xgraph_index_s": 0.04,
       "truth_index_s": 0.0,
       "truth_refs": 2833,
-      "extracted": 2490,
-      "correct": 2298,
-      "wrong": 6,
+      "extracted": 2528,
+      "correct": 2336,
+      "wrong": 5,
       "unresolved": 192,
-      "unverifiable": 808,
+      "unverifiable": 809,
       "truth_dropped": 6531,
       "aligned_unscored": 4,
       "outside_truth": 0,
       "truth_files_only": true,
       "accessor_refs": 0,
-      "precision": 0.9974,
-      "recall": 0.8112,
-      "extraction": 0.8789,
+      "precision": 0.9979,
+      "recall": 0.8246,
+      "extraction": 0.8923,
       "by_kind": {
         "calls": {
           "correct": 1092,
-          "wrong": 6,
-          "precision": 0.9945
+          "wrong": 5,
+          "precision": 0.9954
         },
         "extends": {
           "correct": 53,
@@ -359,12 +359,12 @@
           "precision": 1.0
         },
         "passes": {
-          "correct": 160,
+          "correct": 194,
           "wrong": 0,
           "precision": 1.0
         },
         "reads": {
-          "correct": 429,
+          "correct": 433,
           "wrong": 0,
           "precision": 1.0
         },
@@ -382,25 +382,25 @@
         },
         "<50": {
           "correct": 38,
-          "wrong": 1,
-          "precision": 0.9744
+          "wrong": 0,
+          "precision": 1.0
         },
         "\u226590": {
-          "correct": 2242,
+          "correct": 2280,
           "wrong": 5,
           "precision": 0.9978
         }
       },
       "recall_by_truth_kind": {
         "method": {
-          "hit": 1357,
+          "hit": 1373,
           "total": 1778,
-          "recall": 0.7632
+          "recall": 0.7722
         },
         "type": {
-          "hit": 1002,
+          "hit": 1024,
           "total": 1055,
-          "recall": 0.9498
+          "recall": 0.9706
         }
       },
       "overrides": {
@@ -414,7 +414,7 @@
     "gin": {
       "lang": "go",
       "commit": "0f09c3a9b4626d9fe9979cf4d0521d6ae32ab646",
-      "xgraph_index_s": 0.12,
+      "xgraph_index_s": 0.07,
       "truth_index_s": 0.0,
       "truth_refs": 5564,
       "extracted": 5495,
@@ -423,7 +423,7 @@
       "unresolved": 127,
       "unverifiable": 24,
       "truth_dropped": 4794,
-      "aligned_unscored": 288,
+      "aligned_unscored": 284,
       "outside_truth": 164,
       "truth_files_only": true,
       "accessor_refs": 0,
@@ -497,27 +497,27 @@
     "ripgrep": {
       "lang": "rust",
       "commit": "6892bc2b7efe5909cbbeec8f757ed2c4c76b1d30",
-      "xgraph_index_s": 0.19,
+      "xgraph_index_s": 0.13,
       "truth_index_s": 0.0,
       "truth_refs": 19393,
       "extracted": 17890,
-      "correct": 15850,
-      "wrong": 258,
-      "unresolved": 1935,
-      "unverifiable": 165,
+      "correct": 15858,
+      "wrong": 227,
+      "unresolved": 1927,
+      "unverifiable": 161,
       "truth_dropped": 6995,
-      "aligned_unscored": 55,
+      "aligned_unscored": 34,
       "outside_truth": 105,
       "truth_files_only": true,
       "accessor_refs": 0,
-      "precision": 0.984,
-      "recall": 0.8173,
+      "precision": 0.9859,
+      "recall": 0.8177,
       "extraction": 0.9225,
       "by_kind": {
         "calls": {
-          "correct": 10310,
-          "wrong": 177,
-          "precision": 0.9831
+          "correct": 10318,
+          "wrong": 150,
+          "precision": 0.9857
         },
         "implements": {
           "correct": 127,
@@ -536,15 +536,15 @@
         },
         "references": {
           "correct": 5143,
-          "wrong": 78,
-          "precision": 0.9851
+          "wrong": 74,
+          "precision": 0.9858
         }
       },
       "precision_by_confidence": {
         "50\u201369": {
           "correct": 170,
-          "wrong": 32,
-          "precision": 0.8416
+          "wrong": 13,
+          "precision": 0.929
         },
         "70\u201389": {
           "correct": 425,
@@ -553,11 +553,11 @@
         },
         "<50": {
           "correct": 2679,
-          "wrong": 91,
-          "precision": 0.9671
+          "wrong": 79,
+          "precision": 0.9714
         },
         "\u226590": {
-          "correct": 12576,
+          "correct": 12584,
           "wrong": 127,
           "precision": 0.99
         }
@@ -569,9 +569,9 @@
           "recall": 0.8959
         },
         "method": {
-          "hit": 9172,
+          "hit": 9180,
           "total": 10634,
-          "recall": 0.8625
+          "recall": 0.8633
         },
         "type": {
           "hit": 5694,
@@ -590,19 +590,19 @@
   },
   "languages": {
     "typescript": {
-      "precision": 0.999,
-      "recall": 0.8836,
-      "extraction": 0.9464
+      "precision": 0.9995,
+      "recall": 0.8911,
+      "extraction": 0.9557
     },
     "javascript": {
       "precision": 1.0,
-      "recall": 0.8688,
-      "extraction": 0.8863
+      "recall": 0.898,
+      "extraction": 0.9155
     },
     "python": {
-      "precision": 0.9981,
-      "recall": 0.79,
-      "extraction": 0.8458
+      "precision": 0.9984,
+      "recall": 0.8051,
+      "extraction": 0.8609
     },
     "go": {
       "precision": 0.9987,
@@ -610,8 +610,8 @@
       "extraction": 0.9876
     },
     "rust": {
-      "precision": 0.984,
-      "recall": 0.8173,
+      "precision": 0.9859,
+      "recall": 0.8177,
       "extraction": 0.9225
     }
   }

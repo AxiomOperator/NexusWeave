@@ -294,6 +294,8 @@ impl LangHooks for Js {
             "variable_declarator" => {
                 let Some(nm) = n.child_by_field_name("name") else { return Visit::Continue };
                 let value = n.child_by_field_name("value");
+                // function-valued locals become nodes of their own; other locals shadow outer names
+                if nm.kind() == "identifier" && !value.is_some_and(|v| is_fn_value(v.kind())) { let l = cx.text(nm).to_string(); cx.declare_local(&l); }
                 // require(): const x = require("m") / const {a, b} = require("m")
                 if let Some(v) = value && v.kind() == "call_expression"
                     && v.child_by_field_name("function").is_some_and(|f| cx.text(f) == "require")

@@ -18,7 +18,7 @@ mod sfc;
 mod swift;
 
 use crate::model::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 const MAX_DEPTH: u32 = 1500;
@@ -76,6 +76,8 @@ pub struct Scope {
     pub vars: HashMap<String, String>,
     /// First inferable `return` value type seen in this callable's body.
     pub ret: Option<String>,
+    /// Local bindings (parameters, `let`, assignments) that shadow outer names in this callable.
+    pub locals: HashSet<String>,
 }
 
 pub struct Cx<'a> {
@@ -285,17 +287,23 @@ impl<'a> Cx<'a> {
     pub fn note_callbacks(&mut self, args: Node<'_>) {
         let mut c = args.walk();
         let items: Vec<Node<'_>> = args.named_children(&mut c).collect();
-        for a in items {
+        for a in items { self.note_value(a); }
+    }
+
+    /// One value position (an argument, an array element, an object value): a function or method
+    /// named there is passed, not called.
+    pub fn note_value(&mut self, a: Node<'_>) {
+        {
             let a = match a.kind() {
                 "argument" | "keyword_argument" | "pair" => a.child_by_field_name("value").or_else(|| a.named_child(a.named_child_count().saturating_sub(1))).unwrap_or(a),
                 _ => a,
             };
             match a.kind() {
-                "identifier" => {
+                "identifier" | "shorthand_property_identifier" => {
                     let name = self.text(a);
-                    if self.var_type(name).is_some() || is_common_value(name) { continue; }
+                    if self.var_type(name).is_some() || is_common_value(name) || self.is_local(name) { return; }
                     if matches!(self.lang, Lang::Java | Lang::CSharp | Lang::Cpp | Lang::C)
-                        && self.enclosing_type().is_some_and(|o| self.fields.contains_key(&(o.to_string(), name.to_string()))) { continue; }
+                        && self.enclosing_type().is_some_and(|o| self.fields.contains_key(&(o.to_string(), name.to_string()))) { return; }
                     self.add_ref(RefKind::Callback, name, None, a);
                 }
                 "simple_symbol" if self.lang == Lang::Ruby => {
@@ -327,6 +335,17 @@ impl<'a> Cx<'a> {
         if let Some(s) = self.scopes.last_mut() { s.vars.insert(name.to_string(), path.to_string()); }
     }
 
+    /// A local binding in the current callable: unqualified calls to it are calls to a closure
+    /// or function value, never to a project symbol of the same name.
+    pub fn declare_local(&mut self, name: &str) {
+        if !shadowing_locals(self.lang) || !is_ident(name) { return; }
+        if let Some(s) = self.scopes.last_mut() && s.kind.is_callable() { s.locals.insert(name.to_string()); }
+    }
+
+    fn is_local(&self, name: &str) -> bool {
+        self.scopes.iter().rev().take_while(|s| s.kind.is_callable()).any(|s| s.locals.contains(name))
+    }
+
     pub fn add_ref(&mut self, kind: RefKind, name: &str, qualifier: Option<&str>, at: Node<'_>) {
         let from = self.cur_node();
         self.add_ref_from(from, kind, name, qualifier, at);
@@ -335,6 +354,7 @@ impl<'a> Cx<'a> {
     pub fn add_ref_from(&mut self, from: u32, kind: RefKind, name: &str, qualifier: Option<&str>, at: Node<'_>) {
         let name = name.trim();
         if name.is_empty() || name.len() > 200 { return; }
+        if kind == RefKind::Call && qualifier.is_none() && self.is_local(name) { return; }
         let qualifier = qualifier.map(str::trim).filter(|q| !q.is_empty() && q.len() <= 200);
         let recv_type = qualifier.and_then(|q| self.infer(q))
             .or_else(|| if matches!(kind, RefKind::Implements | RefKind::Extends) && self.cur_node() == 0 {
@@ -434,7 +454,7 @@ fn extract_src(lang: Lang, path: &str, src: &[u8]) -> FileExtraction {
         start_line: 1, end_line: root.end_position().row as u32 + 1, start_byte: 0,
         end_byte: src.len() as u32, exported: true, signature: None, doc: None, type_hint: None, ext_of: None,
     });
-    cx.scopes.push(Scope { node: 0, kind: NodeKind::File, name: String::new(), vars: HashMap::new(), ret: None });
+    cx.scopes.push(Scope { node: 0, kind: NodeKind::File, name: String::new(), vars: HashMap::new(), ret: None, locals: HashSet::new() });
     if root.has_error() { cx.out.parse_errors = count_errors(root); }
     walk_children(h, root, &mut cx, 0);
     cx.out
@@ -463,10 +483,43 @@ fn walk_children<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, depth: u32
     }
 }
 
+/// String literals are opaque to the hooks, but their interpolations are code:
+/// `${foo()}` (JS, Dart, Kotlin), f"{foo()}" (Python), "#{foo}" (Ruby), $"{Foo()}" (C#),
+/// "\(foo())" (Swift), "{$o->foo()}" (PHP).
+fn is_string_node(k: &str) -> bool {
+    (k.contains("string") && !k.contains("type") && !k.ends_with("_content") && !k.ends_with("_fragment")) || k == "heredoc_body"
+}
+
+fn walk_interpolations<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, depth: u32) {
+    if depth > MAX_DEPTH { return; }
+    let mut c = n.walk();
+    let kids: Vec<Node<'t>> = n.named_children(&mut c).collect();
+    for ch in kids {
+        match ch.kind() {
+            "interpolation" | "template_substitution" | "interpolated_expression" => walk_children(h, ch, cx, depth + 1),
+            k if is_string_node(k) => walk_interpolations(h, ch, cx, depth + 1),
+            "member_call_expression" | "function_call_expression" | "scoped_call_expression" if cx.lang == Lang::Php => walk(h, ch, cx, depth + 1),
+            _ => {}
+        }
+    }
+}
+
 pub fn walk<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, depth: u32) {
+    if is_string_node(n.kind()) { walk_interpolations(h, n, cx, depth); return; }
+    let js_py = cx.lang.family() == Lang::TypeScript.family() || cx.lang == Lang::Python;
     match n.kind() {
         "return_statement" | "return_expression" | "return" => cx.note_return(n),
         "arguments" | "argument_list" => cx.note_callbacks(n),
+        // `[label, formatShell]`, `{ save, load: loadAll }`, `handlers = {"x": on_x}`
+        "array" | "object" | "list" | "dictionary" if js_py => cx.note_callbacks(n),
+        // `this.poll.bind(this)` / `fn.call(ctx)` pass the function
+        "call_expression" if js_py => {
+            if let Some(f) = n.child_by_field_name("function") && f.kind() == "member_expression"
+                && matches!(cx.field_text(f, "property"), Some("bind" | "call" | "apply"))
+                && let Some(o) = f.child_by_field_name("object") { cx.note_value(o); }
+        }
+        // `handler as *const ()` / `f as fn()`
+        "type_cast_expression" if cx.lang == Lang::Rust => { if let Some(v) = n.child_by_field_name("value") { cx.note_value(v); } }
         _ => {}
     }
     match h.visit(n, cx) {
@@ -475,7 +528,8 @@ pub fn walk<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, depth: u32) {
         Visit::Def(d) => {
             if d.name.is_empty() { walk_children(h, n, cx, depth); return; }
             let id = push_def(cx, n, &d);
-            cx.scopes.push(Scope { node: id, kind: d.kind, name: d.name.clone(), vars: HashMap::new(), ret: None });
+            cx.scopes.push(Scope { node: id, kind: d.kind, name: d.name.clone(), vars: HashMap::new(), ret: None, locals: HashSet::new() });
+            if d.kind.is_callable() && shadowing_locals(cx.lang) { declare_params(n, cx); }
             for (k, name) in &d.heritage {
                 let (q, base) = split_qual(name);
                 cx.add_ref(*k, base, q, n);
@@ -598,6 +652,27 @@ fn leading_doc(cx: &Cx<'_>, n: Node<'_>) -> Option<String> {
 }
 
 // ---------------------------------------------------------------- helpers
+
+/// Languages where a local binding shadows a same-named function for a bare call (`f()`).
+/// Not Java/C#/Kotlin/Ruby/PHP/C: there methods/functions and locals live in separate namespaces.
+fn shadowing_locals(lang: Lang) -> bool {
+    matches!(lang, Lang::Rust | Lang::TypeScript | Lang::Tsx | Lang::JavaScript | Lang::Vue | Lang::Svelte | Lang::Python | Lang::Go | Lang::Lua)
+}
+
+/// Declare a callable's parameters as locals (`fn f(pick: impl Fn())`, `def f(cb)`, `(cb) => cb()`).
+fn declare_params(n: Node<'_>, cx: &mut Cx<'_>) {
+    let ps = n.child_by_field_name("parameters").or_else(|| n.child_by_field_name("signature").and_then(|s| s.child_by_field_name("parameters")));
+    let Some(ps) = ps else { return };
+    let mut c = ps.walk();
+    let names: Vec<String> = ps.named_children(&mut c).filter_map(|p| {
+        let id = if matches!(p.kind(), "identifier" | "shorthand_property_identifier_pattern") { Some(p) } else {
+            p.child_by_field_name("pattern").or_else(|| p.child_by_field_name("name"))
+                .or_else(|| { let mut c2 = p.walk(); p.named_children(&mut c2).find(|x| x.kind() == "identifier") })
+        };
+        id.filter(|x| x.kind() == "identifier").map(|x| cx.text(x).to_string())
+    }).collect();
+    for nm in names { cx.declare_local(&nm); }
+}
 
 pub fn compact_ws(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

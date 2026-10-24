@@ -9,6 +9,29 @@ fn is_pub(n: Node<'_>) -> bool {
     n.children(&mut c).any(|ch| ch.kind() == "visibility_modifier")
 }
 
+/// Reachable from outside the visible graph: `pub`, an item under an attribute macro
+/// (`#[dbus_proxy]`, `#[tokio::main]`, `#[wasm_bindgen]` generate the code that uses it), or a
+/// member of a trait impl (`type IntoIter = …`, `fn fmt`), which the trait's callers reach.
+fn reachable(cx: &Cx<'_>, n: Node<'_>) -> bool {
+    if is_pub(n) { return true; }
+    let in_trait_impl = n.parent().and_then(|b| b.parent()).is_some_and(|i| i.kind() == "impl_item" && i.child_by_field_name("trait").is_some());
+    if in_trait_impl { return true; }
+    let mut p = n.prev_sibling();
+    while let Some(a) = p.filter(|a| matches!(a.kind(), "attribute_item" | "line_comment" | "block_comment")) {
+        if a.kind() == "attribute_item" {
+            let t = cx.text(a).trim_start_matches("#[").trim_start();
+            let head: String = t.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':').collect();
+            if !matches!(head.as_str(), "cfg" | "cfg_attr" | "allow" | "warn" | "deny" | "expect" | "forbid" | "derive" | "doc" | "inline"
+                | "test" | "must_use" | "deprecated" | "repr" | "non_exhaustive" | "track_caller" | "cold" | "rustfmt::skip"
+                | "automatically_derived" | "doc_cfg" | "ignore" | "should_panic") && !head.starts_with("clippy::") {
+                return true;
+            }
+        }
+        p = a.prev_sibling();
+    }
+    false
+}
+
 impl Rust {
     fn value_type<'a>(&self, cx: &Cx<'a>, v: Node<'_>) -> Option<String> {
         match v.kind() {
@@ -72,6 +95,7 @@ impl Rust {
         if depth >= 4 || tt.end_byte() - tt.start_byte() < 3 || tt.end_byte() - tt.start_byte() > 200_000 { return; }
         let inner = &cx.src[tt.start_byte() + 1..tt.end_byte() - 1];
         if !inner.iter().any(|&b| b == b'(' || b == b'.' || b == b':' || b == b'!') { return; }  // nothing callable inside
+        let inner = &blank_object_keys(inner);
         let mut best: Option<(Vec<u8>, usize, tree_sitter::Tree, u32)> = None;
         for (pre, post) in [("fn __xg(){(", ");}"), ("fn __xg(){", "\n}")] {
             let mut buf = Vec::with_capacity(inner.len() + 16);
@@ -126,18 +150,18 @@ impl LangHooks for Rust {
                 let in_trait = cx.cur().kind == NodeKind::Trait;
                 let kind = if in_impl || in_trait { NodeKind::Method } else { NodeKind::Function };
                 let owner = if in_impl { cx.owners.last().cloned() } else { None };
-                let exported = is_pub(n) || in_trait;
+                let exported = reachable(cx, n) || in_trait;
                 Visit::Def(Def::new(kind, nm).body(n.child_by_field_name("body")).exported(exported).owner(owner)
                     .hint(cx.field_text(n, "return_type").map(str::to_string)))
             }
             "struct_item" | "union_item" => {
                 let k = if n.kind() == "union_item" { NodeKind::Union } else { NodeKind::Struct };
-                Visit::Def(Def::new(k, name()).body(n.child_by_field_name("body")).exported(is_pub(n)))
+                Visit::Def(Def::new(k, name()).body(n.child_by_field_name("body")).exported(reachable(cx, n)))
             }
-            "enum_item" => Visit::Def(Def::new(NodeKind::Enum, name()).body(n.child_by_field_name("body")).exported(is_pub(n))),
+            "enum_item" => Visit::Def(Def::new(NodeKind::Enum, name()).body(n.child_by_field_name("body")).exported(reachable(cx, n))),
             "enum_variant" => Visit::Def(Def::new(NodeKind::EnumMember, name()).body(n.child_by_field_name("body"))),
             "trait_item" => {
-                let mut d = Def::new(NodeKind::Trait, name()).body(n.child_by_field_name("body")).exported(is_pub(n));
+                let mut d = Def::new(NodeKind::Trait, name()).body(n.child_by_field_name("body")).exported(reachable(cx, n));
                 if let Some(b) = n.child_by_field_name("bounds") {
                     let mut c = b.walk();
                     for t in b.named_children(&mut c) {
@@ -151,19 +175,19 @@ impl LangHooks for Rust {
                 let nm = name();
                 let ty = cx.field_text(n, "type").map(str::to_string);
                 if let Some(t) = &ty { cx.bind_field(nm, t); }
-                Visit::Def(Def::new(NodeKind::Field, nm).body(n.child_by_field_name("type")).exported(is_pub(n)).hint(ty))
+                Visit::Def(Def::new(NodeKind::Field, nm).body(n.child_by_field_name("type")).exported(reachable(cx, n)).hint(ty))
             }
             "const_item" | "static_item" => {
                 let k = if n.kind() == "const_item" { NodeKind::Constant } else { NodeKind::Variable };
-                Visit::Def(Def::new(k, name()).body(n.child_by_field_name("value")).exported(is_pub(n))
+                Visit::Def(Def::new(k, name()).body(n.child_by_field_name("value")).exported(reachable(cx, n))
                     .hint(cx.field_text(n, "type").map(str::to_string)))
             }
-            "type_item" => Visit::Def(Def::new(NodeKind::TypeAlias, name()).body(n.child_by_field_name("type")).exported(is_pub(n))),
+            "type_item" => Visit::Def(Def::new(NodeKind::TypeAlias, name()).body(n.child_by_field_name("type")).exported(reachable(cx, n))),
             "macro_definition" => Visit::Def(Def::new(NodeKind::Macro, name()).exported(true)),
             "mod_item" => {
                 let nm = name();
                 match n.child_by_field_name("body") {
-                    Some(b) => Visit::Def(Def::new(NodeKind::Module, nm).body(Some(b)).exported(is_pub(n))),
+                    Some(b) => Visit::Def(Def::new(NodeKind::Module, nm).body(Some(b)).exported(reachable(cx, n))),
                     None => { cx.add_import(ImportKind::SideEffect, &format!("self::{nm}"), "", nm, n); Visit::Skip }
                 }
             }
@@ -209,9 +233,14 @@ impl LangHooks for Rust {
             "extern_crate_declaration" => Visit::Skip,
             "let_declaration" => {
                 if let Some(p) = n.child_by_field_name("pattern") && p.kind() == "identifier" {
-                    let ty = n.child_by_field_name("type").map(|t| cx.text(t).to_string())
+                    // `let x = x();` calls the outer `x`: the binding starts after its initializer
+                    let name = cx.text(p).to_string();
+                    let ty0 = n.child_by_field_name("type").map(|t| cx.text(t).to_string())
                         .or_else(|| n.child_by_field_name("value").and_then(|v| self.value_type(cx, v)));
-                    if let Some(t) = ty { let p = cx.text(p); cx.bind_var(p, &t); }
+                    walk_children(self, n, cx, 0);
+                    cx.declare_local(&name);
+                    if let Some(t) = ty0 { cx.bind_var(&name, &t); }
+                    return Visit::Skip;
                 }
                 Visit::Continue
             }
@@ -279,4 +308,25 @@ impl LangHooks for Rust {
             _ => Visit::Continue,
         }
     }
+}
+
+/// `json!({"path": flow(x)})`: object keys (`"key":`, not `::`) aren't Rust syntax and make the
+/// re-parse drop the value. Blank them with spaces of the same length so offsets still map back.
+fn blank_object_keys(src: &[u8]) -> Vec<u8> {
+    let mut out = src.to_vec();
+    let mut i = 0;
+    while i < src.len() {
+        if src[i] != b'"' { i += 1; continue; }
+        let start = i;
+        i += 1;
+        while i < src.len() && src[i] != b'"' { if src[i] == b'\\' { i += 1; } i += 1; }
+        let end = (i + 1).min(src.len());
+        let mut j = end;
+        while j < src.len() && src[j].is_ascii_whitespace() { j += 1; }
+        if j < src.len() && src[j] == b':' && src.get(j + 1) != Some(&b':') {
+            for b in &mut out[start..=j] { if *b != b'\n' { *b = b' '; } }
+        }
+        i = end;
+    }
+    out
 }

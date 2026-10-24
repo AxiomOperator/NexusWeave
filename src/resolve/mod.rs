@@ -145,6 +145,37 @@ const TRANSPARENT: &[&str] = &[
     "orElseThrow", "get", "orElse", "Value", "GetAwaiter", "GetResult", "ConfigureAwait", "Result", "value",
 ];
 
+/// Standard-library roots that qualify calls (`Array.from`, `Vec::with_capacity`, `json.dumps`).
+fn builtin_global(lang: Lang, head: &str) -> bool {
+    const JS: &[&str] = &["Array", "Object", "Math", "JSON", "Promise", "Number", "String", "Boolean", "Symbol", "Reflect",
+        "Proxy", "Date", "RegExp", "Error", "Map", "Set", "WeakMap", "WeakSet", "Intl", "console", "window", "document",
+        "globalThis", "process", "Buffer", "navigator", "location", "history", "localStorage", "sessionStorage",
+        "performance", "crypto", "URL", "URLSearchParams", "BigInt", "Atomics", "ArrayBuffer", "DataView", "TextEncoder",
+        "TextDecoder", "Uint8Array", "Int32Array", "Float64Array", "Element", "HTMLElement", "Node", "Event", "self",
+        "Response", "Request", "Headers", "FormData", "Blob", "ReadableStream", "WritableStream", "TransformStream",
+        "AbortController", "AbortSignal", "WebSocket", "EventTarget", "MessageChannel", "structuredClone", "queueMicrotask"];
+    const PY: &[&str] = &["os", "sys", "re", "json", "math", "time", "datetime", "str", "int", "float", "list", "dict", "set",
+        "tuple", "bytes", "type", "object", "logging", "itertools", "functools", "collections", "typing", "asyncio",
+        "subprocess", "shutil", "pathlib", "inspect", "copy", "random", "threading", "io", "warnings", "contextlib"];
+    const RUST: &[&str] = &["std", "core", "alloc", "Vec", "String", "HashMap", "HashSet", "BTreeMap", "BTreeSet", "VecDeque",
+        "Box", "Rc", "Arc", "Option", "Result", "Path", "PathBuf", "File", "Cow", "Cell", "RefCell", "Mutex", "RwLock",
+        "Duration", "Instant", "SystemTime", "fs", "io", "mem", "ptr", "thread", "env", "process", "iter", "fmt", "cmp",
+        "str", "char", "u8", "u16", "u32", "u64", "usize", "i32", "i64", "f32", "f64"];
+    const JVM: &[&str] = &["System", "Math", "String", "Integer", "Long", "Double", "Boolean", "Arrays", "Collections",
+        "Objects", "List", "Map", "Set", "Optional", "Stream", "Collectors", "Thread", "Files", "Paths", "Executors", "TimeUnit"];
+    const CS: &[&str] = &["Console", "Math", "String", "Task", "Enumerable", "Convert", "Guid", "DateTime", "File", "Path",
+        "Directory", "Environment", "Activator", "Array", "Encoding", "Debug", "Trace"];
+    let list: &[&str] = match lang {
+        Lang::TypeScript | Lang::Tsx | Lang::JavaScript | Lang::Vue | Lang::Svelte => JS,
+        Lang::Python => PY,
+        Lang::Rust => RUST,
+        Lang::Java | Lang::Kotlin | Lang::Scala => JVM,
+        Lang::CSharp => CS,
+        _ => &[],
+    };
+    list.contains(&head)
+}
+
 const COMMON_METHODS: &[&str] = &[
     "get", "set", "add", "push", "pop", "map", "filter", "reduce", "forEach", "then", "catch", "find", "has", "delete",
     "remove", "clear", "keys", "values", "entries", "toString", "equals", "hashCode", "length", "size", "append", "extend",
@@ -599,6 +630,10 @@ impl<'a> Rx<'a> {
         }
         if segs.len() == 1 && self.is_external_binding(r.file, segs[0]) { return None; }
         if matches!(r.kind, RefKind::Callback | RefKind::Read) { return None; }
+        // `Array.isArray`, `HashMap::with_capacity`, `os.path.join`: the qualifier is the language's
+        // own library (it didn't resolve to a project symbol above), so a same-named project member
+        // is never the target
+        if segs.first().is_some_and(|h| builtin_global(lang, h)) { return None; }
         self.global(r.file, &r.name, want, Some(q))
     }
 

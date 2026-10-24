@@ -8,3 +8,8 @@ Repo::find -> User::new
 User -> Named
 User::name -> Named::name
 describe -> Named::name
+# local closures and parameters shadow same-named functions
+!with_closure -> pick
+!with_param -> helper
+shadow_after -> pick
+install -> on_signal

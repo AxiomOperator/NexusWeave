@@ -120,6 +120,12 @@ impl LangHooks for Go {
                     for (a, b) in pairs {
                         if let Some(t) = self.value_type(cx, b) { let a = cx.text(a); cx.bind_var(a, &t); }
                     }
+                    // `x := x()` calls the outer `x`: the names exist only after the right side
+                    let mut c = l.walk();
+                    let names: Vec<String> = l.named_children(&mut c).filter(|x| x.kind() == "identifier").map(|x| cx.text(x).to_string()).collect();
+                    walk(self, r, cx, 0);
+                    for nm in &names { cx.declare_local(nm); }
+                    return Visit::Skip;
                 }
                 Visit::Continue
             }

@@ -129,6 +129,7 @@ impl LangHooks for Py {
                 match l.kind() {
                     "identifier" => {
                         let name = cx.text(l);
+                        cx.declare_local(name);
                         if let Some(t) = ty { cx.bind_var(name, t); }
                         let scope = cx.cur().kind;
                         if matches!(scope, NodeKind::File | NodeKind::Class) && n.parent().is_some_and(|p| p.kind() == "expression_statement") {
