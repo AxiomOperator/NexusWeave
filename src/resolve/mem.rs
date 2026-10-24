@@ -8,6 +8,9 @@ use rustc_hash::FxHashMap as HashMap;
 /// Name key for the symbol table (64-bit hash; collisions are astronomically unlikely).
 pub fn key(name: &str) -> u64 { xxhash_rust::xxh3::xxh3_64(name.as_bytes()) }
 
+/// An unresolved (library) base class: (qualifier, name), e.g. (Some("models"), "Model").
+pub type ExtBase = (Option<String>, String);
+
 pub struct FileInfo {
     pub id: i64,
     pub path: String,
@@ -19,6 +22,7 @@ pub struct FileInfo {
     pub node: u32,
     /// False once the file was removed from a cached table (indices stay stable).
     pub alive: bool,
+    pub mtime: i64,
 }
 
 pub struct NodeInfo {
@@ -67,7 +71,7 @@ pub struct Mem {
     /// Declared package / namespace → files.
     pub by_package: HashMap<String, Vec<u32>>,
     /// Type node → unresolved (library) supertypes as (qualifier, name).
-    pub ext_supers: std::sync::OnceLock<HashMap<u32, Vec<(Option<String>, String)>>>,
+    pub ext_supers: std::sync::OnceLock<HashMap<u32, Vec<ExtBase>>>,
     /// Type node → resolved supertypes.
     pub supers: std::sync::OnceLock<HashMap<u32, Vec<u32>>>,
     /// Members attached out-of-line (owner resolution): type node → members.
@@ -98,7 +102,7 @@ impl Mem {
         };
         let m = self;
         {
-            let mut q = conn.prepare(&format!("SELECT id, path, lang, package, is_test FROM files{} ORDER BY id", filter("id")))?;
+            let mut q = conn.prepare(&format!("SELECT id, path, lang, package, is_test, mtime FROM files{} ORDER BY id", filter("id")))?;
             let mut rows = q.query([])?;
             while let Some(r) = rows.next()? {
                 let path: String = r.get(1)?;
@@ -110,7 +114,7 @@ impl Mem {
                 m.file_by_id.insert(r.get(0)?, idx);
                 m.file_by_path.insert(path.clone(), idx);
                 m.files.push(FileInfo { id: r.get(0)?, path, lang: Lang::from_i64(r.get(2)?).unwrap_or(Lang::JavaScript),
-                    package, dir, is_test: r.get(4)?, node: u32::MAX, alive: true });
+                    package, dir, is_test: r.get(4)?, node: u32::MAX, alive: true, mtime: r.get(5)? });
             }
         }
         {

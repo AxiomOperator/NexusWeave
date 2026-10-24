@@ -139,6 +139,7 @@ class Score:
     ov_truth: int = 0
     ov_pred: int = 0
     ov_correct: int = 0
+    aligned_unscored: int = 0  # resolved refs aligned with property/local occurrences (not judged)
     outside_truth: int = 0  # xgraph refs in files the truth indexer didn't cover
     accessor_refs: int = 0  # getter/setter reads in the truth (not modeled, not scored)
     truth_dropped: int = 0  # truth occurrences whose text doesn't match their symbol (aliases, indexer bugs)
@@ -150,7 +151,7 @@ class Score:
     def to_json(self) -> dict:
         return {
             "truth_refs": self.truth, "extracted": self.extracted, "correct": self.correct, "wrong": self.wrong,
-            "unresolved": self.unresolved, "unverifiable": self.unverifiable, "truth_dropped": self.truth_dropped, "outside_truth": self.outside_truth, "truth_files_only": True, "accessor_refs": self.accessor_refs,
+            "unresolved": self.unresolved, "unverifiable": self.unverifiable, "truth_dropped": self.truth_dropped, "aligned_unscored": self.aligned_unscored, "outside_truth": self.outside_truth, "truth_files_only": True, "accessor_refs": self.accessor_refs,
             "precision": round(self.p(), 4), "recall": round(self.r(), 4), "extraction": round(self.ext(), 4),
             "by_kind": {k: {"correct": c, "wrong": w, "precision": round(c / max(1, c + w), 4)} for k, (c, w) in sorted(self.by_kind.items())},
             "precision_by_confidence": {k: {"correct": c, "wrong": w, "precision": round(c / max(1, c + w), 4)} for k, (c, w) in sorted(self.by_conf.items())},
@@ -209,10 +210,15 @@ def band(conf: int) -> str:
 
 def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
     docs = scip.read_index(str(scip_path))
+    # document-local symbols (`local 16`) repeat across files: make them unique per document
+    for d in docs:
+        for o in d.occurrences:
+            if scip.is_local(o.symbol):
+                o.symbol = f"{d.path}|{o.symbol}"
     defs: dict[str, list[tuple[str, int]]] = defaultdict(list)
     for d in docs:
         for o in d.occurrences:
-            if o.roles & scip.DEFINITION and not scip.is_local(o.symbol):
+            if o.roles & scip.DEFINITION:
                 defs[o.symbol].append((d.path, o.line + 1))
 
     src_cache: dict[str, list[str]] = {}
@@ -230,7 +236,7 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
 
     # packages that are part of this project: a symbol from one of them without a definition in
     # the index means the truth is incomplete there (e.g. Go skips testdata/), not "external"
-    own_packages = {package_of(s) for s in defs}
+    own_packages = {package_of(s) for s in defs if "|local " not in s}
     imports_cache: dict[str, set[int]] = {}
 
     def in_import(path: str, line: int) -> bool:
@@ -244,26 +250,26 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
     truth: dict[tuple[str, str], list[list]] = defaultdict(list)
     for d in docs:
         for o in d.occurrences:
-            if o.roles & scip.DEFINITION or scip.is_local(o.symbol) or in_import(d.path, o.line + 1):
+            if o.roles & scip.DEFINITION or in_import(d.path, o.line + 1):
                 continue
-            kind = scip.descriptor_kind(o.symbol)
+            # every occurrence takes part in alignment (so a ref never borrows its neighbour's);
+            # only functions/methods/types/macros count toward recall (`scored` flag)
+            local = "|local " in o.symbol
+            kind = "local" if local else scip.descriptor_kind(o.symbol)
             if kind == "accessor":
-                accessor_refs += 1  # getter/setter reads: xgraph doesn't model property access
-                continue
-            if kind not in ("method", "type", "macro"):
-                continue
+                accessor_refs += 1  # getter/setter reads: xgraph doesn't model plain property access
             name = ident(d.path, o)
             if not name:
                 continue
-            dn = scip.descriptor_name(o.symbol)
+            dn = name if local else scip.descriptor_name(o.symbol)
             if name != dn and dn not in CTOR_NAMES and name.lstrip("r#") != dn:
                 # the source text doesn't name the symbol: an import alias, or an indexer bug
                 # (scip-python labels `httpx.Response` as `Request#`); don't judge against it
                 truth_dropped += 1
                 continue
-            truth[(d.path, name)].append([o.line + 1, o.symbol, False])
+            truth[(d.path, name)].append([o.line + 1, o.symbol, False, o.start, kind in ("method", "type", "macro")])
     for v in truth.values():
-        v.sort(key=lambda x: x[0])
+        v.sort(key=lambda x: (x[0], x[3]))
 
     con = sqlite3.connect(repo / ".xgraph" / "graph.db")
     nodes = {nid: (path, s, e, name, kind) for nid, path, s, e, name, kind in con.execute(
@@ -271,7 +277,7 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
 
     def target_ok(nid: int, sym: str) -> bool:
         path, s, e, name, kind = nodes[nid]
-        dn = scip.descriptor_name(sym)
+        dn = name if "|local " in sym else scip.descriptor_name(sym)
         for p, l in defs.get(sym, ()):
             if p == path and s <= l <= e and (name == dn or dn in CTOR_NAMES or (kind in TYPE_KINDS and dn == name)):
                 return True
@@ -280,11 +286,11 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
     sc = Score()
     wrong_samples, missed_samples = [], []
     # route -> handler (`handles`) edges are synthesized without a call site, so they aren't scored
-    refs = con.execute("""SELECT f.path, r.line, r.name, r.kind, r.target_id, r.qualifier, r.confidence FROM refs r
+    refs = con.execute("""SELECT f.path, r.line, r.name, r.kind, r.target_id, r.qualifier, r.confidence, r.col FROM refs r
                           JOIN files f ON f.id = r.file_id
-                          WHERE r.kind IN (0, 1, 2, 3, 4, 6, 7) ORDER BY f.path, r.line""").fetchall()
+                          WHERE r.kind IN (0, 1, 2, 3, 4, 6, 7) ORDER BY f.path, r.line, r.col""").fetchall()
     truth_files = {d.path for d in docs}
-    for path, line, name, kind, target, qual, conf in refs:
+    for path, line, name, kind, target, qual, conf, col in refs:
         if path not in truth_files:  # the indexer didn't cover this file (outside tsconfig, testdata, …)
             sc.outside_truth += 1
             continue
@@ -292,15 +298,14 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
         hit = None
         if cands:
             i = bisect.bisect_left(cands, line, key=lambda x: x[0])
-            # nearest unused truth occurrence at or below the ref's line, within the window
+            # first unused occurrence on the ref's line at/after its column (member calls are recorded
+            # at the receiver), else on the following lines within the window
             for j in range(i, len(cands)):
                 if cands[j][0] > line + LINE_WINDOW:
                     break
-                if not cands[j][2]:
+                if not cands[j][2] and (cands[j][0] > line or cands[j][3] >= col):
                     hit = cands[j]
                     break
-            if hit is None and i > 0 and cands[i - 1][0] == line and not cands[i - 1][2]:
-                hit = cands[i - 1]
         kname = REF_KINDS.get(kind, str(kind))
         if hit is None:
             if target is not None:
@@ -309,6 +314,12 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
         hit[2] = True
         sym = hit[1]
         in_project = sym in defs
+        if not hit[4]:
+            # aligned with a property/local occurrence: it only claims the slot (so the ref doesn't
+            # borrow a neighbour's occurrence); outside the scored kinds, so not judged
+            if target is not None:
+                sc.aligned_unscored += 1
+            continue
         if not in_project and package_of(sym) in own_packages:
             if target is not None:
                 sc.unverifiable += 1
@@ -332,8 +343,8 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
     # recall accounting over in-project truth refs
     correct_left = sc.correct
     for (path, name), occs in truth.items():
-        for line, sym, used in occs:
-            if sym not in defs:
+        for line, sym, used, _, scored in occs:
+            if sym not in defs or not scored:
                 continue
             tk = scip.descriptor_kind(sym)
             sc.truth += 1
@@ -344,11 +355,11 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
                 missed_samples.append(f"{path}:{line} {name} (not extracted) -> {defs[sym][0][0]}:{defs[sym][0][1]}")
     # per-truth-kind hits: re-walk aligned correct refs
     hits_by_kind: dict[str, int] = defaultdict(int)
-    for path, line, name, kind, target, _, _ in refs:
+    for path, line, name, kind, target, _, _, _ in refs:
         if target is None:
             continue
-        for l, sym, used in truth.get((path, name), ()):
-            if used and line <= l <= line + LINE_WINDOW and sym in defs and target_ok(target, sym):
+        for l, sym, used, _, scored in truth.get((path, name), ()):
+            if used and scored and line <= l <= line + LINE_WINDOW and sym in defs and target_ok(target, sym):
                 hits_by_kind[scip.descriptor_kind(sym)] += 1
                 break
     for k, v in hits_by_kind.items():

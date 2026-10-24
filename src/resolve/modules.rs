@@ -35,6 +35,8 @@ pub struct Modules {
     include_dirs: Vec<String>,
     /// Library return-type stub families (built-in + `xgraph.stubs.toml` / `.xgraph/stubs.toml`).
     pub stubs: Vec<StubFamily>,
+    /// Compiler-accurate references (`index.scip` / `.xgraph/index.scip`), when present.
+    pub scip: Option<crate::scip::Index>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -160,7 +162,7 @@ fn load_tsconfig(root: &Path, rel: &str, depth: u32) -> Option<TsConfig> {
 
 impl Modules {
     pub fn new(root: &Path, mem: &Mem) -> Modules {
-        let mut m = Modules { ts: vec![], js_packages: HashMap::new(), go_mods: vec![], crates: HashMap::new(), crate_dirs: vec![], py: HashMap::new(), include_dirs: vec![], stubs: load_stubs(root) };
+        let mut m = Modules { ts: vec![], js_packages: HashMap::new(), go_mods: vec![], crates: HashMap::new(), crate_dirs: vec![], py: HashMap::new(), include_dirs: vec![], stubs: load_stubs(root), scip: crate::scip::Index::load_for(root) };
         let has = |l: &[Lang]| mem.files.iter().any(|f| f.alive && l.contains(&f.lang));
         let need_js = has(&[Lang::TypeScript, Lang::Tsx, Lang::JavaScript]);
         for rel in config_files(root) {

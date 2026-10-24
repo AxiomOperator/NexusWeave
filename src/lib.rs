@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod model;
 pub mod query;
 pub mod resolve;
+pub mod scip;
 pub mod search;
 pub mod ui;
 pub mod watch;

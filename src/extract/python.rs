@@ -26,10 +26,9 @@ fn ctor_type<'a>(cx: &Cx<'a>, v: Node<'_>) -> Option<&'a str> {
 /// String value of the first matching keyword argument.
 fn kwarg_str(cx: &Cx<'_>, args: Node<'_>, names: &[&str]) -> Option<String> {
     let mut c = args.walk();
-    let found = args.named_children(&mut c).filter(|k| k.kind() == "keyword_argument")
+    args.named_children(&mut c).filter(|k| k.kind() == "keyword_argument")
         .find(|k| cx.field_text(*k, "name").is_some_and(|n| names.contains(&n)))
-        .and_then(|k| k.child_by_field_name("value")).and_then(|v| string_lit(cx, v));
-    found
+        .and_then(|k| k.child_by_field_name("value")).and_then(|v| string_lit(cx, v))
 }
 
 impl Py {

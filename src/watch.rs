@@ -22,7 +22,7 @@ struct State {
 /// Files whose change alters module resolution: drop the warm resolver state.
 fn is_config(rel: &str) -> bool {
     let f = rel.rsplit('/').next().unwrap_or(rel);
-    matches!(f, "package.json" | "go.mod" | "Cargo.toml" | "compile_commands.json" | "jsconfig.json" | "pnpm-workspace.yaml" | "xgraph.stubs.toml" | "stubs.toml")
+    matches!(f, "package.json" | "go.mod" | "Cargo.toml" | "compile_commands.json" | "jsconfig.json" | "pnpm-workspace.yaml" | "xgraph.stubs.toml" | "stubs.toml" | "index.scip")
         || f.starts_with("tsconfig") && f.ends_with(".json")
 }
 

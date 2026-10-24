@@ -14,6 +14,9 @@ mod mem;
 pub mod modules;
 
 pub use mem::{Mem, dir_of};
+
+/// Hash key used for symbol names (shared with the SCIP importer).
+pub fn name_key(name: &str) -> u64 { mem::key(name) }
 use modules::{Modules, Target, common_prefix};
 
 use crate::db::Db;
@@ -57,6 +60,8 @@ impl Cache {
 struct RefRow {
     id: i64,
     file: u32,
+    line: u32,
+    col: u32,
     src: u32,
     kind: RefKind,
     name: String,
@@ -677,6 +682,53 @@ impl<'a> Rx<'a> {
     }
 }
 
+/// Compiler-accurate overrides from a SCIP index: for every ref the index covers (same identifier
+/// near the same line, in a file not modified since the index was built), take the compiler's
+/// answer — the exact definition (confidence 100), or a library symbol (unresolved).
+fn apply_scip(mem: &Mem, ix: &crate::scip::Index, refs: &[&RefRow], res: &mut [Resolved]) {
+    let mut order: Vec<usize> = (0..refs.len()).collect();
+    order.sort_by_key(|&i| (refs[i].file, refs[i].line, refs[i].col));
+    let mut used: HashMap<u32, std::collections::HashSet<(u32, u32)>> = HashMap::new();
+    let mut file_nodes: HashMap<u32, Vec<u32>> = HashMap::new();
+    let nodes_of = |f: u32, cache: &mut HashMap<u32, Vec<u32>>| -> Vec<u32> {
+        cache.entry(f).or_insert_with(|| {
+            let mut out = Vec::new();
+            let mut stack = vec![mem.files[f as usize].node];
+            while let Some(n) = stack.pop() {
+                if n == u32::MAX { continue; }
+                out.push(n);
+                stack.extend_from_slice(mem.kids(n));
+            }
+            out
+        }).clone()
+    };
+    for i in order {
+        let r = refs[i];
+        if !matches!(r.kind, RefKind::Call | RefKind::Instantiate | RefKind::TypeRef | RefKind::Extends | RefKind::Implements | RefKind::Read | RefKind::Callback) { continue; }
+        let f = &mem.files[r.file as usize];
+        if f.mtime > ix.mtime_ms { continue; }  // edited after the index was built: positions may be off
+        let u = used.entry(r.file).or_default();
+        let Some((answer, sym)) = ix.lookup(&f.path, r.line, r.col, &r.name, u) else { continue };
+        match answer {
+            None => { res[i].res = None; res[i].via = None; }  // the compiler says: library symbol
+            Some(defs) => {
+                let s = &ix.symbols[sym as usize];
+                let want = if s.contains("|local ") { r.name.clone() } else { crate::scip::descriptor_name(s) };
+                let hit = defs.iter().find_map(|(p, l)| {
+                    let &fi = mem.file_by_path.get(p)?;
+                    let cands: Vec<u32> = nodes_of(fi, &mut file_nodes).into_iter()
+                        .filter(|&n| { let x = mem.node(n); x.kind != NodeKind::File && x.start_line <= *l && *l <= x.start_line + x.lines })
+                        .collect();
+                    // the definition's own node (same name), else the innermost enclosing one
+                    cands.iter().copied().filter(|&n| mem.node(n).name == want).min_by_key(|&n| mem.node(n).lines)
+                        .or_else(|| cands.iter().copied().min_by_key(|&n| mem.node(n).lines))
+                });
+                if let Some(n) = hit { res[i].res = Some((n, 100)); }
+            }
+        }
+    }
+}
+
 /// Outcome for one ref, ready to persist.
 struct Resolved {
     id: i64,
@@ -829,12 +881,12 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
         let mut v = Vec::with_capacity(p.len());
         for (i, r) in p.iter().enumerate() {
             let (Some(&file), Some(&src)) = (mem.file_by_id.get(&r.file_id), mem.node_by_id.get(&r.src_id)) else { continue };
-            v.push(RefRow { id: i as i64 + 1, file, src, kind: r.kind, name: r.name.clone(), qualifier: r.qualifier.clone(), recv_type: r.recv_type.clone(), db_target: None, db_via: None });
+            v.push(RefRow { id: i as i64 + 1, file, line: r.line, col: r.col, src, kind: r.kind, name: r.name.clone(), qualifier: r.qualifier.clone(), recv_type: r.recv_type.clone(), db_target: None, db_via: None });
         }
         pending_rows = p;
         v
     } else {
-        let base = "SELECT id, file_id, src_id, kind, name, qualifier, recv_type, target_id, via_id FROM refs WHERE kind NOT IN (8, 11, 12) AND (1=1";
+        let base = "SELECT id, file_id, src_id, kind, name, qualifier, recv_type, target_id, via_id, line, col FROM refs WHERE kind NOT IN (8, 11, 12) AND (1=1";
         let sql = match &scope {
             Scope::All | Scope::Fresh(_) => format!("{base})"),
             Scope::Incremental { files, names, via_refs, .. } => {
@@ -890,12 +942,12 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
         };
         let mut q = tx.prepare(&sql)?;
         let rows = q.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?,
-            r.get::<_, String>(4)?, r.get::<_, Option<String>>(5)?, r.get::<_, Option<String>>(6)?, r.get::<_, Option<i64>>(7)?, r.get::<_, Option<i64>>(8)?)))?;
+            r.get::<_, String>(4)?, r.get::<_, Option<String>>(5)?, r.get::<_, Option<String>>(6)?, r.get::<_, Option<i64>>(7)?, r.get::<_, Option<i64>>(8)?, r.get::<_, u32>(9)?, r.get::<_, u32>(10)?)))?;
         let mut v = Vec::new();
         for row in rows {
-            let (id, fid, sid, kind, name, qualifier, recv_type, db_target, db_via) = row?;
+            let (id, fid, sid, kind, name, qualifier, recv_type, db_target, db_via, line, col) = row?;
             let (Some(&file), Some(&src)) = (mem.file_by_id.get(&fid), mem.node_by_id.get(&sid)) else { continue };
-            v.push(RefRow { id, file, src, kind: RefKind::from_i64(kind).unwrap_or(RefKind::Call), name, qualifier, recv_type, db_target, db_via });
+            v.push(RefRow { id, file, line, col, src, kind: RefKind::from_i64(kind).unwrap_or(RefKind::Call), name, qualifier, recv_type, db_target, db_via });
         }
         v
     };
@@ -932,7 +984,8 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
     }
     let _ = mem.ext_supers.set(ext_supers);
     let _ = mem.supers.set(supers);
-    let r_res: Vec<_> = rest.par_iter().map(|r| resolve_one(&rx, r)).collect();
+    let mut r_res: Vec<_> = rest.par_iter().map(|r| resolve_one(&rx, r)).collect();
+    if let Some(ix) = &mods.scip { apply_scip(&mem, ix, &rest, &mut r_res); }
 
     // Full route paths: follow router mounts (`app.use("/api", router)`) back to the root app.
     let route_renames: Vec<(u32, String)> = {
