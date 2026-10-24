@@ -2,7 +2,7 @@
 name = "xgraph"
 version = "0.1.0"
 edition = "2024"
-description = "Fast local code graph for AI coding agents: symbols, calls, imports and inheritance across 9 language families, served over MCP"
+description = "Fast local code graph for AI coding agents: symbols, calls, imports and inheritance across 15+ languages, served over MCP"
 license = "MIT"
 readme = "README.md"
 keywords = ["code-intelligence", "mcp", "tree-sitter", "static-analysis", "knowledge-graph"]

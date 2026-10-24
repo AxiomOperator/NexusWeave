@@ -68,21 +68,21 @@ The following are left out of scoring, and each is counted in `latest.json`:
 Duplicate documents, which scip-typescript emits for overlapping tsconfig projects, are merged.
 Generated files outside the checkout (scip-go's build-cache test mains) are dropped.
 
-## Baseline (xgraph 0.1.0)
+## Baseline (scorer v2)
 
 | repo | lang | truth refs | extracted | precision | recall |
 |---|---|---:|---:|---:|---:|
-| hono | typescript | 9,427 | 94.4% | 98.9% | 78.9% |
-| codegraph | typescript | 19,925 | 94.8% | 99.8% | 91.3% |
+| hono | typescript | 9,427 | 94.3% | 99.9% | 79.0% |
+| codegraph | typescript | 19,925 | 94.8% | 99.9% | 92.8% |
 | express | javascript | 343 | 88.6% | 100.0% | 86.9% |
-| flask | python | 1,143 | 72.2% | 97.8% | 69.5% |
-| httpx | python | 2,833 | 73.7% | 99.7% | 66.8% |
-| gin | go | 5,564 | 98.8% | 99.8% | 96.5% |
+| flask | python | 1,143 | 76.4% | 100.0% | 73.8% |
+| httpx | python | 2,833 | 87.9% | 99.7% | 81.1% |
+| gin | go | 5,564 | 98.8% | 99.9% | 96.5% |
 | ripgrep | rust | 19,393 | 92.2% | 98.4% | 81.7% |
 
-Edges with confidence ≥ 90 are 99–100% precise in every repo. The remaining errors are the
-low-confidence fallbacks: the unknown-receiver name match (<50) is 18% precise on flask and
-74% on gin.
+Edges with confidence ≥ 90 are 99–100% precise in every repo. The low-confidence fallbacks are
+now mostly right too: below 50 they are 82% precise on gin (14 of 17), 92–97% on codegraph,
+hono, httpx and ripgrep, and 100% on flask. The weakest band is ripgrep's 50–69 (84%).
 
 ## Adding a repo
 
@@ -92,3 +92,37 @@ low-confidence fallbacks: the unknown-receiver name match (<50) is 18% precise o
 
 Before trusting a new repo's numbers, check that the wrong and missed samples are real xgraph
 errors and not truth artifacts. Every exclusion above was found this way.
+
+## Agent evaluation (`bench/agent/`)
+
+`bench/agent/run.py` measures what xgraph does for an agent: the same 20 code questions
+(`bench/agent/tasks.toml`) go through headless Claude Code (`claude -p`) under two conditions:
+
+| condition | tools |
+|---|---|
+| `baseline` | Read, Grep, Glob |
+| `xgraph` | Read, Grep, Glob + the xgraph MCP server (index built beforehand, watcher off) |
+
+- Each condition gets its own clean checkout of the corpus repo at the pinned commit
+  (`bench/.cache/agent/<repo>-<condition>`); only the xgraph one contains an index.
+- Sessions are read-only (Bash, Edit, Write, web tools and subagents are disallowed), load no
+  user or project settings (`--setting-sources ""`), and run with `--strict-mcp-config`.
+- The tasks mix three kinds: `flow` (how does X reach Y), `explain` (how does X work) and
+  `impact` (what depends on X), over all seven corpus repos.
+- **Scoring:** each task lists the facts a correct answer names, each with acceptable spellings
+  (case-insensitive substring match). Every fact was checked against the source at the pinned
+  commit. The score is the fraction of facts present; a task is fully correct at 100%.
+- **Cost:** tokens (uncached input, cache writes, cache reads, output), USD cost as reported by
+  Claude Code, turns, tool calls by name and wall-clock time.
+- Conditions are interleaved and repeated (`--repeats`, default 2), so drift during the run
+  affects both alike. Results append to `bench/results/agent.jsonl`; an interrupted run resumes.
+
+```
+python3 bench/agent/run.py                         # 20 tasks × 2 conditions × 2 repeats
+python3 bench/agent/run.py --tasks gin-abort --repeats 1
+python3 bench/agent/run.py --report bench/results/agent.jsonl
+```
+
+The rubric is a keyword check, not a judgment of the whole answer: it rewards naming the right
+functions and cannot detect a wrong explanation that happens to mention them. It is
+deterministic and cheap, which is what a regression signal needs.

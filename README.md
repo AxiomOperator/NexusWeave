@@ -11,10 +11,17 @@ static binary with no Node runtime, and puts its effort into indexing speed, res
 accuracy, and token-efficient answers.
 
 ```
-cargo install --path .        # builds a single ~25 MB binary
+curl -fsSL https://raw.githubusercontent.com/AxiomOperator/xGraph/main/scripts/install.sh | sh
+                              # or: cargo install --path .   (one ~25 MB binary)
 xgraph install                # registers the MCP server with Claude Code / Cursor / Codex / Gemini / opencode
+                              #   --hooks also adds a Claude Code hint hook (see below)
 cd your-project && xgraph init
+xgraph upgrade                # later: replace the binary with the latest release (checksum-verified)
 ```
+
+The repository is private for now: export `GITHUB_TOKEN` (read access) before running the
+installer or `xgraph upgrade`. Release binaries cover Linux and macOS (x86_64, aarch64) and
+Windows (x86_64); each release carries `SHA256SUMS`.
 
 ## Why
 
@@ -22,14 +29,17 @@ cd your-project && xgraph init
 |---|---|
 | **One call, full context** | `xgraph_explore` returns the relevant symbols' verbatim line-numbered source, the call path between the symbols you named, and a blast-radius list of dependents. Output is packed into a size-tiered character budget. |
 | **Precise edges** | Receiver types are inferred from annotations, constructors, field declarations and **return types across files**. Return types can be declared, or inferred from `return` statements when unannotated (`repo.find(id).greet()` resolves `greet` on `find`'s return type). Explicit generic arguments (`get<User>()`, `make_unique<T>()`) and C# extension methods are handled. Calls into libraries stay unresolved instead of being guessed. |
-| **Beyond direct calls** | HTTP routes become graph nodes linked to their handlers. Functions passed as callbacks get `passes` edges. Methods get `overrides` edges to the interface or base method they implement, so flows cross dynamic dispatch (`calls → dispatches → …`). |
-| **Fast** | Parsing runs in parallel. References are resolved in memory before the single bulk write. vscode (15.4k files, 2.1M references) indexes in about 13 s. Resyncing after a one-file edit takes 44 ms on gin (99 files), about 0.2 s on django (2.4k files) and about 0.3–0.45 s on vscode. Those last two figures are for the long-running watcher or MCP server, which keeps resolver state warm; a cold `xgraph sync` on vscode takes about 1.5 s. |
+| **Beyond direct calls** | HTTP routes become graph nodes linked to their handlers, with router prefixes and mounts applied. Event topics (`emitter.on("x")` / `emit("x")`, Python signals, C# events) link emitters to listeners. Functions passed as callbacks get `passes` edges. Methods get `overrides` edges to the interface or base method they implement, so flows cross dynamic dispatch (`calls → dispatches → …`). |
+| **Compiler-grade when available** | An `index.scip` in the project (from scip-typescript, rust-analyzer, scip-clang, …) is imported as ground-truth edges; heuristics fill in the rest. Library return types missing from the index can be declared in `xgraph.stubs.toml`. |
+| **Review mode** | `xgraph diff-impact` maps a git diff to the symbols it touches, their callers, the routes whose flows reach them and the tests to run; the bundled GitHub workflow comments it on PRs. `xgraph analyze` reports dead code, import cycles, entry points and hot spots. |
+| **Fast** | Parsing runs in parallel. References are resolved in memory before the single bulk write. vscode (15.4k files, 2.6M references) indexes in 12.6 s into a 388 MB database. Resyncing after a one-file edit takes about 0.2 s on django (2.4k files) and on vscode, and up to 1.5 s on vscode for a hub file imported by thousands of others. Those figures are for the long-running watcher or MCP server, which keeps resolver state warm. |
 | **Always fresh** | `xgraph serve` watches the tree with a 300 ms debounce and applies pending edits before answering each tool call. |
 | **Local** | Nothing leaves your machine. No telemetry. |
 
 ## Languages
 
-TypeScript / TSX / JavaScript · Python · Go · Rust · Java · C# · C / C++ · Ruby · PHP
+TypeScript / TSX / JavaScript · Python · Go · Rust · Java · C# · C / C++ · Ruby · PHP ·
+Kotlin · Swift · Dart · Scala · Lua · Vue and Svelte single-file components
 
 Each language gets:
 - definitions: classes, structs, interfaces/traits, enums, functions, methods, constructors, fields, constants, type aliases, macros, namespaces/modules
@@ -39,9 +49,13 @@ Each language gets:
   - Python: package roots and relative imports
   - Go: `go.mod` packages
   - Rust: `crate::`/`self::`/`super::`, workspace crates, `mod` files
-  - Java / C# / PHP: packages and namespaces
+  - Java / C# / PHP / Kotlin / Scala: packages and namespaces
   - C/C++: includes
   - Ruby: `require`/`require_relative`
+  - Dart: relative and `package:` imports; Lua: `require` module paths; Swift: module-wide names
+  - Vue / Svelte: `<script>` blocks go through the TS hooks at their original positions; each
+    file is a component node, template tags `<UserCard>` / `<user-card>` are instantiations and
+    `@click="save"` / `on:click={save}` handlers are callbacks
 - out-of-line members: Go receivers, Rust `impl` blocks, C++ `A::f`, reopened Ruby classes and C# partial classes/namespaces
 - routes:
   - Express, Koa, Fastify and Hono; NestJS `@Get`
@@ -68,10 +82,14 @@ xgraph callees <symbol>         what it calls / references
 xgraph impact <symbol> [-d N]   transitive dependents, grouped by file
 xgraph affected [files] [--stdin] [-f glob]   test files affected by changed files
 xgraph files [prefix] [--symbols]
+xgraph diff-impact [--base REF] symbols touched by a git diff, their callers, routes and tests
+xgraph analyze dead|cycles|entry|hotspots
 xgraph watch [path]             keep the graph in sync from the terminal
-xgraph serve                    MCP server on stdio (auto-syncs)
-xgraph ui [--port 7878]         graph viewer in the browser
-xgraph install | uninstall      (un)register the MCP server with agents (--target, --print)
+xgraph serve                    MCP server on stdio (auto-syncs; shares one daemon per repo)
+xgraph daemon [status|stop]     the shared per-repo index process
+xgraph ui [--port 7878]         graph viewer: graph, modules, routes, flows, insights, explore
+xgraph install | uninstall      (un)register the MCP server with agents (--target, --print, --hooks)
+xgraph upgrade [--check]        self-update from GitHub releases
 ```
 
 Symbols can be written as `name`, `Class.method`, `mod::fn`, or `path/file.ts:Name`.
@@ -95,9 +113,20 @@ better than a large one. Enable the rest with `XGRAPH_MCP_TOOLS=all`, or with a 
 | `xgraph_search` | ranked symbol search, optional `kind` |
 | `xgraph_callers` / `xgraph_callees` | direct relationships |
 | `xgraph_impact` | transitive dependents |
+| `xgraph_diff_impact` | what the current change touches, who calls it, routes and tests |
+| `xgraph_analyze` | dead code, import cycles, entry points, hot spots |
 | `xgraph_files` / `xgraph_status` | layout and index health |
 
 Every tool accepts `projectPath`, so one server can answer for several indexed repos.
+`xgraph_explore` remembers what it already showed in a session and replaces repeats with
+one-line pointers; it re-checks file hashes before printing source.
+
+**Claude Code hook.** `xgraph install --hooks` adds a `PreToolUse` hook on Grep/Glob. When the
+agent starts a symbol-shaped search (`fn\s+resolve_path`, `class Repo`) inside an indexed
+repository, the hook adds a one-line hint that `xgraph_explore` answers it in one call. The tool
+always still runs: the hint is extra context, no permission decision is made, plain text searches
+are left alone, and it repeats at most every eighth matching search per session.
+`xgraph uninstall` removes it.
 
 ## How it works
 
@@ -113,10 +142,10 @@ discover (ignore-aware, parallel) ─► parse + extract (rayon, tree-sitter, pe
 - **Resolution** order, strongest evidence first:
   1. typed receiver: member lookup through supertypes (a known receiver type is authoritative, with no name guessing)
   2. qualifier: an import namespace, type, package or module path
-  3. lexical scope, including implicit `this` for Java, C#, C++ and Ruby
+  3. lexical scope, including implicit `this` for Java, C#, C++, Ruby, Kotlin, Swift, Dart and Scala
   4. file scope and named imports, following re-exports and barrels
   5. glob imports
-  6. package visibility (Go package, Java package, C# and PHP namespaces)
+  6. package visibility (Go, Java, Kotlin and Scala packages, C# and PHP namespaces)
   7. a fallback for languages with a global namespace (C, C++, Ruby, PHP, C#), tie-broken by path proximity
 
   Each edge carries a confidence of 40–98.
@@ -125,7 +154,9 @@ discover (ignore-aware, parallel) ─► parse + extract (rayon, tree-sitter, pe
   - refs from changed files
   - refs naming any symbol that appeared or disappeared
   - typed receivers whose type path runs through a changed symbol
-  - refs bound through an import alias or re-export chain into a changed file
+  - refs bound through an import alias or re-export chain into a changed file: by name, by a
+    receiver type or qualifier that names the alias, and (in importers of a type-like alias)
+    inferred call-path receivers such as `make_and_find().greet()`
   - typed refs whose receiver type lived in a changed file (`via_id`)
   - typed refs that failed on a name which now exists (`miss_h`)
 
@@ -144,6 +175,9 @@ discover (ignore-aware, parallel) ─► parse + extract (rayon, tree-sitter, pe
   over 1.5 MB, minified files, and generated files (detected by content banners).
 - The index lives in `.xgraph/graph.db`. That directory ignores itself in git. An index written by an
   incompatible xgraph version is rebuilt automatically.
+- `xgraph.stubs.toml` (or `.xgraph/stubs.toml`) declares return types of libraries that aren't
+  indexed (`Model.objects → Manager → QuerySet`); common frameworks are built in.
+- `index.scip` / `.xgraph/index.scip` is imported when present.
 - `XGRAPH_TRACE=1` prints phase timings.
 
 ## Accuracy
@@ -152,19 +186,30 @@ Measured against compiler-grade SCIP indexes on 7 pinned repos (`bench/`, run wi
 
 | language | precision | recall | repos |
 |---|---:|---:|---|
-| TypeScript | 99.6% | 87.3% | hono, codegraph |
+| TypeScript | 99.9% | 88.4% | hono, codegraph |
 | JavaScript | 100.0% | 86.9% | express |
-| Python | 99.1% | 67.6% | flask, httpx |
-| Go | 99.8% | 96.5% | gin |
+| Python | 99.8% | 79.0% | flask, httpx |
+| Go | 99.9% | 96.5% | gin |
 | Rust | 98.4% | 81.7% | ripgrep |
 
+With a SCIP index present: hono 100% / 84.3%, ripgrep 99.2% / 91.6%.
+
 `bench/README.md` explains what is scored and what is excluded. CI fails on regressions.
+
+## Agent evaluation
+
+80 headless Claude Code sessions (20 questions × with/without xgraph × 2) answered every
+question correctly in both conditions. With xgraph they used 30% fewer tool calls, 12% fewer
+tokens and 10% less time. Cost came out 5% higher overall: lower on the largest repo, higher on
+the small ones. The details and next steps are in `enhancements.md` section 5;
+reproduce with `bench/agent/run.py`.
 
 ## Development
 
 ```
 cargo test --release      # unit + fixture resolution tests (tests/fixtures/<lang>/expect.txt) + sync convergence
 bench/accuracy.py         # precision/recall vs SCIP ground truth (after bench/setup.sh)
+bench/agent/run.py        # agent evaluation: Claude Code sessions with vs without xgraph
 xgraph dump <file>        # hidden: raw extraction for one file
 xgraph debug miss|low     # hidden: sample unresolved-but-defined refs / low-confidence edges
 ```
