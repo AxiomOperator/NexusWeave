@@ -30,7 +30,8 @@ git clone https://github.com/AxiomOperator/NexusWeave.git && cd NexusWeave
 cargo install --path .            # Rust 1.88+; one ~37 MB binary in ~/.cargo/bin
 nexusweave install                # register the MCP server with Claude Code / Cursor / Codex / Gemini / opencode / Kiro / VS Code
                                   #   --hooks: a Claude Code hint hook (see below); --instructions: a NexusWeave section in
-                                  #   CLAUDE.md / AGENTS.md / GEMINI.md; --allow: no permission prompts for its tools
+                                  #   CLAUDE.md / AGENTS.md / GEMINI.md (measured: more explore calls, higher cost on
+                                  #   small repos); --allow: no permission prompts for its tools
 cd your-project && nexusweave init
 nexusweave explore "How does authentication work?"
 nexusweave ui                     # optional: browse the graph at http://127.0.0.1:7878
@@ -278,7 +279,9 @@ With a SCIP index present: hono 100% / 84.3%, ripgrep 99.2% / 91.6%.
 96 headless Claude Code sessions (24 questions × with/without NexusWeave × 2) answered every
 question correctly in both conditions. With NexusWeave they used 25% fewer tool calls, 5% fewer
 tokens and 5% less time. Cost came out 4% higher overall: lower on the largest repo, higher on
-the small ones. (An earlier 80-session run: −30% tool calls, −12% tokens, +5% cost.) The details and next steps are in `enhancements.md` section 6;
+the small ones. (An earlier 80-session run: −30% tool calls, −12% tokens, +5% cost.) Per repo, it
+saved 24% of cost on the largest repo (1.2k files) and cost 1–22% more on repos of 80–300 files;
+`enhancements.md` §8 has the paired comparison with confidence intervals. The details and next steps are in `enhancements.md` section 6;
 reproduce with `bench/agent/run.py`.
 
 ## Development

@@ -97,6 +97,9 @@ def run_one(task: dict, cond: str, rep: int, args, nexusweave: Path) -> dict:
            "--setting-sources", "", "--no-session-persistence", "--max-budget-usd", str(args.budget)]
     if args.model:
         cmd += ["--model", args.model]
+    if args.instructions and cond == "nexusweave":
+        # what `nexusweave install --instructions` puts in CLAUDE.md (these sessions load no settings)
+        cmd += ["--append-system-prompt", subprocess.run([str(nexusweave), "install", "--print-instructions"], capture_output=True, text=True).stdout]
     t0 = time.time()
     try:
         p = subprocess.run(cmd, cwd=ws, capture_output=True, text=True, timeout=args.timeout, stdin=subprocess.DEVNULL)
@@ -219,6 +222,47 @@ def judge(task: dict, answer: str, model: str | None, timeout: int = 300) -> dic
         return {"judge_score": None, "judge_errors": [], "judge_failed": str(e)[:200]}
 
 
+def compare(base_path: Path, nw_path: Path, rounds: int = 10000) -> str:
+    """Per task: mean baseline vs mean NexusWeave cost and tokens; the overall ratio of summed
+    means, with a bootstrap 95% interval over tasks (tasks are the unit that varies)."""
+    import random
+    rows_b = [json.loads(l) for l in base_path.read_text().splitlines() if l.strip()]
+    rows_n = [json.loads(l) for l in nw_path.read_text().splitlines() if l.strip()]
+    def by_task(rows, cond):
+        out: dict[str, list[dict]] = {}
+        for r in rows:
+            if r["condition"] == cond and r["ok"]:
+                out.setdefault(r["task"], []).append(r)
+        return out
+    b, n = by_task(rows_b, "baseline"), by_task(rows_n, "nexusweave")
+    tasks = sorted(set(b) & set(n))
+    if not tasks:
+        return "no tasks with both conditions"
+    metrics = {"cost": lambda r: r["cost_usd"], "tokens": total_tokens, "uncached input": lambda r: r["input_tokens"] + r["cache_write"],
+               "tool calls": lambda r: r["tool_calls"], "wall": lambda r: r["wall_s"]}
+    out = [f"{len(tasks)} tasks; baseline {sum(len(b[t]) for t in tasks)} sessions ({base_path.name}), "
+           f"nexusweave {sum(len(n[t]) for t in tasks)} sessions ({nw_path.name})", "",
+           "| metric | baseline | nexusweave | change | 95% interval | tasks cheaper with nexusweave |", "|---|---:|---:|---:|---:|---:|"]
+    rng = random.Random(7)
+    for name, f in metrics.items():
+        mb = {t: statistics.mean(f(r) for r in b[t]) for t in tasks}
+        mn = {t: statistics.mean(f(r) for r in n[t]) for t in tasks}
+        ratio = lambda ts: sum(mn[t] for t in ts) / max(1e-12, sum(mb[t] for t in ts)) - 1
+        boots = sorted(ratio([rng.choice(tasks) for _ in tasks]) for _ in range(rounds))
+        lo, hi = boots[int(0.025 * rounds)], boots[int(0.975 * rounds) - 1]
+        wins = sum(1 for t in tasks if mn[t] < mb[t])
+        fmt = (lambda v: f"${v:.3f}") if name == "cost" else (lambda v: f"{v:,.0f}") if name in ("tokens", "uncached input") else (lambda v: f"{v:.1f}")
+        out.append(f"| {name} | {fmt(statistics.mean(mb.values()))} | {fmt(statistics.mean(mn.values()))} | {ratio(tasks):+.1%} | "
+                   f"{lo:+.1%} … {hi:+.1%} | {wins}/{len(tasks)} |")
+    out.append("")
+    out.append("| task | baseline cost | nexusweave cost | change |")
+    out.append("|---|---:|---:|---:|")
+    for t in tasks:
+        cb, cn = statistics.mean(r["cost_usd"] for r in b[t]), statistics.mean(r["cost_usd"] for r in n[t])
+        out.append(f"| {t} | ${cb:.3f} | ${cn:.3f} | {cn / cb - 1:+.0%} |")
+    return "\n".join(out)
+
+
 def total_tokens(r: dict) -> int:
     return r["input_tokens"] + r["cache_write"] + r["cache_read"] + r["output_tokens"]
 
@@ -298,12 +342,18 @@ def main() -> None:
     ap.add_argument("--nexusweave", default=str(ROOT / "target/release/nexusweave"))
     ap.add_argument("--out", default=str(BENCH / "results/agent.jsonl"))
     ap.add_argument("--report", metavar="JSONL", help="only print the report for an existing results file")
+    ap.add_argument("--instructions", action="store_true", help="give nexusweave sessions the `install --instructions` text as a system prompt")
+    ap.add_argument("--compare", nargs=2, metavar=("BASELINE_JSONL", "NEXUSWEAVE_JSONL"),
+                    help="paired per-task cost/token comparison: baseline sessions from the first file, nexusweave from the second")
     ap.add_argument("--judge", action="store_true", help="also grade each answer with an LLM judge (a few cents per session)")
     ap.add_argument("--judge-model", help="model for the judge (default: Claude Code's default)")
     ap.add_argument("--judge-file", metavar="JSONL", help="grade the answers in an existing results file (rewritten in place)")
     args = ap.parse_args()
     if args.report:
         print(report(Path(args.report)))
+        return
+    if args.compare:
+        print(compare(Path(args.compare[0]), Path(args.compare[1])))
         return
     if args.judge_file:
         path = Path(args.judge_file)

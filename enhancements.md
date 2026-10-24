@@ -391,3 +391,26 @@ Vue Router, Angular route objects, Next.js / Nuxt / SvelteKit file routes), fixt
 Still behind codegraph: language count (16 vs ~40), backend routes for Drupal / Play /
 Axum-actix-Rocket / Vapor / Astro, mobile bridging (Swift↔Objective-C, React Native), an npm-style
 library API, signed release provenance, and its published agent-efficiency numbers.
+
+## 8. Does NexusWeave save cost? (2026-10-24)
+
+`run.py --compare BASELINE.jsonl NEXUSWEAVE.jsonl` pairs sessions by task and reports the change
+with a bootstrap 95% interval over tasks.
+
+**96-session run (no instructions):** cost +3.9% (−6.2% … +15.8%), tokens −4.6% (−17.8% … +14.6%),
+uncached input +12.6% (−3.1% … +33.4%), tool calls −24.8% (−36.2% … −13.2%). Only the tool-call
+saving is clearly real. By repo: codegraph (1.2k files) **−24% cost**; every repo of 80–300 files
+**+1% to +22%**, and on each of those NexusWeave sessions take *more* uncached input than baseline
+(httpx 17.5k vs 12.0k) — explore output arrives as fresh, full-price input that replaces less
+reading than it costs.
+
+**Instruction pilot** (`run.py --instructions`: the `install --instructions` text as a system
+prompt; 24 sessions vs the same baseline): cost **+12.0%** (−1.5% … +28.4%), uncached input
+**+26.3%** (+6.5% … +53.3%), tool calls −22.3%. Agents called explore more (1.12 vs 0.96 per
+session) and were shown more of the right files (reads of never-shown files 13 → 3) but read no
+less (2.12 Reads per session either way). So the instruction section is opt-in and *not*
+recommended for cost.
+
+Conclusion: today NexusWeave saves tool calls everywhere and money only on larger repos. The
+lever is how much explore sends on small repos (default budget 12k chars ≤150 files, 16k ≤1000),
+not how often agents call it.

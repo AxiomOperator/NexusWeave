@@ -237,7 +237,7 @@ pub fn install(targets: &[String], print: bool, extras: Extras) -> Result<()> {
 
 const SECTION_START: &str = "<!-- nexusweave:start (managed by `nexusweave install --instructions`; `nexusweave uninstall` removes it) -->";
 const SECTION_END: &str = "<!-- nexusweave:end -->";
-const SECTION: &str = "## NexusWeave
+pub const SECTION: &str = "## NexusWeave
 
 In a repository indexed by NexusWeave (it has a `.nexusweave/` directory at its root), call the
 `nexusweave_explore` MCP tool first for any question about the code, before Grep, Glob or Read: one
