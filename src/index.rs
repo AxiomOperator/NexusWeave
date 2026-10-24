@@ -2,7 +2,7 @@
 
 use crate::db::{Db, FileMeta, Writer, db_path};
 use crate::model::*;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -246,7 +246,8 @@ pub fn full_index(root: &Path, mut progress: impl FnMut(usize, usize)) -> Result
     if std::env::var_os("NEXUSWEAVE_TRACE").is_some() { eprintln!("[index] fts optimize {} ms, analyze {} ms", t_opt.as_millis(), t.elapsed().as_millis()); }
     drop(db);
     for ext in ["-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{ext}", path.display())); }
-    std::fs::rename(&tmp, &path)?;
+    // Windows refuses to replace a file another process has open
+    std::fs::rename(&tmp, &path).with_context(|| format!("replacing {} (is a `nexusweave serve` or `nexusweave ui` holding it open? close it and retry)", path.display()))?;
     st.ms_total = t0.elapsed().as_millis();
     Ok(st)
 }
@@ -280,6 +281,9 @@ pub fn sync_with(root: &Path, only: Option<&[String]>, cache: Option<&mut Option
 /// `force`: re-extract the `only` files even if their content is unchanged.
 fn sync_inner(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Option<crate::resolve::Cache>>, force: bool) -> Result<Stats> {
     let t0 = Instant::now();
+    // stored paths use `/`; a caller on Windows may hand over `src\app.ts`
+    let only_norm: Option<Vec<String>> = only.map(|o| o.iter().map(|p| p.replace('\\', "/")).collect());
+    let only = only_norm.as_deref();
     let path = db_path(root);
     crate::db::adopt_legacy(root);
     let rebuild = |cache: &mut Option<&mut Option<crate::resolve::Cache>>| {

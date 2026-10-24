@@ -285,7 +285,11 @@ fn reindex_under_a_long_lived_holder() {
 
     // a file sorting first shifts every row id in the rebuilt database
     write(&d, "src/aaa.ts", "export function early() { return 1; }\nexport class Early { run() { early(); } }\n");
+    // Windows can't replace a file another handle has open: there the holder closes it first
+    #[cfg(not(unix))]
+    drop(g);
     nexusweave::index::full_index(&d, |_, _| {}).unwrap();
+    #[cfg(unix)]
     assert!(g.is_replaced(), "a rebuilt database must be noticed");
     assert!(!nexusweave::query::Graph::open(&d).unwrap().is_replaced());
 
