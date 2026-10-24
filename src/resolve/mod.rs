@@ -209,7 +209,8 @@ impl<'a> Rx<'a> {
     fn in_target(&self, t: &Target, name: &str, want: &dyn Fn(NodeKind) -> bool, depth: u32) -> Option<u32> {
         match t {
             Target::File(f) => {
-                if name == "default" { return self.default_export(*f); }
+                // an explicit `export default x` / `module.exports = x` beats the heuristic
+                if name == "default" { return self.export_of(*f, "default", want, depth).or_else(|| self.default_export(*f)); }
                 self.export_of(*f, name, want, depth).or_else(|| {
                     // `from pkg import submodule` / `use crate::a::b` where b is a file module
                     if depth > 6 { return None; }
@@ -886,6 +887,61 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
     let _ = mem.supers.set(supers);
     let r_res: Vec<_> = rest.par_iter().map(|r| resolve_one(&rx, r)).collect();
 
+    // Full route paths: follow router mounts (`app.use("/api", router)`) back to the root app.
+    let route_renames: Vec<(u32, String)> = {
+        let rx = &rx;
+        let identity = |file: u32, text: &str| -> Option<u32> {
+            let segs: Vec<&str> = text.split('.').filter(|s| !s.is_empty()).collect();
+            let fnode = rx.mem.files[file as usize].node;
+            if fnode == u32::MAX || segs.is_empty() { return None; }
+            let any = |_: NodeKind| true;
+            let n = if segs.len() == 1 {
+                rx.binding(file, segs[0], &any, 0)?
+            } else {
+                // `items.router`: the router variable itself, not its (library) type
+                let (last, head) = segs.split_last()?;
+                let c = rx.resolve_container(file, fnode, head)?;
+                rx.member_of(c, last, &any)?
+            };
+            // a module bound as a whole (`require("./users")`) stands for its default export
+            if rx.mem.node(n).kind == NodeKind::File {
+                let f = rx.mem.node(n).file;
+                return rx.export_of(f, "default", &any, 0).or(Some(n));
+            }
+            Some(n)
+        };
+        let mut parent_of: HashMap<u32, (Option<u32>, String)> = HashMap::new();
+        for (&f, ms) in &rx.mem.mounts {
+            for (parent, child, prefix) in ms {
+                if let Some(c) = identity(f, child) { parent_of.entry(c).or_insert((identity(f, parent), prefix.clone())); }
+            }
+        }
+        let prefix_of = |mut id: u32| -> String {
+            let mut parts: Vec<String> = Vec::new();
+            for _ in 0..8 {
+                match parent_of.get(&id) {
+                    Some((p, pre)) => { parts.push(pre.clone()); match p { Some(p) if *p != id => id = *p, _ => break } }
+                    None => break,
+                }
+            }
+            parts.iter().rev().fold(String::new(), |acc, p| crate::extract::join_route(&acc, p))
+        };
+        let mut out = Vec::new();
+        for (i, n) in rx.mem.nodes.iter().enumerate() {
+            if !n.alive || n.kind != NodeKind::Route { continue; }
+            let Some((binding, orig)) = n.type_hint.as_deref().and_then(|h| h.strip_prefix('@')).and_then(|h| h.split_once('|')) else { continue };
+            let full = match identity(n.file, binding).map(prefix_of).filter(|p| !p.is_empty()) {
+                Some(pre) => match orig.split_once(' ') {
+                    Some((m, path)) => crate::extract::route_name(m, &crate::extract::join_route(&pre, path)),
+                    None => orig.to_string(),
+                },
+                None => orig.to_string(),
+            };
+            if full != n.name { out.push((i as u32, full)); }
+        }
+        out
+    };
+
     // Synthesized: method → the supertype method it overrides/implements (lets flows and impact
     // cross interface dispatch). Recomputed in full on every resolve; it is cheap.
     let overrides: Vec<(u32, u32)> = {
@@ -957,6 +1013,17 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
                     crate::db::name_hash(&n.name), n.start_line, mem.node(x).id])?;
             }
         }
+        {
+            let mut up = tx.prepare("UPDATE nodes SET name=?1, qname=?1 WHERE id=?2")?;
+            let mut del = tx.prepare("DELETE FROM nodes_fts WHERE rowid=?")?;
+            let mut ins = tx.prepare("INSERT INTO nodes_fts(rowid, terms, qname) VALUES(?,?,?)")?;
+            for (i, name) in &route_renames {
+                let id = mem.node(*i).id;
+                up.execute(rusqlite::params![name, id])?;
+                del.execute([id])?;
+                ins.execute(rusqlite::params![id, crate::db::name_terms(name), name])?;
+            }
+        }
         let mut up = tx.prepare("UPDATE nodes SET owner_id=? WHERE id=?")?;
         for &(i, t) in &owners {
             let n = mem.node(i);
@@ -990,6 +1057,7 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
     drop(rx);
     if let Some(c) = cache {
         for (i, tid) in owner_updates { mem.nodes[i as usize].db_owner = Some(tid); }
+        for (i, name) in route_renames { mem.nodes[i as usize].name = name; }
         for (f, j, tf) in import_updates { if let Some(v) = mem.imports.get_mut(&f) { v[j].db_target = tf; } }
         let targets: HashMap<u32, Vec<Target>> = cached_targets.into_iter().collect();
         *c = Some(Cache { mem, mods, refidx, targets });

@@ -60,6 +60,8 @@ pub struct Mem {
     pub by_name: HashMap<u64, Vec<u32>>,
     pub children: HashMap<u32, Vec<u32>>,
     pub imports: HashMap<u32, Vec<ImportInfo>>,
+    /// file → (parent binding, child binding, prefix) router mounts
+    pub mounts: HashMap<u32, Vec<(String, String, String)>>,
     /// Directory → files (Go packages, same-dir lookups).
     pub by_dir: HashMap<String, Vec<u32>>,
     /// Declared package / namespace → files.
@@ -148,6 +150,14 @@ impl Mem {
                 });
             }
         }
+        {
+            let mut q = conn.prepare(&format!("SELECT file_id, parent, child, prefix FROM mounts{} ORDER BY id", filter("file_id")))?;
+            let mut rows = q.query([])?;
+            while let Some(r) = rows.next()? {
+                let Some(&f) = m.file_by_id.get(&r.get::<_, i64>(0)?) else { continue };
+                m.mounts.entry(f).or_default().push((r.get(1)?, r.get(2)?, r.get(3)?));
+            }
+        }
         Ok(())
     }
 
@@ -162,6 +172,7 @@ impl Mem {
             if let Some(v) = self.by_dir.get_mut(&fi.dir) { v.retain(|&x| x != f); }
             if let Some(p) = &fi.package && let Some(v) = self.by_package.get_mut(p) { v.retain(|&x| x != f); }
             self.imports.remove(&f);
+            self.mounts.remove(&f);
             let fnode = fi.node;
             if fnode == u32::MAX { continue; }
             // all of a file's nodes descend from its File node

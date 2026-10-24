@@ -210,11 +210,23 @@ pub struct ExImport {
     pub line: u32,
 }
 
+/// A router mounted under a path prefix: `app.use("/api", router)`, `register_blueprint(bp, url_prefix=..)`.
+#[derive(Debug, Clone)]
+pub struct ExMount {
+    /// Binding (as written) of the router/app the child is mounted on.
+    pub parent: String,
+    /// Binding (as written) of the mounted router.
+    pub child: String,
+    pub prefix: String,
+    pub line: u32,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct FileExtraction {
     pub nodes: Vec<ExNode>,
     pub refs: Vec<ExRef>,
     pub imports: Vec<ExImport>,
+    pub mounts: Vec<ExMount>,
     /// Package / namespace declared by the file (Go package, Java package, C# / PHP namespace).
     pub package: Option<String>,
     pub parse_errors: u32,

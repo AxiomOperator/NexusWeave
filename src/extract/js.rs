@@ -158,15 +158,24 @@ impl Js {
     fn call_route<'t>(&self, n: Node<'t>, cx: &mut Cx<'_>) -> Option<Visit<'t>> {
         let f = n.child_by_field_name("function").filter(|f| f.kind() == "member_expression")?;
         let prop = cx.field_text(f, "property")?;
-        let method = http_method(prop)?;
         let args = n.child_by_field_name("arguments")?;
+        // mounts: app.use("/api", router) (Express/Koa), app.route("/books", books) (Hono)
+        if matches!(prop, "use" | "route" | "register" | "mount") && args.named_child_count() >= 2
+            && let Some(p) = args.named_child(0).and_then(|a| string_lit(cx, a)).filter(|p| p.starts_with('/'))
+            && let Some(child) = args.named_child(args.named_child_count() - 1).filter(|c| matches!(c.kind(), "identifier" | "member_expression"))
+            && let Some(obj) = f.child_by_field_name("object") {
+            let (o, c) = (cx.text(obj).to_string(), cx.text(child).to_string());
+            cx.add_mount(&o, &c, &p, n);
+            return None;
+        }
+        let method = http_method(prop)?;
         let path = args.named_child(0).and_then(|a| string_lit(cx, a)).filter(|p| p.starts_with('/') || p == "*")?;
         if args.named_child_count() < 2 { return None; }
         // the registration is still a call (`router.get` → Router.get)
         let obj = f.child_by_field_name("object").map(|o| cx.text(o));
         cx.add_ref(RefKind::Call, prop, obj, f);
         let last = args.named_child(args.named_child_count() - 1).filter(|l| is_fn_value(l.kind()));
-        Some(Visit::Def(Def::new(NodeKind::Route, route_name(method, &path)).body(last.and_then(|l| l.child_by_field_name("body")))))
+        Some(Visit::Def(cx.route_def(obj, method, &path, last.and_then(|l| l.child_by_field_name("body")))))
     }
 }
 
@@ -321,6 +330,13 @@ impl LangHooks for Js {
                 }
             }
             "arrow_function" | "function_expression" | "function" => { self.params(n, cx, false); Visit::Continue }
+            "assignment_expression" if n.child_by_field_name("left").is_some_and(|l| cx.text(l) == "module.exports")
+                && n.child_by_field_name("right").is_some_and(|r| r.kind() == "identifier") => {
+                // CommonJS `module.exports = router`
+                let r = n.child_by_field_name("right").unwrap();
+                cx.add_import(ImportKind::ReExport, "", cx.text(r), "default", n);
+                Visit::Continue
+            }
             "assignment_expression" => {
                 // this.x = new Foo()  → field type fact
                 if let (Some(l), Some(r)) = (n.child_by_field_name("left"), n.child_by_field_name("right"))
@@ -338,6 +354,11 @@ impl LangHooks for Js {
             }
             "import_statement" => { self.import(n, cx); Visit::Skip }
             "export_statement" => {
+                // `export default router` — the default export is a local binding
+                if let Some(v) = n.child_by_field_name("value") && v.kind() == "identifier" {
+                    cx.add_import(ImportKind::ReExport, "", cx.text(v), "default", n);
+                    return Visit::Skip;
+                }
                 if n.child_by_field_name("declaration").is_none() && n.child_by_field_name("value").is_none() && self.export(n, cx) {
                     return Visit::Skip;
                 }

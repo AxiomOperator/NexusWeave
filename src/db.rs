@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
 /// Bump whenever the schema or extraction output changes; older indexes are rebuilt.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -75,6 +75,16 @@ CREATE TABLE IF NOT EXISTS imports (
     line INTEGER NOT NULL,
     target_file INTEGER REFERENCES files(id) ON DELETE SET NULL
 );
+-- Routers mounted under a prefix (`app.use("/api", router)`); used to compute full route paths.
+CREATE TABLE IF NOT EXISTS mounts (
+    id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    parent TEXT NOT NULL,
+    child TEXT NOT NULL,
+    prefix TEXT NOT NULL,
+    line INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mounts_file ON mounts(file_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
     terms, qname, doc, path, content = '', contentless_delete = 1, tokenize = 'unicode61 remove_diacritics 2', prefix = '2 3'
 );
@@ -260,6 +270,10 @@ impl<'c> Writer<'c> {
             for im in &ex.imports {
                 st.execute(params![file_id, im.kind as i64, im.module, im.imported, im.local, im.line])?;
             }
+        }
+        if !ex.mounts.is_empty() {
+            let mut st = tx.prepare_cached("INSERT INTO mounts(file_id,parent,child,prefix,line) VALUES(?,?,?,?,?)")?;
+            for m in &ex.mounts { st.execute(params![file_id, m.parent, m.child, m.prefix, m.line])?; }
         }
         Ok(file_id)
     }

@@ -24,3 +24,4 @@ MemRepo.find -> Repo.find
 !schedule -> setTimeout
 UserService.getUser -> User.label
 useRepo -> MemRepo.find
+GET /api/users/:id -> listUsers

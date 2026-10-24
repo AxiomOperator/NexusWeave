@@ -214,16 +214,51 @@ impl<'a> Cx<'a> {
     /// A route node (`GET /users/{id}`) declared at `at`, optionally linked to a handler
     /// (`qualifier.name`; use qualifier `this` for a method of the enclosing class).
     pub fn add_route(&mut self, method: &str, path: &str, at: Node<'_>, handler: Option<(Option<&str>, &str)>) {
-        let name = route_name(method, path);
+        self.add_route_on(None, method, path, at, handler);
+    }
+
+    /// Like [`Cx::add_route`], for a route registered on router `binding` (`bp`, `router`): the
+    /// binding's local prefix is applied now, and mounts of it elsewhere are applied at resolve time.
+    pub fn add_route_on(&mut self, binding: Option<&str>, method: &str, path: &str, at: Node<'_>, handler: Option<(Option<&str>, &str)>) {
+        let path = match binding { Some(b) => join_route(&self.route_prefix(b), path), None => path.to_string() };
+        let name = route_name(method, &path);
+        let hint = binding.map(|b| format!("@{b}|{name}"));
         let id = self.out.nodes.len() as u32;
         let line = compact_ws(self.text(at).lines().next().unwrap_or(""));
         self.out.nodes.push(ExNode {
             kind: NodeKind::Route, qname: name.clone(), name, parent: Some(self.cur_node()), owner: None,
             start_line: at.start_position().row as u32 + 1, end_line: at.end_position().row as u32 + 1,
             start_byte: at.start_byte() as u32, end_byte: at.end_byte() as u32, exported: true,
-            signature: Some(truncate(&line, SIG_MAX)), doc: None, type_hint: None, ext_of: None,
+            signature: Some(truncate(&line, SIG_MAX)), doc: None, type_hint: hint, ext_of: None,
         });
         if let Some((q, h)) = handler { self.add_ref_from(id, RefKind::Handles, h, q, at); }
+    }
+
+    /// A route Def (call-style registration whose inline handler becomes the route's scope).
+    pub fn route_def<'t>(&self, binding: Option<&str>, method: &str, path: &str, body: Option<Node<'t>>) -> Def<'t> {
+        let path = match binding { Some(b) => join_route(&self.route_prefix(b), path), None => path.to_string() };
+        let name = route_name(method, &path);
+        let mut d = Def::new(NodeKind::Route, name.clone()).body(body);
+        d.type_hint = binding.map(|b| format!("@{b}|{name}"));
+        d
+    }
+
+    /// Local path prefix of a router binding (`v1 := r.Group("/v1")`, `Blueprint(url_prefix=..)`).
+    pub fn route_prefix(&self, binding: &str) -> String {
+        let key = format!("@route:{}", binding.trim());
+        self.scopes.iter().rev().find_map(|s| s.vars.get(&key)).cloned().unwrap_or_default()
+    }
+
+    pub fn set_route_prefix(&mut self, binding: &str, prefix: &str) {
+        if let Some(s) = self.scopes.last_mut() { s.vars.insert(format!("@route:{}", binding.trim()), prefix.to_string()); }
+    }
+
+    pub fn add_mount(&mut self, parent: &str, child: &str, prefix: &str, at: Node<'_>) {
+        let (parent, child) = (parent.trim(), child.trim());
+        if child.is_empty() || child.len() > 120 || parent.len() > 120 { return; }
+        // a mount on a router with its own local prefix (`v1.Mount("/x", r)`) includes it
+        let prefix = join_route(&self.route_prefix(parent), prefix);
+        self.out.mounts.push(ExMount { parent: parent.to_string(), child: child.to_string(), prefix, line: at.start_position().row as u32 + 1 });
     }
 
     /// Callback arguments: functions/methods passed by name (`app.use(auth)`, `sorted(xs, key=by_name)`,

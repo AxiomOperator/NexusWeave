@@ -23,6 +23,15 @@ fn ctor_type<'a>(cx: &Cx<'a>, v: Node<'_>) -> Option<&'a str> {
     last.chars().next().filter(|c| c.is_uppercase()).map(|_| t)
 }
 
+/// String value of the first matching keyword argument.
+fn kwarg_str(cx: &Cx<'_>, args: Node<'_>, names: &[&str]) -> Option<String> {
+    let mut c = args.walk();
+    let found = args.named_children(&mut c).filter(|k| k.kind() == "keyword_argument")
+        .find(|k| cx.field_text(*k, "name").is_some_and(|n| names.contains(&n)))
+        .and_then(|k| k.child_by_field_name("value")).and_then(|v| string_lit(cx, v));
+    found
+}
+
 impl Py {
     /// Flask / FastAPI / Starlette: `@app.get("/users/{id}")`, `@bp.route("/x", methods=["POST"])`.
     fn decorator_route(&self, deco: Node<'_>, call: Node<'_>, cx: &mut Cx<'_>) {
@@ -41,7 +50,8 @@ impl Py {
         let Some(func) = deco.parent().filter(|p| p.kind() == "decorated_definition").and_then(|p| p.child_by_field_name("definition")) else { return };
         let Some(name) = cx.field_text(func, "name") else { return };
         let q = if cx.cur().kind == NodeKind::Class { Some("self") } else { None };
-        cx.add_route(method, &path, deco, Some((q, name)));
+        let binding = f.child_by_field_name("object").map(|o| cx.text(o).to_string());
+        cx.add_route_on(binding.as_deref(), method, &path, deco, Some((q, name)));
     }
 }
 
@@ -97,6 +107,15 @@ impl LangHooks for Py {
             }
             "assignment" => {
                 let (Some(l), r) = (n.child_by_field_name("left"), n.child_by_field_name("right")) else { return Visit::Continue };
+                // bp = Blueprint("auth", __name__, url_prefix="/auth") / router = APIRouter(prefix="/items")
+                if let Some(rv) = r.filter(|rv| rv.kind() == "call") && l.kind() == "identifier"
+                    && let Some(fname) = rv.child_by_field_name("function").map(|f| cx.text(f))
+                    && matches!(fname.rsplit('.').next(), Some("Blueprint" | "APIRouter"))
+                    && let Some(args) = rv.child_by_field_name("arguments")
+                    && let Some(prefix) = kwarg_str(cx, args, &["url_prefix", "prefix"]) {
+                    let name = cx.text(l).to_string();
+                    cx.set_route_prefix(&name, &prefix);
+                }
                 let ty_owned = n.child_by_field_name("type").map(|t| cx.text(t).to_string())
                     .or_else(|| r.and_then(|r| ctor_type(cx, r)).map(str::to_string))
                     .or_else(|| r.and_then(|r| cx.value_path(if r.kind() == "await" { r.named_child(0).unwrap_or(r) } else { r })));
@@ -172,6 +191,16 @@ impl LangHooks for Py {
                 Visit::Skip
             }
             "call" => {
+                // app.register_blueprint(bp, url_prefix="/x") / app.include_router(router, prefix="/x")
+                if let Some(f) = n.child_by_field_name("function").filter(|f| f.kind() == "attribute")
+                    && matches!(cx.field_text(f, "attribute"), Some("register_blueprint" | "include_router" | "mount"))
+                    && let Some(args) = n.child_by_field_name("arguments")
+                    && let Some(child) = args.named_child(0).filter(|c| matches!(c.kind(), "identifier" | "attribute")) {
+                    let prefix = kwarg_str(cx, args, &["url_prefix", "prefix", "path"]).unwrap_or_default();
+                    let parent = cx.field_text(f, "object").unwrap_or("").to_string();
+                    let child = cx.text(child).to_string();
+                    cx.add_mount(&parent, &child, &prefix, n);
+                }
                 // Django urls.py: path("users/<int:id>/", views.detail)
                 if let Some(f) = n.child_by_field_name("function") && matches!(cx.text(f), "path" | "re_path" | "url")
                     && cx.out.nodes[0].name == "urls.py"

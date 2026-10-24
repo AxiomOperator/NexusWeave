@@ -106,6 +106,15 @@ impl LangHooks for Go {
             "func_literal" => { self.bind_params(n.child_by_field_name("parameters"), cx); Visit::Continue }
             "short_var_declaration" => {
                 if let (Some(l), Some(r)) = (n.child_by_field_name("left"), n.child_by_field_name("right")) {
+                    // v1 := r.Group("/v1") (gin/echo/fiber): a router with a local prefix
+                    if let (Some(lv), Some(rv)) = (l.named_child(0), r.named_child(0)) && rv.kind() == "call_expression"
+                        && let Some(f) = rv.child_by_field_name("function").filter(|f| f.kind() == "selector_expression")
+                        && cx.field_text(f, "field") == Some("Group")
+                        && let Some(p) = rv.child_by_field_name("arguments").and_then(|a| a.named_child(0)).and_then(|a| string_lit(cx, a)) {
+                        let parent = f.child_by_field_name("operand").map(|o| cx.route_prefix(cx.text(o))).unwrap_or_default();
+                        let name = cx.text(lv).to_string();
+                        cx.set_route_prefix(&name, &join_route(&parent, &p));
+                    }
                     let (mut c1, mut c2) = (l.walk(), r.walk());
                     let pairs: Vec<_> = l.named_children(&mut c1).zip(r.named_children(&mut c2)).collect();
                     for (a, b) in pairs {
@@ -132,6 +141,18 @@ impl LangHooks for Go {
                 }
                 Visit::Skip
             }
+            "call_expression" if n.child_by_field_name("function").filter(|f| f.kind() == "selector_expression")
+                .is_some_and(|f| cx.field_text(f, "field") == Some("Mount")) => {
+                // chi: r.Mount("/admin", adminRouter())
+                let f = n.child_by_field_name("function").unwrap();
+                if let Some(args) = n.child_by_field_name("arguments") && args.named_child_count() == 2
+                    && let (Some(p), Some(c)) = (args.named_child(0).and_then(|a| string_lit(cx, a)), args.named_child(1)) {
+                    let parent = cx.field_text(f, "operand").unwrap_or("").to_string();
+                    let child = cx.text(c).trim_end_matches("()").to_string();
+                    cx.add_mount(&parent, &child, &p, n);
+                }
+                Visit::Continue
+            }
             "call_expression" => {
                 // gin / echo / chi / net/http: r.GET("/users/:id", handler), http.HandleFunc("/x", h)
                 if let Some(f) = n.child_by_field_name("function").filter(|f| f.kind() == "selector_expression")
@@ -142,7 +163,16 @@ impl LangHooks for Go {
                 {
                     if let Some((q, name)) = callee_parts(cx, f) { cx.add_ref(RefKind::Call, name, q.map(short_qual), f); }
                     let last = args.named_child(args.named_child_count() - 1).filter(|l| l.kind() == "func_literal");
-                    return Visit::Def(Def::new(NodeKind::Route, route_name(method, &path)).body(last.and_then(|l| l.child_by_field_name("body"))));
+                    let recv = f.child_by_field_name("operand").map(|o| cx.text(o).to_string());
+                    // chi: r.Route("/users", func(r chi.Router) { ... }) — a prefix for the closure's router
+                    if cx.field_text(f, "field") == Some("Route") && let Some(fl) = last
+                        && let Some(p) = fl.child_by_field_name("parameters").and_then(|ps| ps.named_child(0)).and_then(|p| p.child_by_field_name("name")) {
+                        let prefix = join_route(&recv.as_deref().map(|r| cx.route_prefix(r)).unwrap_or_default(), &path);
+                        let pn = cx.text(p).to_string();
+                        cx.set_route_prefix(&pn, &prefix);
+                        return Visit::Continue;
+                    }
+                    return Visit::Def(cx.route_def(recv.as_deref(), method, &path, last.and_then(|l| l.child_by_field_name("body"))));
                 }
                 if let Some(f) = n.child_by_field_name("function") && let Some((q, name)) = callee_parts(cx, f) {
                     cx.add_ref(RefKind::Call, name, q.map(short_qual), f);
