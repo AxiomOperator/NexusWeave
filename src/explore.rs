@@ -17,6 +17,52 @@ pub struct Opts {
     /// Output budget in characters (≈ 4 chars per token). 0 = size-tiered default.
     pub max_chars: usize,
     pub max_files: usize,
+    /// Session memory (MCP server): ranges already sent are replaced by pointers.
+    pub seen: Option<std::sync::Arc<std::sync::Mutex<Seen>>>,
+}
+
+/// Inclusive 1-based line range.
+type Span = (u32, u32);
+
+/// Line ranges already sent per file in this session, keyed by the file's content hash so an
+/// edited file is always shown again.
+#[derive(Default)]
+pub struct Seen {
+    files: HashMap<String, (u64, Vec<(u32, u32)>)>,
+}
+
+impl Seen {
+    /// Split `ranges` into (still to send, already sent) for an unchanged file.
+    fn split(&self, path: &str, hash: u64, ranges: &[(u32, u32)]) -> (Vec<Span>, Vec<Span>) {
+        let Some((h, sent)) = self.files.get(path).filter(|(h, _)| *h == hash) else { return (ranges.to_vec(), Vec::new()) };
+        let _ = h;
+        let mut todo = Vec::new();
+        let mut done = Vec::new();
+        for &(a, b) in ranges {
+            let mut cur = a;
+            for &(sa, sb) in sent.iter().filter(|(sa, sb)| *sb >= a && *sa <= b) {
+                if sa > cur { todo.push((cur, sa - 1)); }
+                done.push((sa.max(a), sb.min(b)));
+                cur = cur.max(sb + 1);
+            }
+            if cur <= b { todo.push((cur, b)); }
+        }
+        // tiny leftovers (a line or two between already-sent blocks) aren't worth a fresh section
+        todo.retain(|(x, y)| y - x >= 2);
+        (todo, done)
+    }
+
+    fn record(&mut self, path: &str, hash: u64, ranges: &[(u32, u32)]) {
+        let e = self.files.entry(path.to_string()).or_insert((hash, Vec::new()));
+        if e.0 != hash { *e = (hash, Vec::new()); }
+        e.1.extend_from_slice(ranges);
+        e.1.sort();
+        let mut merged: Vec<(u32, u32)> = Vec::new();
+        for &(a, b) in &e.1 {
+            match merged.last_mut() { Some(l) if a <= l.1 + 1 => l.1 = l.1.max(b), _ => merged.push((a, b)) }
+        }
+        e.1 = merged;
+    }
 }
 
 
@@ -287,6 +333,10 @@ impl Graph {
             let share = ((mass.max(0.02) / mass_total) * total_budget as f64) as usize;
             let mut alloc = (share + carry).clamp(700, (total_budget as f64 * 0.65) as usize).min(remaining);
             let Some(src) = self.read_source(path) else { continue };
+            let hash = xxhash_rust::xxh3::xxh3_64(src.as_bytes());
+            // staleness guard: the source on disk no longer matches what was indexed
+            let stale = self.db.conn.prepare_cached("SELECT hash FROM files WHERE path = ?")?
+                .query_row([path], |r| r.get::<_, i64>(0)).map(|h| h as u64 != hash).unwrap_or(false);
             let lines: Vec<&str> = src.lines().collect();
             let anchor = pinned.iter().find(|(p, _)| p == path).and_then(|(_, a)| *a);
             let syms = ranked_syms(path);
@@ -303,6 +353,24 @@ impl Graph {
                 section.clear();
             }
             if section.is_empty() { continue; }
+            if let Some(seen) = &opts.seen {
+                let mut seen = seen.lock().unwrap();
+                let (todo, done) = seen.split(path, hash, &ranges);
+                if !done.is_empty() {
+                    let spans = done.iter().map(|(a, b)| if a == b { a.to_string() } else { format!("{a}-{b}") }).collect::<Vec<_>>().join(", ");
+                    section = if todo.is_empty() {
+                        format!("### {path} — lines {spans} already shown earlier in this session (unchanged)\n\n")
+                    } else {
+                        let mut s = render_file(path, &lines, &todo, &[], self.lang_of(path));
+                        s.insert_str(s.find('\n').unwrap_or(0), &format!(" (lines {spans} shown earlier, unchanged)"));
+                        s
+                    };
+                }
+                seen.record(path, hash, &ranges);
+            }
+            if stale {
+                section.insert_str(section.find('\n').unwrap_or(0), " ⚠ changed on disk since indexing — line numbers may be off");
+            }
             for (s, _) in &syms { if ranges.iter().any(|&(a, b)| s.start_line >= a && s.start_line <= b) { rendered.insert(s.id); } }
             carry = alloc.saturating_sub(section.len());
             remaining = remaining.saturating_sub(section.len());

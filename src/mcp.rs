@@ -20,6 +20,7 @@ Use `xgraph_explore` FIRST for almost any code question or before editing — in
 - Include a file path (optionally `path:10-40`) to read that file region in the same call.
 - Results are lexical+graph ranked, not semantic: if a name is reported as not in the index, try a different identifier.
 - Trust the returned source; it is read from disk at call time. Don't re-read the same ranges.
+- Source already sent earlier in this session comes back as a short \"already shown\" pointer (only while the file is unchanged); pass `fresh: true` if you need it again.
 Use `xgraph_node` to read one symbol (source + callers + callees) or a file with line numbers.
 Use `xgraph_diff_impact` after making changes (or when reviewing a branch) to see what they affect and which tests to run. If a project has no index, fall back to your normal tools — don't run `xgraph init` yourself unless asked.";
 
@@ -27,7 +28,7 @@ fn tool_defs() -> Vec<Value> {
     let pp = json!({"type": "string", "description": "Absolute path of the project to query (defaults to the server's project)."});
     vec![
         json!({"name": "xgraph_explore", "description": "Answer a code question in one call: the relevant symbols' verbatim line-numbered source grouped by file, the call path among symbols you name, and a blast-radius summary of dependents. Use for 'how does X work', 'how does X reach Y', surveying an area, or before editing. Name files (optionally path:start-end) or symbols in the query to read them.",
-            "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "Question or identifiers, e.g. 'how does UserService.login validate the token'"}, "budget": {"type": "integer", "description": "Approximate output size in tokens (default scales with repo size)"}, "projectPath": pp}, "required": ["query"]}}),
+            "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "Question or identifiers, e.g. 'how does UserService.login validate the token'"}, "budget": {"type": "integer", "description": "Approximate output size in tokens (default scales with repo size)"}, "fresh": {"type": "boolean", "description": "Re-send source already shown earlier in this session (e.g. after context was compacted)"}, "projectPath": pp}, "required": ["query"]}}),
         json!({"name": "xgraph_node", "description": "One symbol's source, signature, callers and callees — or, given a file path, the file's line-numbered contents and outline.",
             "inputSchema": {"type": "object", "properties": {"symbol": {"type": "string", "description": "Symbol name (qualified ok: Class.method, mod::fn) or a file path"}, "file": {"type": "string", "description": "Disambiguate by file"}, "includeCode": {"type": "boolean", "default": true}, "offset": {"type": "integer", "description": "File mode: first line (1-based)"}, "limit": {"type": "integer", "description": "File mode: number of lines"}, "projectPath": pp}, "required": ["symbol"]}}),
         json!({"name": "xgraph_search", "description": "Find symbols by name or keywords. Returns kind, qualified name and location.",
@@ -57,6 +58,8 @@ fn enabled_tools() -> Vec<String> {
 
 struct Server {
     default_root: Option<PathBuf>,
+    /// per-project memory of what explore already sent in this session
+    seen: HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<crate::explore::Seen>>>,
     graphs: HashMap<PathBuf, Graph>,
     _watcher: Option<crate::watch::Watcher>,
 }
@@ -74,11 +77,15 @@ impl Server {
     fn call(&mut self, name: &str, a: &Value) -> Result<String> {
         let s = |k: &str| a.get(k).and_then(Value::as_str);
         let n = |k: &str| a.get(k).and_then(Value::as_u64);
+        let dedup = std::env::var("XGRAPH_EXPLORE_DEDUP").map(|v| v != "0").unwrap_or(true)
+            && !a.get("fresh").and_then(Value::as_bool).unwrap_or(false);
+        let root = self.graph(s("projectPath"))?.root.clone();
+        let seen = dedup.then(|| self.seen.entry(root).or_default().clone());
         let g = self.graph(s("projectPath"))?;
         let out = match name {
             "xgraph_explore" => {
                 let q = s("query").ok_or_else(|| anyhow!("query is required"))?;
-                g.explore(q, &Opts { max_chars: n("budget").map(|t| t as usize * 4).unwrap_or(0), ..Default::default() })?
+                g.explore(q, &Opts { max_chars: n("budget").map(|t| t as usize * 4).unwrap_or(0), seen, ..Default::default() })?
             }
             "xgraph_node" => node_text(g, s("symbol").or(s("file")).unwrap_or(""), s("file"), a.get("includeCode").and_then(Value::as_bool).unwrap_or(true), n("offset").map(|x| x as u32), n("limit").map(|x| x as u32))?,
             "xgraph_search" => {
@@ -217,7 +224,7 @@ pub fn serve(root: Option<PathBuf>, watch: bool) -> Result<()> {
         }
         _ => None,
     };
-    let mut srv = Server { default_root: root, graphs: HashMap::new(), _watcher: watcher };
+    let mut srv = Server { default_root: root, seen: HashMap::new(), graphs: HashMap::new(), _watcher: watcher };
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     let tools = enabled_tools();
