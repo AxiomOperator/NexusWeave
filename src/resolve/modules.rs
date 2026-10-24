@@ -33,6 +33,39 @@ pub struct Modules {
     py: HashMap<String, Vec<u32>>,
     /// C/C++ include directories from compile_commands.json (project-relative).
     include_dirs: Vec<String>,
+    /// Library return-type stub families (built-in + `xgraph.stubs.toml` / `.xgraph/stubs.toml`).
+    pub stubs: Vec<StubFamily>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct StubFile {
+    #[serde(default)]
+    family: Vec<StubFamily>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct StubFamily {
+    #[allow(dead_code)]
+    pub name: String,
+    pub bases: Vec<String>,
+    #[serde(default)]
+    pub members: HashMap<String, String>,
+    #[serde(default)]
+    pub set_members: HashMap<String, String>,
+}
+
+fn load_stubs(root: &Path) -> Vec<StubFamily> {
+    let mut v: Vec<StubFamily> = toml::from_str::<StubFile>(include_str!("stubs.toml")).map(|f| f.family).unwrap_or_default();
+    // `xgraph.stubs.toml` (committed with the project) and `.xgraph/stubs.toml` (local only)
+    for rel in ["xgraph.stubs.toml", ".xgraph/stubs.toml"] {
+        if let Ok(s) = std::fs::read_to_string(root.join(rel)) {
+            match toml::from_str::<StubFile>(&s) {
+                Ok(f) => v.extend(f.family),
+                Err(e) => eprintln!("xgraph: ignoring {rel}: {e}"),
+            }
+        }
+    }
+    v
 }
 
 fn norm(path: &str) -> String {
@@ -127,7 +160,7 @@ fn load_tsconfig(root: &Path, rel: &str, depth: u32) -> Option<TsConfig> {
 
 impl Modules {
     pub fn new(root: &Path, mem: &Mem) -> Modules {
-        let mut m = Modules { ts: vec![], js_packages: HashMap::new(), go_mods: vec![], crates: HashMap::new(), crate_dirs: vec![], py: HashMap::new(), include_dirs: vec![] };
+        let mut m = Modules { ts: vec![], js_packages: HashMap::new(), go_mods: vec![], crates: HashMap::new(), crate_dirs: vec![], py: HashMap::new(), include_dirs: vec![], stubs: load_stubs(root) };
         let has = |l: &[Lang]| mem.files.iter().any(|f| f.alive && l.contains(&f.lang));
         let need_js = has(&[Lang::TypeScript, Lang::Tsx, Lang::JavaScript]);
         for rel in config_files(root) {

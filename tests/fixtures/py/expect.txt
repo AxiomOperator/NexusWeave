@@ -16,3 +16,5 @@ Service.get -> User.display
 GET /api/items/{item_id} -> read_item
 pay -> order:paid
 order:paid -> ship
+latest_summary -> Article.summary
+load_bio -> Profile.bio

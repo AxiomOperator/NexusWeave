@@ -23,7 +23,7 @@ enum Cmd {
     /// Rebuild the graph from scratch
     Index { path: Option<PathBuf>, #[arg(short, long)] quiet: bool },
     /// Incrementally update the graph
-    Sync { path: Option<PathBuf>, #[arg(short, long)] quiet: bool },
+    Sync { path: Option<PathBuf>, #[arg(short, long)] quiet: bool, #[arg(long, help = "re-resolve every reference (after config/stub changes)")] resolve: bool },
     /// Show index statistics
     Status { path: Option<PathBuf>, #[arg(short, long)] json: bool },
     /// Search symbols
@@ -113,9 +113,10 @@ fn main() -> Result<()> {
             let d = root.join(".xgraph");
             if d.exists() { std::fs::remove_dir_all(&d)?; eprintln!("removed {}", d.display()); } else { eprintln!("no .xgraph/ in {}", root.display()); }
         }
-        Cmd::Sync { path, quiet } => {
+        Cmd::Sync { path, quiet, resolve } => {
             let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).unwrap_or(root_arg(None)?) };
-            let st = index::sync(&root, None)?;
+            let mut st = index::sync(&root, None)?;
+            if resolve { let r = index::reresolve(&root)?; st.resolved = r.resolved; st.ms_resolve += r.ms_resolve; st.ms_total += r.ms_total; }
             print_stats(&st, quiet);
         }
         Cmd::Status { path, json } => {

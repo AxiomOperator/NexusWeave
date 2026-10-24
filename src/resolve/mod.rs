@@ -347,35 +347,76 @@ impl<'a> Rx<'a> {
         let (n0, call0, g0) = seg_parts(s0);
         let callable = |k: NodeKind| k.is_callable() || k.is_type();
         let any = |_: NodeKind| true;
-        let mut cur: Result<u32, Container> = if call0 {
+        enum Cur { Type(u32), Cont(Container), Set(u32, usize) }
+        let mut cur = if call0 {
             let Some((f, _)) = self.unqualified(file, src, n0, &callable) else { note_miss(n0); return None };
-            Ok(self.value_type_of(f, true, g0.as_deref())?)
+            Cur::Type(self.value_type_of(f, true, g0.as_deref())?)
         } else if let Some(t) = self.resolve_type(file, src, n0) {
-            Ok(t)
+            Cur::Type(t)
         } else {
             match self.resolve_container(file, src, &[n0]) {
-                Some(c) => Err(c),
+                Some(c) => Cur::Cont(c),
                 None => { note_miss(n0); return None; }
             }
         };
         for seg in rest {
             let (name, call, garg) = seg_parts(seg);
             cur = match cur {
-                Ok(t) => match self.mem.find_member(t, name, any).or_else(|| { note_miss(name); None }) {
-                    Some((m, _)) => Ok(self.value_type_of(m, call, garg.as_deref())?),
+                Cur::Type(t) => match self.mem.find_member(t, name, any) {
+                    Some((m, _)) => Cur::Type(self.value_type_of(m, call, garg.as_deref())?),
                     // value-preserving adapters (`unwrap()`, `clone()`, `await`-ish helpers) keep the type
-                    None if call && TRANSPARENT.contains(&name) => Ok(t),
-                    None => Ok(self.value_type_of(self.extension(Some(t), None, name)?, call, garg.as_deref())?),
+                    None if call && TRANSPARENT.contains(&name) => Cur::Type(t),
+                    None => match self.extension(Some(t), None, name) {
+                        Some(m) => Cur::Type(self.value_type_of(m, call, garg.as_deref())?),
+                        // library-provided members of model classes (`User.objects`, `User.find`)
+                        None => match self.stub_family(t).and_then(|f| self.mods.stubs[f].members.get(name).map(|r| (f, r))) {
+                            Some((_, r)) if r == "self" => Cur::Type(t),
+                            Some((f, _)) => Cur::Set(t, f),
+                            None => { note_miss(name); return None; }
+                        },
+                    },
                 },
-                Err(c) => {
+                Cur::Set(model, f) => match self.mods.stubs[f].set_members.get(name).map(String::as_str) {
+                    Some("self") => Cur::Type(model),
+                    Some(_) => Cur::Set(model, f),
+                    None if call && TRANSPARENT.contains(&name) => Cur::Set(model, f),
+                    None => return None,
+                },
+                Cur::Cont(c) => {
                     let m = self.member_of(c, name, &any)?;
                     let k = self.mem.node(m).kind;
-                    if !call && (k.is_container() || k == NodeKind::File) && !k.is_type() { Err(Container::Node(m)) }
-                    else { Ok(self.value_type_of(m, call, garg.as_deref())?) }
+                    if !call && (k.is_container() || k == NodeKind::File) && !k.is_type() { Cur::Cont(Container::Node(m)) }
+                    else { Cur::Type(self.value_type_of(m, call, garg.as_deref())?) }
                 }
             };
         }
-        cur.ok()
+        match cur { Cur::Type(t) => Some(t), _ => None }
+    }
+
+    /// The stub family (Django model, ActiveRecord, Pydantic, …) a project type belongs to,
+    /// judged by external base classes anywhere up its inheritance chain.
+    fn stub_family(&self, t: u32) -> Option<usize> {
+        if self.mods.stubs.is_empty() { return None; }
+        let ext = self.mem.ext_supers.get()?;
+        let mut seen = vec![t];
+        let mut i = 0;
+        while i < seen.len() && i < 32 {
+            let ty = seen[i];
+            for (q, n) in ext.get(&ty).into_iter().flatten() {
+                for (fi, fam) in self.mods.stubs.iter().enumerate() {
+                    let hit = fam.bases.iter().any(|b| {
+                        let (bq, bn) = crate::extract::split_qual(b);
+                        bn == n && bq.is_none_or(|bq| q.as_deref().is_some_and(|q| q.ends_with(bq)))
+                    });
+                    if hit { return Some(fi); }
+                }
+            }
+            for &s in self.mem.supers.get().and_then(|m| m.get(&ty)).into_iter().flatten() {
+                if !seen.contains(&s) { seen.push(s); }
+            }
+            i += 1;
+        }
+        None
     }
 
     /// Extension method `name` applicable to a receiver: either a resolved type (and its
@@ -880,12 +921,16 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
     };
     let h_res: Vec<_> = heritage.par_iter().map(|r| resolve_one(&rx, r)).collect();
     let mut supers: rustc_hash::FxHashMap<u32, Vec<u32>> = Default::default();
+    let mut ext_supers: rustc_hash::FxHashMap<u32, Vec<(Option<String>, String)>> = Default::default();
     for (r, x) in heritage.iter().zip(&h_res) {
-        if let Some((t, _)) = x.res {
-            let from = x.owner.unwrap_or(r.src);
-            if from != t { supers.entry(from).or_default().push(t); }
+        let from = x.owner.unwrap_or(r.src);
+        match x.res {
+            Some((t, _)) => { if from != t { supers.entry(from).or_default().push(t); } }
+            // library base classes (`models.Model`, `ActiveRecord::Base`) drive the stub families
+            None => ext_supers.entry(from).or_default().push((r.qualifier.clone(), r.name.clone())),
         }
     }
+    let _ = mem.ext_supers.set(ext_supers);
     let _ = mem.supers.set(supers);
     let r_res: Vec<_> = rest.par_iter().map(|r| resolve_one(&rx, r)).collect();
 

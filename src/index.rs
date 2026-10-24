@@ -244,6 +244,16 @@ pub fn full_index(root: &Path, mut progress: impl FnMut(usize, usize)) -> Result
     Ok(st)
 }
 
+/// Re-resolve every reference (after module configuration or stub changes).
+pub fn reresolve(root: &Path) -> Result<Stats> {
+    let t0 = Instant::now();
+    let mut db = Db::open(&db_path(root))?;
+    let mut st = Stats { resolved: crate::resolve::resolve(&mut db, root, crate::resolve::Scope::All)?, ..Default::default() };
+    st.ms_resolve = t0.elapsed().as_millis();
+    st.ms_total = st.ms_resolve;
+    Ok(st)
+}
+
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }

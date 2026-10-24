@@ -6,3 +6,4 @@ App.Service.run -> App.Service.helper
 App.User -> App.Base
 GET /users -> UsersController.index
 UsersController -> UsersController.authenticate
+PostsController.show -> Post.shout

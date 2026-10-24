@@ -66,6 +66,8 @@ pub struct Mem {
     pub by_dir: HashMap<String, Vec<u32>>,
     /// Declared package / namespace → files.
     pub by_package: HashMap<String, Vec<u32>>,
+    /// Type node → unresolved (library) supertypes as (qualifier, name).
+    pub ext_supers: std::sync::OnceLock<HashMap<u32, Vec<(Option<String>, String)>>>,
     /// Type node → resolved supertypes.
     pub supers: std::sync::OnceLock<HashMap<u32, Vec<u32>>>,
     /// Members attached out-of-line (owner resolution): type node → members.
@@ -215,6 +217,7 @@ impl Mem {
         for n in &mut self.nodes { n.owner_idx = None; }
         self.ext_members.clear();
         self.supers = std::sync::OnceLock::new();
+        self.ext_supers = std::sync::OnceLock::new();
     }
 
     pub fn node(&self, i: u32) -> &NodeInfo { &self.nodes[i as usize] }
