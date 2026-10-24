@@ -112,8 +112,10 @@ fn pick(g: &Graph, symbol: &str, file: Option<&str>) -> Result<Vec<query::Sym>> 
 
 fn print_stats(st: &index::Stats, quiet: bool) {
     if quiet { return; }
-    eprintln!("indexed {} files ({} changed, {} removed) · {} symbols · {} refs · {} resolved · {} ms (discover {} / parse {} / resolve {})",
-        st.files_scanned, st.files_indexed, st.files_removed, st.nodes, st.refs, st.resolved, st.ms_total, st.ms_discover, st.ms_parse, st.ms_resolve);
+    // symbol/ref counts are for the files (re)parsed this run
+    eprintln!("{} scanned ({} changed, {} removed) · {} · {} · {} resolved · {} ms (discover {} / parse {} / resolve {})",
+        count(st.files_scanned, "file"), st.files_indexed, st.files_removed, count(st.nodes, "symbol"), count(st.refs, "ref"),
+        st.resolved, st.ms_total, st.ms_discover, st.ms_parse, st.ms_resolve);
 }
 
 fn progress(quiet: bool) -> impl FnMut(usize, usize) {
@@ -182,7 +184,7 @@ fn main() -> Result<()> {
             let v = g.impact(&ids, depth, 2000)?;
             if json { println!("{}", serde_json::to_string_pretty(&v.iter().map(|(s, d)| serde_json::json!({"symbol": s, "depth": d})).collect::<Vec<_>>())?); }
             else {
-                println!("impact of {} — {} dependents (depth {depth})", symbol, v.len());
+                println!("impact of {} — {} (depth {depth})", symbol, count(v.len(), "dependent"));
                 let mut by_file: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
                 for (s, d) in &v { by_file.entry(&s.path).or_default().push(format!("{}:{} (d{d})", s.name, s.start_line)); }
                 for (f, syms) in by_file { println!("  {f}\n    {}", syms.join(", ")); }
@@ -196,7 +198,7 @@ fn main() -> Result<()> {
             let (tests, traversed) = g.affected_tests(&files, depth, &is_test)?;
             if json { println!("{}", serde_json::json!({"changedFiles": files, "affectedTests": tests, "totalDependentsTraversed": traversed})); }
             else if quiet { for t in tests { println!("{t}"); } }
-            else { println!("{} affected test files ({} files traversed)", tests.len(), traversed); for t in tests { println!("  {t}"); } }
+            else { println!("{} ({} traversed)", count(tests.len(), "affected test file"), count(traversed, "file")); for t in tests { println!("  {t}"); } }
         }
         Cmd::Files { path, symbols } => {
             let g = graph_here()?;
@@ -204,7 +206,7 @@ fn main() -> Result<()> {
             let pat = format!("{}%", like_escape(path.unwrap_or_default().trim_start_matches("./")));
             for r in st.query_map([pat], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
                 let (p, n) = r?;
-                println!("{p} ({} symbols)", n - 1);
+                println!("{p} ({})", count((n - 1).max(0) as usize, "symbol"));
                 if symbols { for s in g.file_symbols(&p)? { if s.parent_id.is_some_and(|_| true) { println!("    {:<10} {}:{}", s.kind.as_str(), explore::display_name(&s), s.start_line); } } }
             }
         }

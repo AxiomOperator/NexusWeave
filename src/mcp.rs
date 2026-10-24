@@ -138,7 +138,7 @@ impl Server {
                 let v = g.impact(&ids, n("depth").unwrap_or(2).clamp(1, 8) as u32, 600)?;
                 let mut by_file: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
                 for (x, d) in &v { by_file.entry(&x.path).or_default().push(format!("{}:{}{}", x.name, x.start_line, if *d > 1 { format!(" (d{d})") } else { String::new() })); }
-                let mut o = format!("**Impact of `{}`** — {} dependents in {} files\n", s("symbol").unwrap_or(""), v.len(), by_file.len());
+                let mut o = format!("**Impact of `{}`** — {} in {}\n", s("symbol").unwrap_or(""), crate::count(v.len(), "dependent"), crate::count(by_file.len(), "file"));
                 for (f, xs) in by_file { let _ = writeln!(o, "- {f}: {}", xs.join(", ")); }
                 o
             }
@@ -186,7 +186,7 @@ pub fn node_text(g: &Graph, target: &str, file: Option<&str>, code: bool, offset
             for ln in start..=end { let _ = writeln!(o, "{ln}\t{}", lines[ln as usize - 1]); }
             let deps = g.file_dependents(&p)?;
             if !deps.is_empty() {
-                let _ = writeln!(o, "\nDepended on by {} files: {}{}", deps.len(), deps.iter().take(8).cloned().collect::<Vec<_>>().join(", "), if deps.len() > 8 { " …" } else { "" });
+                let _ = writeln!(o, "\nDepended on by {}: {}{}", crate::count(deps.len(), "file"), deps.iter().take(8).cloned().collect::<Vec<_>>().join(", "), if deps.len() > 8 { " …" } else { "" });
             }
             return Ok(cap(o));
         }

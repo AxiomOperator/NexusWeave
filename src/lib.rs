@@ -34,3 +34,8 @@ pub fn canonical(p: impl AsRef<std::path::Path>) -> std::io::Result<std::path::P
     }
     Ok(c)
 }
+
+/// `1 caller`, `3 callers`: a count with its noun pluralized (regular English plurals only).
+pub fn count(n: usize, noun: &str) -> String {
+    if n == 1 { format!("1 {noun}") } else { format!("{n} {noun}s") }
+}

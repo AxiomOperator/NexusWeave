@@ -156,7 +156,8 @@ pub fn run(root: &Path) -> Result<()> {
                 let Ok(req) = serde_json::from_str::<Value>(&line) else { continue };
                 let resp = match req.get("cmd").and_then(Value::as_str) {
                     Some("ping") => json!({"ok": true}),
-                    Some("status") => json!({"pid": std::process::id(), "root": root.display().to_string(), "clients": clients.load(Ordering::Relaxed),
+                    // `clients` excludes the connection asking
+                    Some("status") => json!({"pid": std::process::id(), "root": root.display().to_string(), "clients": clients.load(Ordering::Relaxed).saturating_sub(1),
                         "served": served.load(Ordering::Relaxed), "uptime_s": started.elapsed().as_secs()}),
                     Some("stop") => {
                         let _ = writeln!(out, "{}", json!({"ok": true}));

@@ -213,7 +213,7 @@ pub fn render(g: &Graph, what: &str, limit: usize, include_exported: bool) -> Re
             let v = g.cycles(limit)?;
             let _ = writeln!(o, "## Import cycles ({})\n", v.len());
             for c in v {
-                let _ = writeln!(o, "- {} files: {}", c.files.len(), c.path.join(" → "));
+                let _ = writeln!(o, "- {}: {}", crate::count(c.files.len(), "file"), c.path.join(" → "));
             }
         }
         "entry" => {

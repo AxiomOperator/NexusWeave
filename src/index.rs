@@ -213,7 +213,7 @@ pub fn full_index(root: &Path, mut progress: impl FnMut(usize, usize)) -> Result
         let mut busy = std::time::Duration::ZERO;
         let pending = &mut pending;
         parse_stream(cands, |p| {
-            st.nodes += p.ex.nodes.len();
+            st.nodes += p.ex.nodes.len().saturating_sub(1); // the file node isn't a symbol
             st.refs += p.ex.refs.len();
             let t = Instant::now();
             w.insert_with(&p.meta, &p.ex, Some(pending))?;
@@ -384,7 +384,7 @@ pub fn sync_with(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Op
                 None => { if let Some(id) = id { w.touch(*id, *m)?; } }
                 Some(p) => {
                     for n in &p.ex.nodes { if n.kind != NodeKind::File { affected_names.insert(n.name.clone()); } }
-                    st.nodes += p.ex.nodes.len();
+                    st.nodes += p.ex.nodes.len().saturating_sub(1); // the file node isn't a symbol
                     st.refs += p.ex.refs.len();
                     new_file_ids.push(w.insert(&p.meta, &p.ex)?);
                 }

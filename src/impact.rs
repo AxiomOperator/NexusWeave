@@ -173,8 +173,9 @@ pub fn render(r: &Report) -> String {
         if !r.unindexed_files.is_empty() { let _ = writeln!(o, "Files not in the index yet: {}", r.unindexed_files.join(", ")); }
         return o;
     }
-    let _ = writeln!(o, "## Change impact\n\n{} symbols changed in {} files · {} dependents · {} affected tests · {} routes\n",
-        r.changed.len(), r.files.len(), r.total_dependents, r.affected_tests.len(), r.affected_routes.len());
+    let _ = writeln!(o, "## Change impact\n\n{} changed in {} · {} · {} · {}\n",
+        crate::count(r.changed.len(), "symbol"), crate::count(r.files.len(), "file"), crate::count(r.total_dependents, "dependent"),
+        crate::count(r.affected_tests.len(), "affected test"), crate::count(r.affected_routes.len(), "route"));
     let mut order: Vec<&Changed> = r.changed.iter().collect();
     order.sort_by_key(|c| std::cmp::Reverse(c.dependents));
     o.push_str("| symbol | kind | location | callers | dependents | routes |\n|---|---|---|---:|---:|---:|\n");

@@ -26,7 +26,12 @@ fn curl(url: &str, accept: &str, out: Option<&Path>) -> Result<Vec<u8>> {
     if let Some(o) = out { c.arg("-o").arg(o); }
     let o = c.arg(url).output().context("running curl (is it installed?)")?;
     if !o.status.success() {
-        let hint = if token().is_none() { " (private repository? set GITHUB_TOKEN)" } else { "" };
+        let hint = match (token().is_some(), String::from_utf8_lossy(&o.stderr).contains("404")) {
+            (false, true) => " (no release published yet, or a private repository: set GITHUB_TOKEN)",
+            (true, true) => " (no release published yet, or the token can't read this repository)",
+            (false, false) => " (private repository? set GITHUB_TOKEN)",
+            (true, false) => "",
+        };
         bail!("download failed: {url}{hint}\n{}", String::from_utf8_lossy(&o.stderr).trim());
     }
     Ok(o.stdout)
