@@ -32,7 +32,7 @@ Windows (x86_64); each release carries `SHA256SUMS`.
 | **Beyond direct calls** | HTTP routes become graph nodes linked to their handlers, with router prefixes and mounts applied. Event topics (`emitter.on("x")` / `emit("x")`, Python signals, C# events) link emitters to listeners. Functions passed as callbacks get `passes` edges. Methods get `overrides` edges to the interface or base method they implement, so flows cross dynamic dispatch (`calls → dispatches → …`). |
 | **Compiler-grade when available** | An `index.scip` in the project (from scip-typescript, rust-analyzer, scip-clang, …) is imported as ground-truth edges; heuristics fill in the rest. Library return types missing from the index can be declared in `xgraph.stubs.toml`. |
 | **Review mode** | `xgraph diff-impact` maps a git diff to the symbols it touches, their callers, the routes whose flows reach them and the tests to run; the bundled GitHub workflow comments it on PRs. `xgraph analyze` reports dead code, import cycles, entry points and hot spots. |
-| **Fast** | Parsing runs in parallel. References are resolved in memory before the single bulk write. vscode (15.4k files, 2.6M references) indexes in 12.6 s into a 388 MB database. Resyncing after a one-file edit takes about 0.2 s on django (2.4k files) and on vscode, and up to 1.5 s on vscode for a hub file imported by thousands of others. Those figures are for the long-running watcher or MCP server, which keeps resolver state warm. |
+| **Fast** | Parsing runs in parallel. References are resolved in memory before the single bulk write. vscode (15.4k files, 2.6M references) indexes in about 9 s into a 389 MB database; django (2.4k files) in 0.85 s. Resyncing after a one-file edit takes about 0.15 s on django and 0.12 s on vscode, and up to 1.2 s on vscode for a hub file imported by thousands of others. Those figures are for the long-running watcher or MCP server, which keeps resolver state warm. |
 | **Always fresh** | `xgraph serve` watches the tree with a 300 ms debounce and applies pending edits before answering each tool call. |
 | **Local** | Nothing leaves your machine. No telemetry. |
 
@@ -87,7 +87,7 @@ xgraph analyze dead|cycles|entry|hotspots
 xgraph watch [path]             keep the graph in sync from the terminal
 xgraph serve                    MCP server on stdio (auto-syncs; shares one daemon per repo)
 xgraph daemon [status|stop]     the shared per-repo index process
-xgraph ui [--port 7878]         graph viewer: graph, modules, routes, flows, insights, explore
+xgraph ui [--port 7878]         viewer: overview, call graph, module map, routes, call paths, insights, ask
 xgraph install | uninstall      (un)register the MCP server with agents (--target, --print, --hooks)
 xgraph upgrade [--check]        self-update from GitHub releases
 ```
@@ -186,11 +186,11 @@ Measured against compiler-grade SCIP indexes on 7 pinned repos (`bench/`, run wi
 
 | language | precision | recall | repos |
 |---|---:|---:|---|
-| TypeScript | 99.9% | 88.4% | hono, codegraph |
-| JavaScript | 100.0% | 86.9% | express |
-| Python | 99.8% | 79.0% | flask, httpx |
+| TypeScript | 100.0% | 89.1% | hono, codegraph |
+| JavaScript | 100.0% | 89.8% | express |
+| Python | 99.8% | 80.5% | flask, httpx |
 | Go | 99.9% | 96.5% | gin |
-| Rust | 98.4% | 81.7% | ripgrep |
+| Rust | 98.6% | 81.8% | ripgrep |
 
 With a SCIP index present: hono 100% / 84.3%, ripgrep 99.2% / 91.6%.
 

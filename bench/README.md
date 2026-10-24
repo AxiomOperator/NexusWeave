@@ -72,13 +72,13 @@ Generated files outside the checkout (scip-go's build-cache test mains) are drop
 
 | repo | lang | truth refs | extracted | precision | recall |
 |---|---|---:|---:|---:|---:|
-| hono | typescript | 9,427 | 94.3% | 99.9% | 79.0% |
-| codegraph | typescript | 19,925 | 94.8% | 99.9% | 92.8% |
-| express | javascript | 343 | 88.6% | 100.0% | 86.9% |
-| flask | python | 1,143 | 76.4% | 100.0% | 73.8% |
-| httpx | python | 2,833 | 87.9% | 99.7% | 81.1% |
+| hono | typescript | 9,427 | 94.9% | 99.9% | 79.1% |
+| codegraph | typescript | 19,925 | 95.9% | 100.0% | 93.9% |
+| express | javascript | 343 | 91.5% | 100.0% | 89.8% |
+| flask | python | 1,143 | 78.3% | 100.0% | 75.7% |
+| httpx | python | 2,833 | 89.2% | 99.8% | 82.5% |
 | gin | go | 5,564 | 98.8% | 99.9% | 96.5% |
-| ripgrep | rust | 19,393 | 92.2% | 98.4% | 81.7% |
+| ripgrep | rust | 19,393 | 92.2% | 98.6% | 81.8% |
 
 Edges with confidence ≥ 90 are 99–100% precise in every repo. The low-confidence fallbacks are
 now mostly right too: below 50 they are 82% precise on gin (14 of 17), 92–97% on codegraph,

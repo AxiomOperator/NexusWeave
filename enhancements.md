@@ -40,11 +40,13 @@ Every limitation in section 2 and every roadmap item in section 3 is now impleme
 
 | | before this pass | now |
 |---|---:|---:|
-| vscode full index | ~14.2 s | **12.6 s** |
-| vscode database | 440 MB | **388 MB** |
-| vscode warm resync, hub file (`lifecycle.ts`, 17k import aliases) | 2.5 s | **1.5 s** |
-| vscode warm resync, ordinary file | 0.5 s | **0.16 s** |
-| django full index / warm resync | 1.0 s / 0.22 s | 1.1 s / 0.19 s |
+| vscode full index | ~14.2 s (busy machine) | **9.1 s** |
+| vscode database | 440 MB | **389 MB** |
+| vscode warm resync, hub file (`lifecycle.ts`, 17k import aliases) | 2.5 s | **1.2 s** |
+| vscode warm resync, ordinary file | 0.5 s | **0.12 s** |
+| django full index / warm resync | 1.0 s / 0.22 s | **0.85 s / 0.15 s** |
+
+(Measured with load average < 1; the earlier 12.6 s figure was taken on a busy machine.)
 
 Not done from 3.14/3.15, with the reason:
 - *FTS from one `INSERT … SELECT`, split writer databases*: FTS is ~1.4 s of the 3.3 s writer;
