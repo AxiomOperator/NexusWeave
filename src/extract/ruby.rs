@@ -156,9 +156,19 @@ impl LangHooks for Ruby {
                 }
                 Visit::Skip
             }
+            // `Rack::Utils::Escape`: every segment names a module/class (`Escape`, `Utils`, `Rack`),
+            // each anchored on its own name
             "scope_resolution" => {
-                let (q, nm) = split_qual(cx.text(n));
-                cx.add_ref(RefKind::TypeRef, nm, q, n);
+                let mut cur = n;
+                loop {
+                    let (q, nm) = split_qual(cx.text(cur));
+                    cx.add_ref(RefKind::TypeRef, nm, q, cur.child_by_field_name("name").unwrap_or(cur));
+                    match cur.child_by_field_name("scope") {
+                        Some(s) if s.kind() == "scope_resolution" => cur = s,
+                        Some(s) if s.kind() == "constant" => { cx.add_ref(RefKind::TypeRef, cx.text(s), None, s); break; }
+                        _ => break,
+                    }
+                }
                 Visit::Skip
             }
             "comment" | "string" | "heredoc_body" | "integer" => Visit::Skip,

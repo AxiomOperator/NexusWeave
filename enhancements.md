@@ -304,6 +304,25 @@ NexusWeave was used to review its own code and the vscode index. These were foun
 Recall rose on four repos (codegraph 92.8 → 93.9, express 86.9 → 89.8, flask 73.8 → 75.7,
 httpx 81.1 → 82.5) with precision unchanged or higher.
 
+## 5b. C and Ruby ground truth (review pass, 2026-10-24)
+
+zlib (scip-clang) and rack (scip-ruby) joined the corpus. First measurement: C 87.4% precision /
+47.8% recall, Ruby 98.1% / 56.9%. Fixed, each confirmed in error samples:
+
+| bug | effect | fix |
+|---|---|---|
+| A file tracked by git but matched by `.gitignore` was skipped (zlib commits the `zconf.h` it ignores) | every zlib typedef unresolved | tracked files are indexed, as git sees them (`git ls-files -ci`); `.nexusweaveignore` still wins |
+| Storage / export macros (`local`, `ZEXPORT`, `FAR`, `z_const`) made tree-sitter drop whole C functions | `inflate()` swallowed the rest of `inflate.c`; static `gz_open` missing, calls bound to a test file's copy | macros detected from the parse errors and blanked (same length), then re-parsed while it shrinks the error area |
+| `#if` / `#else` inside an expression | parse errors that spill into the rest of the file | such conditional groups are flattened to their first branch for parsing |
+| Calls bound to header prototypes | the agent was pointed at `zlib.h`, not the body | calls through a header declaration go to its one definition (nearest copy if vendored) |
+| Only direct `#include`s were searched | names declared two headers down fell to the global guess | transitive includes, nearest first |
+| `_t` names were never referenced | `z_crc_t`, `z_word_t` invisible | only standard C/POSIX `_t` typedefs are skipped |
+| A typedef with several `#if` alternatives was guessed | wrong branch | no edge (the right one depends on the build) |
+| Ruby `Rack::Utils` referenced only `Utils`; reopened modules were ambiguous | 1,861 `Rack` refs missing | every segment is a ref; a reopened module binds to its canonical file |
+
+Now: C 98.7% / 70.7%, Ruby 98.7% / 85.5%. Biggest remaining C gap: macro-generated code and types
+defined only in some `#if` branches.
+
 ## 6. Agent evaluation (roadmap 3.3)
 
 `bench/agent/run.py`: 20 questions over the 7 corpus repos × {baseline: Read/Grep/Glob,
@@ -335,13 +354,19 @@ The token-efficiency claim holds for tool calls and large repos. On small repos 
 for cost. Next steps, each measurable with the harness:
 
 1. Size explore's budget to the repository: small repos get small answers.
-2. ✅ Say when the answer is self-sufficient: each file section's header now states "entire
+2. Say when the answer is self-sufficient: each file section's header now states "entire
    file", or the exact line ranges shown and which symbols are only partly shown (to which line),
-   and the server instructions tell agents to read further only for those. Not yet re-measured.
+   and the server instructions tell agents to read further only for those. **Measured, no effect:**
+   `Read` calls per NexusWeave session went from 2.0 to 2.2 (second run below). Still open.
 3. List `nexusweave_explore` eagerly instead of behind `ToolSearch` (client behavior; nothing to
    change server-side).
 4. ✅ Harder tasks authored (`gin-render-impls`, `httpx-transport-dispatch`,
    `flask-add-url-rule-impact`, `ripgrep-sink-dispatch`): implementations of interfaces/traits,
    runtime transport dispatch, and impact through deferred calls, each fact checked at the pinned
-   commit. Not yet run (a full run is ~$20 of API usage). Still open: an LLM-judge grade
-   alongside the keyword rubric, and tasks on vscode / django.
+   commit. Run, and they saturated too (100% in both conditions). Still open: an LLM-judge
+   grade alongside the keyword rubric, and tasks on vscode / django.
+
+**Second run (2026-10-24, 24 tasks × 2 conditions × 2 = 96 sessions, ~$20):** rubric 100% in both
+conditions again; NexusWeave vs baseline: tool calls −25%, turns −21%, tokens −5%, wall −5%,
+cost +4% (first run: −30% / −26% / −12% / −10% / +5%). Cheaper than baseline on the largest repo
+(codegraph: `cg-index-flow` $0.85 → $0.68, `cg-watcher` $0.35 → $0.21), dearer on most small ones.

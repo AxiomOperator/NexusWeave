@@ -10,6 +10,8 @@ SCIP_TYPESCRIPT=0.4.0
 SCIP_PYTHON=0.6.8
 SCIP_GO=v0.2.9
 RUST_ANALYZER=2026-10-19
+SCIP_CLANG=v0.4.0
+SCIP_RUBY=v0.5.0
 
 here=$(cd "$(dirname "$0")" && pwd)
 tools="$here/.cache/tools"
@@ -54,6 +56,23 @@ if [ ! -x rust-analyzer ] || [ "$(cat rust-analyzer.version 2>/dev/null)" != "$R
   curl -fsSL "https://github.com/rust-lang/rust-analyzer/releases/download/$RUST_ANALYZER/$ra.gz" | gunzip > rust-analyzer
   chmod +x rust-analyzer
   echo "$RUST_ANALYZER" > rust-analyzer.version
+fi
+
+# C/C++ and Ruby truth: prebuilt indexers exist for Linux x86_64 only; elsewhere those corpus
+# entries are skipped (bench/accuracy.py reports them as unavailable)
+if [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ]; then
+  if [ ! -x scip-clang ] || [ "$(cat scip-clang.version 2>/dev/null)" != "$SCIP_CLANG" ]; then
+    echo "· scip-clang $SCIP_CLANG"
+    curl -fsSL -o scip-clang "https://github.com/sourcegraph/scip-clang/releases/download/$SCIP_CLANG/scip-clang-x86_64-linux"
+    chmod +x scip-clang
+    echo "$SCIP_CLANG" > scip-clang.version
+  fi
+  if [ ! -x scip-ruby ] || [ "$(cat scip-ruby.version 2>/dev/null)" != "$SCIP_RUBY" ]; then
+    echo "· scip-ruby $SCIP_RUBY"
+    curl -fsSL -o scip-ruby "https://github.com/sourcegraph/scip-ruby/releases/download/scip-ruby-$SCIP_RUBY/scip-ruby-x86_64-linux"
+    chmod +x scip-ruby
+    echo "$SCIP_RUBY" > scip-ruby.version
+  fi
 fi
 
 echo "tools ready in $tools"

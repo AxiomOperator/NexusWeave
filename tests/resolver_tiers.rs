@@ -145,3 +145,52 @@ fn reads_need_a_known_receiver() {
     p.expect("typed", "size", "m.py", 90, 100);
     assert_eq!(p.edge("untyped", "size"), None);
 }
+
+/// C/C++: a call through a header prototype lands on the one definition in a source file.
+#[test]
+fn c_calls_reach_definitions() {
+    let p = Project::new("cdef", &[
+        ("include/util.h", "int clamp_value(int v);\n"),
+        ("src/util.c", "#include \"../include/util.h\"\nint clamp_value(int v) { return v < 0 ? 0 : v; }\n"),
+        ("src/main.c", "#include \"../include/util.h\"\nint main(void) { return clamp_value(-1); }\n"),
+    ]);
+    p.expect("main", "clamp_value", "src/util.c", 40, 100);
+}
+
+/// C: a storage-class macro (`#define local static`, defined in another header) before a
+/// definition doesn't cost the definition, so the file's own static function is found.
+#[test]
+fn c_storage_macro_definitions() {
+    let p = Project::new("cmacro", &[
+        ("zutil.h", "#define local static\n"),
+        ("a.c", "#include \"zutil.h\"\nlocal int open_it(const char *p) { return p != 0; }\nint api(void) { return open_it(\"x\"); }\n"),
+        ("test/b.c", "static int open_it(const char *p) { return 0; }\n"),
+    ]);
+    p.expect("api", "open_it", "a.c", 90, 100);
+}
+
+/// Like git, a `.gitignore` pattern doesn't hide a file that is tracked anyway (zlib commits
+/// the `zconf.h` its `.gitignore` lists); `.nexusweaveignore` still applies.
+#[test]
+fn tracked_files_beat_gitignore() {
+    let p = Project::new("tracked", &[
+        (".gitignore", "/conf.h\n/scratch.c\n/hidden.c\n"),
+        (".nexusweaveignore", "/hidden.c\n"),
+        ("conf.h", "typedef unsigned long uLong;\n"),
+        ("scratch.c", "int scratch(void) { return 0; }\n"),
+        ("hidden.c", "int hidden(void) { return 0; }\n"),
+        ("main.c", "#include \"conf.h\"\nuLong total(void) { return 0; }\n"),
+    ]);
+    let git = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(&p.0)
+        .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t")
+        .output().is_ok_and(|o| o.status.success());
+    if !git(&["init", "-q"]) { eprintln!("git unavailable: skipped"); return; }
+    assert!(git(&["add", "-f", "conf.h", "hidden.c", "main.c", ".gitignore", ".nexusweaveignore"]) && git(&["commit", "-qm", "x"]));
+    nexusweave::index::full_index(&p.0, |_, _| {}).unwrap();
+    let files: Vec<String> = nexusweave::index::discover(&p.0).into_iter().map(|c| c.rel).collect();
+    assert!(files.contains(&"conf.h".to_string()), "tracked despite .gitignore: {files:?}");
+    assert!(!files.contains(&"scratch.c".to_string()), "untracked and ignored: {files:?}");
+    assert!(!files.contains(&"hidden.c".to_string()), ".nexusweaveignore wins: {files:?}");
+    assert!(!nexusweave::index::excluded(&p.0, "conf.h") && nexusweave::index::excluded(&p.0, "scratch.c"));
+    p.expect("total", "uLong", "conf.h", 40, 100);
+}

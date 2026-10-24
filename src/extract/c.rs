@@ -178,13 +178,39 @@ impl LangHooks for C {
                 if let Some(a) = n.child_by_field_name("arguments") { walk_children(self, a, cx, 0); }
                 Visit::Skip
             }
+            // `sizeof(uLong)`: a lone name in sizeof is usually a type (the ref only resolves to one)
+            "sizeof_expression" => {
+                if let Some(v) = n.child_by_field_name("value").filter(|v| v.kind() == "parenthesized_expression")
+                    && let Some(id) = v.named_child(0).filter(|x| x.kind() == "identifier" && v.named_child_count() == 1) {
+                    let t = cx.text(id);
+                    if !is_builtin_type(t) && !cx.is_local(t) { cx.add_ref(RefKind::TypeRef, t, None, id); }
+                    return Visit::Skip;
+                }
+                Visit::Continue
+            }
             "type_identifier" => {
                 let t = cx.text(n);
-                if !is_builtin_type(t) && !t.ends_with("_t") { cx.add_ref(RefKind::TypeRef, t, None, n); }
+                if !is_builtin_type(t) && !is_std_t(t) { cx.add_ref(RefKind::TypeRef, t, None, n); }
                 Visit::Skip
             }
             "comment" | "string_literal" | "raw_string_literal" | "char_literal" | "number_literal" | "primitive_type" => Visit::Skip,
             _ => Visit::Continue,
         }
     }
+}
+
+/// Standard C / POSIX `_t` typedefs (`size_t`, `uint32_t`, `pthread_mutex_t`): never project types,
+/// so no ref is stored for them. Project typedefs that follow the convention (`z_crc_t`) still get one.
+fn is_std_t(t: &str) -> bool {
+    const STD: &[&str] = &["size_t", "ssize_t", "ptrdiff_t", "intptr_t", "uintptr_t", "intmax_t", "uintmax_t", "wchar_t", "wint_t",
+        "char8_t", "char16_t", "char32_t", "off_t", "off64_t", "time_t", "clock_t", "pid_t", "uid_t", "gid_t", "mode_t", "dev_t", "ino_t",
+        "nlink_t", "blksize_t", "blkcnt_t", "socklen_t", "sig_atomic_t", "fpos_t", "max_align_t", "nullptr_t", "mbstate_t", "locale_t",
+        "suseconds_t", "useconds_t", "sa_family_t", "in_addr_t", "in_port_t", "id_t", "key_t", "clockid_t", "timer_t", "rlim_t", "errno_t",
+        "rsize_t", "float_t", "double_t", "u_char", "u_short", "u_int", "u_long", "byte_t", "nfds_t", "cc_t", "speed_t", "tcflag_t"];
+    if !t.ends_with("_t") { return false; }
+    if STD.contains(&t) || t.starts_with("pthread_") || t.starts_with("__") || t.starts_with("atomic_") { return true; }
+    // intN_t, uintN_t, int_leastN_t, uint_fastN_t, …
+    let core = t.strip_prefix('u').unwrap_or(t).strip_suffix("_t").unwrap_or(t);
+    let core = core.strip_prefix("int").map(|r| r.trim_start_matches("_least").trim_start_matches("_fast"));
+    core.is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
 }

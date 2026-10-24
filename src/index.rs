@@ -69,22 +69,53 @@ fn minified(src: &[u8]) -> bool {
     src.len() / lines > 400
 }
 
-/// Whether a project-relative path is excluded by default dirs or root-level ignore files.
+/// Whether a project-relative path is excluded by default dirs or ignore files. Like git, a
+/// `.gitignore` pattern doesn't apply to a file that is tracked anyway (zlib commits the
+/// `zconf.h` its `.gitignore` lists); `.nexusweaveignore` always applies.
 pub fn excluded(root: &Path, rel: &str) -> bool {
     let mut segs: Vec<&str> = rel.split('/').collect();
     segs.pop();
     if segs.iter().any(|s| DEFAULT_EXCLUDES.contains(s) || s.starts_with('.')) { return true; }
+    if ignored_by(root, rel, &segs, &[".nexusweaveignore", ".xgraphignore"]) { return true; }
+    ignored_by(root, rel, &segs, &[".gitignore"]) && !tracked_ignored(root).contains(rel)
+}
+
+fn ignored_by(root: &Path, rel: &str, dirs: &[&str], names: &[&str]) -> bool {
     let mut b = ignore::gitignore::GitignoreBuilder::new(root);
     let mut dir = root.to_path_buf();
-    for f in [".gitignore", ".nexusweaveignore", ".xgraphignore"] { let _ = b.add(dir.join(f)); }
-    for s in &segs {
+    for f in names { let _ = b.add(dir.join(f)); }
+    for s in dirs {
         dir = dir.join(s);
-        for f in [".gitignore", ".nexusweaveignore", ".xgraphignore"] { let p = dir.join(f); if p.exists() { let _ = b.add(p); } }
+        for f in names { let p = dir.join(f); if p.exists() { let _ = b.add(p); } }
     }
     match b.build() {
         Ok(gi) => gi.matched_path_or_any_parents(rel, false).is_ignore(),
         Err(_) => false,
     }
+}
+
+/// Files git tracks although an ignore rule matches them (`git ls-files -ci --exclude-standard`),
+/// relative to `root`; empty outside a git checkout or without git. Cached for a short while:
+/// the watcher asks on every event.
+pub fn tracked_ignored(root: &Path) -> std::sync::Arc<HashSet<String>> { tracked_ignored_ex(root, false) }
+
+type TrackedCache = Mutex<HashMap<PathBuf, (Instant, std::sync::Arc<HashSet<String>>)>>;
+static TRACKED: std::sync::OnceLock<TrackedCache> = std::sync::OnceLock::new();
+
+/// `fresh`: ask git now (discovery does, and refreshes the cache for the watcher).
+fn tracked_ignored_ex(root: &Path, fresh: bool) -> std::sync::Arc<HashSet<String>> {
+    use std::sync::Arc;
+    let cache = TRACKED.get_or_init(Default::default);
+    if !fresh && let Some((at, set)) = cache.lock().unwrap().get(root) && at.elapsed() < std::time::Duration::from_secs(30) { return set.clone(); }
+    let set: HashSet<String> = std::process::Command::new("git")
+        .arg("-C").arg(root).args(["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"])
+        .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()
+        .filter(|o| o.status.success())
+        .map(|o| o.stdout.split(|&b| b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).replace('\\', "/")).collect())
+        .unwrap_or_default();
+    let set = Arc::new(set);
+    cache.lock().unwrap().insert(root.to_path_buf(), (Instant::now(), set.clone()));
+    set
 }
 
 pub fn discover(root: &Path) -> Vec<Candidate> {
@@ -120,6 +151,20 @@ pub fn discover(root: &Path) -> Vec<Candidate> {
         })
     });
     let mut v = out.into_inner().unwrap();
+    // tracked files a .gitignore pattern hid from the walk (git itself still tracks them)
+    let tracked = tracked_ignored_ex(root, true);
+    if !tracked.is_empty() {
+        let have: HashSet<String> = v.iter().map(|c| c.rel.clone()).collect();
+        for rel in tracked.iter() {
+            if have.contains(rel) || excluded(root, rel) { continue; }
+            let Some(lang) = Lang::from_path(rel) else { continue };
+            let abs = root.join(rel);
+            let Ok(md) = std::fs::symlink_metadata(&abs) else { continue };
+            if !md.is_file() || md.len() > MAX_FILE_SIZE || md.len() == 0 { continue; }
+            let mtime = md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
+            v.push(Candidate { rel: rel.clone(), abs, lang, size: md.len(), mtime });
+        }
+    }
     v.sort_by(|a, b| a.rel.cmp(&b.rel));
     v
 }

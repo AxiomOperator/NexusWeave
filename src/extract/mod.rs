@@ -466,7 +466,33 @@ pub fn extract(lang: Lang, path: &str, src: &[u8]) -> FileExtraction {
 }
 
 fn extract_src(lang: Lang, path: &str, src: &[u8]) -> FileExtraction {
-    let Some(tree) = crate::lang::parse(lang, src) else { return FileExtraction::default() };
+    let Some(mut tree) = crate::lang::parse(lang, src) else { return FileExtraction::default() };
+    // C/C++: storage-class macros (`local` for `static`, `API_EXPORT`) parsed as a type cost the
+    // whole definition; blank them (same length, positions unchanged) and parse again
+    let blanked: Vec<u8>;
+    let mut src = src;
+    if matches!(lang, Lang::C | Lang::Cpp) && tree.root_node().has_error() {
+        // a few rounds: a cleaner parse can expose the next macro; keep a round only if it helps
+        let (mut starts, mut anywhere, mut broken) = (HashSet::new(), HashSet::new(), HashSet::new());
+        let mut best: Option<Vec<u8>> = None;
+        for _ in 0..4 {
+            let cur: &[u8] = best.as_deref().unwrap_or(src);
+            let (s2, a2, b2) = macro_qualifiers(tree.root_node(), cur);
+            let before = starts.len() + anywhere.len() + broken.len();
+            starts.extend(s2);
+            anywhere.extend(a2);
+            broken.extend(b2);
+            if starts.len() + anywhere.len() + broken.len() == before { break; }
+            let mut text = blank_macros(src, &starts, &anywhere);
+            flatten_conditionals(&mut text, &broken);
+            match crate::lang::parse(lang, &text) {
+                Some(t) if error_bytes(t.root_node()) < error_bytes(tree.root_node()) => { tree = t; best = Some(text); }
+                _ => break,
+            }
+            if !tree.root_node().has_error() { break; }
+        }
+        if let Some(b) = best { blanked = b; src = &blanked; }
+    }
     let h = hooks(lang);
     let root = tree.root_node();
     let fname = path.rsplit('/').next().unwrap_or(path).to_string();
@@ -491,6 +517,175 @@ fn drop_shadowed_reads(refs: &mut Vec<ExRef>) {
     let keep: Vec<bool> = refs.iter().map(|r| r.kind != RefKind::Read || !passed.contains(&(r.from, r.line, r.name.as_str()))).collect();
     let mut i = 0;
     refs.retain(|_| { i += 1; keep[i - 1] });
+}
+
+/// Storage-class / export macros that mangle C/C++ definitions, as (words to blank where they
+/// start a line, words to blank wherever they stand alone). Macro names follow C convention:
+/// `local` (lowercase, standing in for `static`) or `ZEXPORT` (ALL_CAPS); a mixed-case word such
+/// as `uLong` is a real typedef and is never blanked.
+fn macro_qualifiers(root: Node<'_>, src: &[u8]) -> (HashSet<Vec<u8>>, HashSet<Vec<u8>>, HashSet<usize>) {
+    let (mut starts, mut anywhere) = (HashSet::new(), HashSet::new());
+    // `cond ?\n#ifdef X\n a :\n#endif\n b`: directives inside an expression break the parse;
+    // remember their lines so `flatten_conditionals` can keep just the first branch
+    let mut broken = HashSet::new();
+    let lower = |w: &[u8]| w.iter().all(|b| b.is_ascii_lowercase() || *b == b'_');
+    let caps = |w: &[u8]| w.len() >= 3 && w.iter().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'_');
+    let at_line_start = |x: Node<'_>| src[..x.start_byte()].rsplit(|&b| b == b'\n').next().is_some_and(|l| l.iter().all(|b| b.is_ascii_whitespace()));
+    let text = |x: Node<'_>| src[x.start_byte()..x.end_byte()].to_vec();
+    let mut stack = vec![root];
+    let mut c = root.walk();
+    while let Some(n) = stack.pop() {
+        if !n.has_error() { continue; }
+        // `T MACRO f(...) {` / `local T f(...) {`: the type slot is followed by an ERROR word
+        if matches!(n.kind(), "function_definition" | "declaration")
+            && let Some(t) = n.child_by_field_name("type")
+            && let Some(e) = t.next_sibling().filter(|x| x.is_error())
+            && let Some(w) = e.named_child(0).filter(|w| e.named_child_count() == 1
+                && matches!(w.kind(), "identifier" | "type_identifier" | "primitive_type" | "sized_type_specifier")) {
+            if w.kind() == "identifier" && caps(&text(w)) { anywhere.insert(text(w)); }
+            else if t.kind() == "type_identifier" && lower(&text(t)) && at_line_start(t) { starts.insert(text(t)); }
+        }
+        if n.is_error() {
+            let mut k = n.walk();
+            for ch in n.children(&mut k) {
+                if ch.kind() == "preproc_directive" { broken.insert(ch.start_position().row); }
+            }
+        }
+        // `struct state FAR *s;`: an empty ALL_CAPS macro left alone in an ERROR
+        if n.is_error() && n.named_child_count() == 1 && let Some(w) = n.named_child(0)
+            && matches!(w.kind(), "identifier" | "type_identifier") && caps(&text(w)) {
+            anywhere.insert(text(w));
+        }
+        // `local gzFile f(...) {` mangled into a top-level ERROR led by the macro
+        if n.is_error() && let Some(first) = n.named_child(0)
+            && matches!(first.kind(), "type_identifier" | "identifier") && at_line_start(first) {
+            let mut k = n.walk();
+            let has_fn = n.named_children(&mut k).any(|x| x.kind() == "function_declarator"
+                || x.kind() == "ERROR" && { let mut kk = x.walk(); x.named_children(&mut kk).any(|y| y.kind() == "function_declarator") });
+            let w = text(first);
+            if has_fn && w.len() <= 40 && (lower(&w) || caps(&w)) { starts.insert(w); }
+        }
+        for ch in n.children(&mut c) { stack.push(ch); }
+    }
+    // `z_const unsigned char *p`, `(z_const char *)x`: in C an identifier is never directly
+    // followed by a type keyword unless it is a macro
+    const KEYWORDS: &[&str] = &["auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum", "extern",
+        "float", "for", "goto", "if", "inline", "int", "long", "register", "restrict", "return", "short", "signed", "sizeof", "static",
+        "struct", "switch", "typedef", "union", "unsigned", "void", "volatile", "while", "bool", "class", "namespace", "template",
+        "typename", "virtual", "public", "private", "protected", "friend", "operator", "new", "delete", "using", "constexpr", "mutable",
+        "explicit", "noexcept", "throw", "case", "goto", "define", "include", "ifdef", "ifndef", "endif", "elif", "pragma", "undef"];
+    const TYPE_WORDS: &[&str] = &["unsigned", "signed", "char", "short", "int", "long", "float", "double", "void", "struct", "union", "enum", "const", "volatile", "bool"];
+    let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    // walk identifiers with what separates them: only whitespace may sit between the pair
+    let mut i = 0;
+    let mut prev: Option<(usize, usize)> = None;
+    while i < src.len() {
+        if ident(src[i]) && !src[i].is_ascii_digit() && (i == 0 || !ident(src[i - 1])) {
+            let start = i;
+            while i < src.len() && ident(src[i]) { i += 1; }
+            if let Some((ps, pe)) = prev
+                && src[pe..start].iter().all(|b| *b == b' ' || *b == b'\t')
+                && TYPE_WORDS.contains(&std::str::from_utf8(&src[start..i]).unwrap_or(""))
+                && let Ok(w) = std::str::from_utf8(&src[ps..pe])
+                && !KEYWORDS.contains(&w) && !w.ends_with("_t") && w.len() <= 40
+                && src[..ps].rsplit(|&b| b == b'\n').next().is_none_or(|l| !l.trim_ascii_start().starts_with(b"#")) {
+                anywhere.insert(w.as_bytes().to_vec());
+            }
+            prev = Some((start, i));
+            continue;
+        }
+        if !src[i].is_ascii_whitespace() { prev = None; }
+        i += 1;
+    }
+    (starts, anywhere, broken)
+}
+
+/// Flatten each `#if … #else … #endif` group that has a directive on one of the `broken` lines:
+/// keep the first branch, blank the directive lines and the alternative branches (same length).
+fn flatten_conditionals(src: &mut [u8], broken: &HashSet<usize>) {
+    if broken.is_empty() { return; }
+    let mut starts = vec![0];
+    for (i, &b) in src.iter().enumerate() { if b == b'\n' { starts.push(i + 1); } }
+    let line = |src: &[u8], n: usize| -> (usize, usize) {
+        let a = starts[n];
+        let b = starts.get(n + 1).map_or(src.len(), |e| e - 1);
+        (a, b)
+    };
+    let directive = |src: &[u8], n: usize| -> Option<String> {
+        let (a, b) = line(src, n);
+        let t = src[a..b].trim_ascii_start();
+        t.strip_prefix(b"#").map(|r| String::from_utf8_lossy(r.trim_ascii_start()).split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("").to_string())
+    };
+    // groups: (if line, branch lines (#else/#elif), endif line)
+    let mut stack: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut groups: Vec<(usize, Vec<usize>, usize)> = Vec::new();
+    for n in 0..starts.len() {
+        match directive(src, n).as_deref() {
+            Some("if" | "ifdef" | "ifndef") => stack.push((n, Vec::new())),
+            Some("else" | "elif" | "elifdef" | "elifndef") => { if let Some(g) = stack.last_mut() { g.1.push(n); } }
+            Some("endif") => { if let Some((a, br)) = stack.pop() { groups.push((a, br, n)); } }
+            _ => {}
+        }
+    }
+    let mut blank = vec![false; starts.len()];
+    for (a, br, e) in groups {
+        if !(std::iter::once(a).chain(br.iter().copied()).chain(std::iter::once(e)).any(|l| broken.contains(&l))) { continue; }
+        blank[a] = true;
+        blank[e] = true;
+        if let Some(&first_alt) = br.first() { for b in blank.iter_mut().take(e).skip(first_alt) { *b = true; } }
+    }
+    for (n, &b) in blank.iter().enumerate() {
+        if b {
+            let (x, y) = line(src, n);
+            src[x..y].iter_mut().for_each(|c| if *c != b'\r' { *c = b' ' });
+        }
+    }
+}
+
+/// `src` with `starts` words blanked where they begin a line and `anywhere` words blanked wherever
+/// they stand alone (never on preprocessor lines); same length, so positions don't move.
+fn blank_macros(src: &[u8], starts: &HashSet<Vec<u8>>, anywhere: &HashSet<Vec<u8>>) -> Vec<u8> {
+    let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut out = src.to_vec();
+    let mut line = 0;
+    while line < out.len() {
+        let end = out[line..].iter().position(|&b| b == b'\n').map_or(out.len(), |p| line + p);
+        let mut i = line;
+        while i < end && (out[i] == b' ' || out[i] == b'\t') { i += 1; }
+        if out.get(i) != Some(&b'#') {
+            for w in starts {
+                if out[i..end].starts_with(w) && out.get(i + w.len()).is_some_and(|b| *b == b' ' || *b == b'\t') {
+                    out[i..i + w.len()].fill(b' ');
+                    break;
+                }
+            }
+            for w in anywhere {
+                let mut j = i;
+                while let Some(p) = out[j..end].windows(w.len()).position(|x| x == w.as_slice()) {
+                    let at = j + p;
+                    let after = at + w.len();
+                    if (at == 0 || !ident(out[at - 1])) && (after >= out.len() || !ident(out[after])) { out[at..after].fill(b' '); }
+                    j = after;
+                }
+            }
+        }
+        line = end + 1;
+    }
+    out
+}
+
+/// Source bytes inside ERROR nodes: how much of the file the parser gave up on (a better measure
+/// than the number of errors, since a cleaner parse can split one huge error into small ones).
+fn error_bytes(root: Node<'_>) -> usize {
+    let mut n = 0;
+    let mut c = root.walk();
+    let mut stack = vec![root];
+    while let Some(x) = stack.pop() {
+        if x.is_error() { n += x.end_byte() - x.start_byte(); continue; }
+        if !x.has_error() { continue; }
+        for ch in x.children(&mut c) { stack.push(ch); }
+    }
+    n
 }
 
 fn count_errors(root: Node<'_>) -> u32 {
@@ -1020,4 +1215,40 @@ pub fn callee_parts<'a>(cx: &Cx<'a>, f: Node<'_>) -> Option<(Option<&'a str>, &'
 /// Short receiver text: drop call arguments so `a.b().c` stays readable.
 pub fn short_qual(q: &str) -> &str {
     if q.len() > 80 { "" } else { q }
+}
+
+#[cfg(test)]
+mod macro_tests {
+    use super::*;
+
+    fn words(src: &str) -> (Vec<String>, Vec<String>) {
+        let tree = crate::lang::parse(Lang::C, src.as_bytes()).unwrap();
+        let (s, a, _) = macro_qualifiers(tree.root_node(), src.as_bytes());
+        let mut s: Vec<String> = s.into_iter().map(|w| String::from_utf8(w).unwrap()).collect();
+        let mut a: Vec<String> = a.into_iter().map(|w| String::from_utf8(w).unwrap()).collect();
+        s.sort(); a.sort();
+        (s, a)
+    }
+
+    /// zlib-style storage and export macros are recognised; real typedefs are not.
+    #[test]
+    fn storage_macros() {
+        assert_eq!(words("local int check(z_streamp strm) {\n  return 0;\n}\n").0, vec!["local"]);
+        assert_eq!(words("local gzFile gz_open(const void *path) {\n  return 0;\n}\n").0, vec!["local"]);
+        assert_eq!(words("int ZEXPORT inflate(z_streamp strm, int flush) {\n  return 0;\n}\n").1, vec!["ZEXPORT"]);
+        assert_eq!(words("int f(void) {\n  struct inflate_state FAR *state;\n  return 0;\n}\n").1, vec!["FAR"]);
+        // `uLong ZEXPORT f(...)`: ZEXPORT is the macro, never the typedef uLong
+        let (s, a) = words("uLong ZEXPORT compressBound(uLong sourceLen) {\n  return 0;\n}\n");
+        assert!(s.is_empty(), "{s:?}");
+        assert_eq!(a, vec!["ZEXPORT"]);
+    }
+
+    #[test]
+    fn extraction_recovers_definitions() {
+        let src = b"local int check(z_streamp strm) {\n  struct st FAR *s;\n  return 0;\n}\nint ZEXPORT inflate(z_streamp strm, int flush) {\n  return check(strm);\n}\n";
+        let ex = extract(Lang::C, "inflate.c", src);
+        let names: Vec<&str> = ex.nodes.iter().filter(|n| n.kind == NodeKind::Function).map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["check", "inflate"]);
+        assert!(ex.refs.iter().any(|r| r.name == "check" && r.kind == RefKind::Call));
+    }
 }

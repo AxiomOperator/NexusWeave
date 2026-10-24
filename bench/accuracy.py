@@ -115,6 +115,8 @@ def build_truth(r: dict, repo: Path, refresh: bool) -> tuple[Path, float]:
         "scip-python": ["scip-python", "index", ".", "--project-name", r["name"], *args, "--output", str(tmp)],
         "scip-go": ["scip-go", *args, "--output", str(tmp)],
         "rust-analyzer": ["rust-analyzer", "scip", ".", *args, "--output", str(tmp)],
+        "scip-clang": ["scip-clang", "--compdb-path=compile_commands.json", f"--index-output-path={tmp}", "--no-progress-report", *args],
+        "scip-ruby": ["scip-ruby", "--index-file", str(tmp), "--gem-metadata", f"{r['name']}@0.0.0", *args, "."],
     }[r["indexer"]]
     secs = run(cmd, repo, log)
     tmp.rename(out)

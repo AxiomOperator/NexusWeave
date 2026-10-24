@@ -98,6 +98,27 @@ struct Rx<'a> {
     imports: HashMap<u32, Vec<(&'a mem::ImportInfo, Target)>>,
 }
 
+/// `HTTPServer` → `http_server`, `App` → `app` (Ruby's file-naming convention).
+fn snake_case(name: &str) -> String {
+    let cs: Vec<char> = name.chars().collect();
+    let mut out = String::new();
+    for (i, &c) in cs.iter().enumerate() {
+        if c.is_uppercase() {
+            let next_lower = cs.get(i + 1).is_some_and(|n| n.is_lowercase());
+            if i > 0 && (cs[i - 1].is_lowercase() || next_lower && cs[i - 1].is_uppercase()) { out.push('_'); }
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn is_header(path: &str) -> bool {
+    let ext = path.rsplit_once('.').map_or("", |(_, e)| e);
+    matches!(ext, "h" | "hh" | "hpp" | "hxx" | "h++" | "inl")
+}
+
 fn implicit_this(l: Lang) -> bool { matches!(l, Lang::Java | Lang::CSharp | Lang::Cpp | Lang::C | Lang::Ruby | Lang::Kotlin | Lang::Swift | Lang::Dart | Lang::Scala) }
 
 fn want_for(kind: RefKind) -> fn(NodeKind) -> bool {
@@ -501,6 +522,33 @@ impl<'a> Rx<'a> {
         None
     }
 
+    /// Breadth-first through the include graph below `file`'s direct includes (which the glob
+    /// tier already checked): the first top-level match wins.
+    fn via_includes(&self, file: u32, name: &str, want: &dyn Fn(NodeKind) -> bool) -> Option<u32> {
+        let includes = |f: u32| -> Vec<u32> {
+            self.imports.get(&f).into_iter().flatten()
+                .filter_map(|(im, t)| match t { Target::File(g) if im.kind == ImportKind::Glob => Some(*g), _ => None }).collect()
+        };
+        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::from([file]);
+        let mut level: Vec<u32> = includes(file);
+        seen.extend(level.iter().copied());
+        for _ in 0..8 {
+            let mut next = Vec::new();
+            for f in level {
+                for g in includes(f) {
+                    if seen.len() >= 512 { return None; }
+                    if seen.insert(g) {
+                        if let Some(n) = self.top_level(g, name, want) { return Some(n); }
+                        next.push(g);
+                    }
+                }
+            }
+            if next.is_empty() { return None; }
+            level = next;
+        }
+        None
+    }
+
     fn package_files(&self, file: u32) -> Vec<u32> {
         let f = &self.mem.files[file as usize];
         match f.lang {
@@ -551,6 +599,8 @@ impl<'a> Rx<'a> {
                 if im.kind == ImportKind::Glob && let Some(n) = self.in_target(t, name, want, 1) { return Some((n, 88)); }
             }
         }
+        // C/C++: headers included indirectly (`deflate.c` → deflate.h → zutil.h → zlib.h), nearest first
+        if matches!(lang, Lang::C | Lang::Cpp) && let Some(n) = self.via_includes(file, name, want) { return Some((n, 85)); }
         // 4. package visibility
         for f in self.package_files(file) {
             if f != file && let Some(n) = self.top_level(f, name, want) { return Some((n, 90)); }
@@ -612,6 +662,18 @@ impl<'a> Rx<'a> {
             return if v.len() == 1 { Some((v[0], 40)) } else { None };
         }
         if v.len() == 1 { return Some((v[0], if loose { 75 } else { 45 })); }
+        // one module reopened in many files (Ruby `module App`, C++ `namespace geo`) is one entity:
+        // bind to its canonical declaration, in the file named after it (`rack.rb` for `Rack`)
+        // or else the shortest path
+        if v.iter().all(|&c| matches!(self.mem.node(c).kind, NodeKind::Module | NodeKind::Namespace) && self.mem.node(c).qname == self.mem.node(v[0]).qname) {
+            let stem = snake_case(name);
+            let key = |c: u32| {
+                let p = &self.mem.file_of(c).path;
+                let file = p.rsplit('/').next().unwrap_or(p);
+                (file.split('.').next() != Some(stem.as_str()), p.len(), p.clone())
+            };
+            return v.iter().copied().min_by_key(|&c| key(c)).map(|c| (c, 80));
+        }
         if !loose { return None; }
         let score = |c: u32| {
             let n = self.mem.node(c);
@@ -726,6 +788,58 @@ impl<'a> Rx<'a> {
 
     /// Target + confidence, and for typed receivers the type the member was looked up on.
     fn resolve_ref(&self, r: &RefRow) -> (Option<(u32, u8)>, Option<u32>) {
+        let (hit, via) = self.resolve_ref_raw(r);
+        (hit.filter(|&(t, _)| !self.preprocessor_alternative(t)).map(|(t, c)| (self.prefer_definition(r.file, t), c)), via)
+    }
+
+    /// C/C++: a typedef / constant / variable defined more than once at the top of one file is a
+    /// set of `#if` alternatives (zlib's five `z_size_t`); which one applies depends on the build,
+    /// so no edge beats a guess.
+    fn preprocessor_alternative(&self, t: u32) -> bool {
+        let n = self.mem.node(t);
+        if !matches!(n.kind, NodeKind::TypeAlias | NodeKind::Constant | NodeKind::Variable) { return false; }
+        let f = &self.mem.files[n.file as usize];
+        if !matches!(f.lang, Lang::C | Lang::Cpp) { return false; }
+        self.mem.by_name.get(&mem::key(&n.name)).is_some_and(|cs| cs.iter().any(|&c| {
+            let m = self.mem.node(c);
+            c != t && m.file == n.file && m.kind == n.kind && m.name == n.name && m.parent == n.parent
+        }))
+    }
+
+    /// C/C++: a call bound to a function declared in a header goes to that function's one
+    /// definition in a source file (the body an agent wants to read), when there is exactly one.
+    fn prefer_definition(&self, from: u32, t: u32) -> u32 {
+        let n = self.mem.node(t);
+        if !matches!(n.kind, NodeKind::Function | NodeKind::Method | NodeKind::Constructor) { return t; }
+        let tf = &self.mem.files[n.file as usize];
+        if !matches!(tf.lang, Lang::C | Lang::Cpp) || !is_header(&tf.path) { return t; }
+        let from_test = self.mem.files[from as usize].is_test;
+        // the class a method belongs to: its out-of-line owner (`Circle::area`) or enclosing type
+        let owner = |x: u32| -> Option<String> {
+            let m = self.mem.node(x);
+            m.owner.as_deref().map(|o| o.rsplit("::").next().unwrap_or(o).to_string())
+                .or_else(|| self.mem.enclosing_type(x).map(|e| self.mem.node(e).name.clone()))
+        };
+        let want_owner = owner(t);
+        let Some(cands) = self.mem.by_name.get(&mem::key(&n.name)) else { return t };
+        let defs: Vec<u32> = cands.iter().copied().filter(|&c| {
+            let m = self.mem.node(c);
+            let f = &self.mem.files[m.file as usize];
+            c != t && m.kind == n.kind && m.name == n.name && owner(c) == want_owner
+                && matches!(f.lang, Lang::C | Lang::Cpp) && !is_header(&f.path) && (from_test || !f.is_test)
+        }).collect();
+        if defs.len() <= 1 { return defs.first().copied().unwrap_or(t); }
+        // several copies (vendored / contrib): the one beside the header, else the one shallowest
+        let dir = |c: u32| { let p = &self.mem.file_of(c).path; p.rsplit_once('/').map_or("", |(d, _)| d).to_string() };
+        let here: Vec<u32> = defs.iter().copied().filter(|&c| dir(c) == dir(t)).collect();
+        if here.len() == 1 { return here[0]; }
+        let depth = |c: u32| self.mem.file_of(c).path.matches('/').count();
+        let min = defs.iter().map(|&c| depth(c)).min().unwrap_or(0);
+        let top: Vec<u32> = defs.into_iter().filter(|&c| depth(c) == min).collect();
+        if top.len() == 1 { top[0] } else { t }
+    }
+
+    fn resolve_ref_raw(&self, r: &RefRow) -> (Option<(u32, u8)>, Option<u32>) {
         let want = want_for(r.kind);
         // Heritage from an out-of-line container (Rust `impl Trait for T`) — recv_type is the owner, not a receiver.
         let is_owner_heritage = matches!(r.kind, RefKind::Extends | RefKind::Implements) && self.mem.node(r.src).kind == NodeKind::File;

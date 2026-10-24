@@ -230,15 +230,19 @@ discover (ignore-aware, parallel) ─► parse + extract (rayon, tree-sitter, pe
 
 ## Accuracy
 
-Measured against compiler-grade SCIP indexes on 7 pinned repos (`bench/`, run with `bench/setup.sh && bench/accuracy.py`):
+Measured against compiler-grade SCIP indexes on 9 pinned repos (`bench/`, run with `bench/setup.sh && bench/accuracy.py`):
 
 | language | precision | recall | repos |
 |---|---:|---:|---|
-| TypeScript | 100.0% | 89.4% | hono, codegraph |
+| TypeScript | 100.0% | 89.5% | hono, codegraph |
 | JavaScript | 100.0% | 89.8% | express |
 | Python | 99.9% | 84.3% | flask, httpx |
 | Go | 99.9% | 96.5% | gin |
 | Rust | 98.6% | 81.8% | ripgrep |
+| C | 98.7% | 70.7% | zlib |
+| Ruby | 98.7% | 85.5% | rack |
+
+Java, C#, Kotlin, Swift, Dart, Scala, PHP and Lua are covered by fixture tests only so far.
 
 With a SCIP index present: hono 100% / 84.3%, ripgrep 99.2% / 91.6%.
 
@@ -246,10 +250,10 @@ With a SCIP index present: hono 100% / 84.3%, ripgrep 99.2% / 91.6%.
 
 ## Agent evaluation
 
-80 headless Claude Code sessions (20 questions × with/without NexusWeave × 2) answered every
-question correctly in both conditions. With NexusWeave they used 30% fewer tool calls, 12% fewer
-tokens and 10% less time. Cost came out 5% higher overall: lower on the largest repo, higher on
-the small ones. The details and next steps are in `enhancements.md` section 6;
+96 headless Claude Code sessions (24 questions × with/without NexusWeave × 2) answered every
+question correctly in both conditions. With NexusWeave they used 25% fewer tool calls, 5% fewer
+tokens and 5% less time. Cost came out 4% higher overall: lower on the largest repo, higher on
+the small ones. (An earlier 80-session run: −30% tool calls, −12% tokens, +5% cost.) The details and next steps are in `enhancements.md` section 6;
 reproduce with `bench/agent/run.py`.
 
 ## Development
