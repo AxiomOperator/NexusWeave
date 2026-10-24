@@ -84,6 +84,27 @@ fn api(g: &Graph, path: &str, q: &HashMap<String, String>) -> Result<Value> {
                    "dependents": g.file_dependents(&p)?, "dependencies": g.file_dependencies(&p)?})
         }
         "/api/modules" => modules(g, q.get("depth").and_then(|d| d.parse().ok()).unwrap_or(2))?,
+        "/api/routes" => {
+            let mut st = g.db.conn.prepare(
+                "SELECT n.id, n.name, f.path, n.start_line,
+                        (SELECT group_concat(t.qname, ', ') FROM refs r JOIN nodes t ON t.id = r.target_id
+                          WHERE r.src_id = n.id AND r.kind IN (0, 7, 10)) AS handlers
+                 FROM nodes n JOIN files f ON f.id = n.file_id WHERE n.kind = 19 ORDER BY f.is_test, n.name LIMIT 5000")?;
+            let rows = st.query_map([], |r| Ok(json!({"id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "path": r.get::<_, String>(2)?,
+                "line": r.get::<_, i64>(3)?, "handlers": r.get::<_, Option<String>>(4)?})))?;
+            json!(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        }
+        "/api/filecode" => {
+            let p = q.get("path").cloned().unwrap_or_default();
+            let Some(p) = g.match_path(&p)? else { return Ok(json!({"error": "unknown file"})) };
+            let src = g.read_source(&p).unwrap_or_default();
+            let mut st = g.db.conn.prepare(
+                "SELECT r.line, r.col, r.name, r.kind, r.target_id, t.qname FROM refs r JOIN files f ON f.id = r.file_id
+                 JOIN nodes t ON t.id = r.target_id WHERE f.path = ? AND r.kind NOT IN (8, 11) ORDER BY r.line, r.col")?;
+            let refs: Vec<Value> = st.query_map([&p], |r| Ok(json!({"line": r.get::<_, i64>(0)?, "col": r.get::<_, i64>(1)?, "name": r.get::<_, String>(2)?,
+                "kind": RefKind::from_i64(r.get(3)?), "target": r.get::<_, i64>(4)?, "qname": r.get::<_, String>(5)?})))?.collect::<rusqlite::Result<_>>()?;
+            json!({"path": p, "lines": src.lines().collect::<Vec<_>>(), "refs": refs})
+        }
         "/api/flow" => {
             let from = g.find_symbols(q.get("from").map(String::as_str).unwrap_or(""), None, 6)?;
             let to = g.find_symbols(q.get("to").map(String::as_str).unwrap_or(""), None, 6)?;
@@ -100,7 +121,7 @@ fn api(g: &Graph, path: &str, q: &HashMap<String, String>) -> Result<Value> {
             }
         }
         "/api/explore" => json!({"text": g.explore(q.get("q").map(String::as_str).unwrap_or(""), &Default::default())?}),
-        _ => json!({"error": "unknown endpoint", "endpoints": ["/api/stats", "/api/search?q", "/api/node?id", "/api/graph?id&depth", "/api/source?path&from&to", "/api/file?path", "/api/modules?depth", "/api/flow?from&to", "/api/explore?q"]}),
+        _ => json!({"error": "unknown endpoint", "endpoints": ["/api/stats", "/api/search?q", "/api/node?id", "/api/graph?id&depth", "/api/source?path&from&to", "/api/file?path", "/api/modules?depth", "/api/flow?from&to", "/api/explore?q", "/api/routes", "/api/filecode?path", "/api/analyze?what"]}),
     })
 }
 

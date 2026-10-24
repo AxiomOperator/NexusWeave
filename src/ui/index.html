@@ -55,6 +55,18 @@ a { color: var(--accent); cursor: pointer; text-decoration: none; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; }
 .row input { flex: 1; min-width: 160px; }
 .chain li { cursor: pointer; padding: 6px 0; }
+table.grid { border-collapse: collapse; width: 100%; font-size: 13px; }
+table.grid th { text-align: left; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--line); padding: 5px 8px; position: sticky; top: 0; background: var(--bg); }
+table.grid td { border-bottom: 1px solid var(--line); padding: 5px 8px; vertical-align: top; }
+table.grid tr[data-id] { cursor: pointer; }
+table.grid tr[data-id]:hover td { background: var(--panel); }
+.seg { display: flex; gap: 4px; flex-wrap: wrap; }
+.seg button { background: var(--panel); color: var(--ink); border: 1px solid var(--line); }
+.seg button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.tool button.ghost { background: var(--panel); color: var(--ink); border-color: var(--line); }
+.tool button:disabled { opacity: .45; cursor: default; }
+pre.src a.ref { color: var(--accent); text-decoration: underline dotted; }
+.trail { display: flex; gap: 8px; align-items: center; }
 @media (max-width: 860px) {
   main { grid-template-columns: 1fr; grid-template-rows: 46% 54%; }
   aside { border-left: 0; border-top: 1px solid var(--line); }
@@ -65,7 +77,7 @@ a { color: var(--accent); cursor: pointer; text-decoration: none; }
 <body>
 <header>
   <b>xgraph</b>
-  <nav><button data-v="graph" class="on">Graph</button><button data-v="modules">Modules</button><button data-v="flow">Flow</button><button data-v="explore">Explore</button></nav>
+  <nav><button data-v="graph" class="on">Graph</button><button data-v="modules">Modules</button><button data-v="routes">Routes</button><button data-v="flow">Flow</button><button data-v="insights">Insights</button><button data-v="explore">Explore</button></nav>
   <input id="q" placeholder="Search symbols…  (/ to focus)" autocomplete="off">
   <div id="sugg"></div>
   <span id="stats"></span>
@@ -121,19 +133,87 @@ function setView(v) {
   view = v;
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
   const tool = $("#tool"), cv = $("#cv");
-  tool.style.display = (v === "flow" || v === "explore") ? "flex" : "none";
+  tool.style.display = ["flow", "explore", "routes", "insights"].includes(v) ? "flex" : "none";
   cv.style.display = (v === "graph" || v === "modules") ? "block" : "none";
   $("#gopts").style.display = v === "graph" ? "flex" : "none";
   $("#legend").style.display = (v === "graph" || v === "modules") ? "flex" : "none";
   if (v === "modules") loadModules();
   if (v === "graph" && current) loadGraph(current);
-  if (v === "flow") tool.innerHTML = `<div class="row"><input id="ff" placeholder="from symbol (e.g. handleRequest)"><input id="ft" placeholder="to symbol (e.g. Db.query)"></div><button id="fgo">Find call path</button><ol id="fout" class="chain"></ol>`,
-    $("#fgo").onclick = async () => { const r = await api("/api/flow", {from: $("#ff").value, to: $("#ft").value});
-      $("#fout").innerHTML = r.path.length ? r.path.map(s => `<li data-id="${s.id}">${kindTag(s.kind)} <b>${esc(label(s))}</b> <span class="path">${esc(s.path)}:${s.line}</span></li>`).join("") : `<li class="path">No call path found (within 12 hops).</li>`;
-      $("#fout").onclick = e => { const li = e.target.closest("[data-id]"); if (li) openSide(+li.dataset.id); }; };
+  if (v === "flow") showFlow();
+  if (v === "routes") showRoutes();
+  if (v === "insights") showInsights("hotspots");
   if (v === "explore") tool.innerHTML = `<textarea id="eq" rows="3" placeholder="Ask like an agent would: how does UserService.login validate the token?"></textarea><button id="ego">Explore</button><pre id="eout" class="path">The same output the xgraph_explore MCP tool returns.</pre>`,
     $("#ego").onclick = async () => { $("#eout").textContent = "…"; const r = await api("/api/explore", {q: $("#eq").value}); $("#eout").textContent = r.text || r.error; };
   resize();
+}
+
+// ---------- flow + saved trails
+let lastFlow = null;
+const trails = { get() { try { return JSON.parse(localStorage.getItem("xgraph.trails") || "[]"); } catch { return []; } },
+                 set(v) { try { localStorage.setItem("xgraph.trails", JSON.stringify(v)); } catch {} } };
+function showFlow(from = "", to = "") {
+  $("#tool").innerHTML = `<div class="row"><input id="ff" placeholder="from symbol (e.g. handleRequest)" value="${esc(from)}"><input id="ft" placeholder="to symbol (e.g. Db.query)" value="${esc(to)}"></div>
+    <div class="row"><button id="fgo">Find call path</button><button class="ghost" id="fsave" disabled>Save trail</button><button class="ghost" id="fmd" disabled>Copy Markdown</button><button class="ghost" id="fmm" disabled>Copy Mermaid</button></div>
+    <ol id="fout" class="chain"></ol><h3 class="path">Saved trails</h3><div id="ftrails"></div>`;
+  const run = async () => {
+    const r = await api("/api/flow", {from: $("#ff").value, to: $("#ft").value});
+    lastFlow = r.path.length ? {from: $("#ff").value, to: $("#ft").value, path: r.path} : null;
+    ["#fsave", "#fmd", "#fmm"].forEach(s => $(s).disabled = !lastFlow);
+    $("#fout").innerHTML = r.path.length ? r.path.map(s => `<li data-id="${s.id}">${kindTag(s.kind)} <b>${esc(label(s))}</b> <span class="path">${esc(s.path)}:${s.line}</span></li>`).join("") : `<li class="path">No call path found (within 12 hops).</li>`;
+  };
+  $("#fgo").onclick = run;
+  $("#fout").onclick = e => { const li = e.target.closest("[data-id]"); if (li) openSide(+li.dataset.id); };
+  $("#fsave").onclick = () => { if (!lastFlow) return; const t = trails.get().filter(x => !(x.from === lastFlow.from && x.to === lastFlow.to)); t.unshift({from: lastFlow.from, to: lastFlow.to, at: Date.now()}); trails.set(t.slice(0, 30)); renderTrails(); };
+  $("#fmd").onclick = () => copy(lastFlow.path.map((s, i) => `${i + 1}. \`${label(s)}\` (${s.path}:${s.line})`).join("\n"));
+  $("#fmm").onclick = () => copy("flowchart TD\n" + lastFlow.path.map((s, i) => `  n${i}["${label(s).replace(/"/g, "'")}"]`).join("\n") + "\n" + lastFlow.path.slice(1).map((_, i) => `  n${i} --> n${i + 1}`).join("\n"));
+  const renderTrails = () => {
+    const t = trails.get();
+    $("#ftrails").innerHTML = t.length ? t.map((x, i) => `<div class="trail"><a data-i="${i}">${esc(x.from)} → ${esc(x.to)}</a><a class="path" data-del="${i}">remove</a></div>`).join("") : `<span class="path">None yet — find a path and save it.</span>`;
+    $("#ftrails").onclick = e => {
+      const a = e.target.closest("[data-i]"), d = e.target.closest("[data-del]");
+      if (d) { const t2 = trails.get(); t2.splice(+d.dataset.del, 1); trails.set(t2); renderTrails(); }
+      else if (a) { const x = trails.get()[+a.dataset.i]; $("#ff").value = x.from; $("#ft").value = x.to; run(); }
+    };
+  };
+  renderTrails();
+  if (from && to) run();
+}
+function copy(text) {
+  (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).catch(() => {
+    const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove();
+  });
+}
+
+// ---------- routes
+async function showRoutes() {
+  $("#tool").innerHTML = `<input id="rq" placeholder="Filter routes (path, method, handler)…"><div id="rout" class="path">Loading…</div>`;
+  const routes = await api("/api/routes");
+  const draw = () => {
+    const f = $("#rq").value.toLowerCase();
+    const rows = routes.filter(r => !f || (r.name + " " + (r.handlers || "") + " " + r.path).toLowerCase().includes(f));
+    $("#rout").innerHTML = rows.length ? `<table class="grid"><tr><th>route</th><th>handler</th><th>declared</th></tr>${rows.slice(0, 1000).map(r =>
+      `<tr data-id="${r.id}"><td><b>${esc(r.name)}</b></td><td>${esc(r.handlers || "inline")}</td><td class="path">${esc(r.path)}:${r.line}</td></tr>`).join("")}</table>`
+      : `<span class="path">No routes found.</span>`;
+  };
+  $("#rq").oninput = draw;
+  $("#rout").onclick = e => { const tr = e.target.closest("[data-id]"); if (tr) go(+tr.dataset.id); };
+  draw();
+}
+
+// ---------- insights
+async function showInsights(what) {
+  const tabs = [["hotspots", "Hotspots"], ["dead", "Unreferenced"], ["cycles", "Import cycles"], ["entry", "Entry points"]];
+  $("#tool").innerHTML = `<div class="seg">${tabs.map(([k, t]) => `<button data-k="${k}" class="${k === what ? "on" : ""}">${t}</button>`).join("")}</div><div id="iout" class="path">Loading…</div>`;
+  $("#tool .seg").onclick = e => { const b = e.target.closest("[data-k]"); if (b) showInsights(b.dataset.k); };
+  const d = await api("/api/analyze", {what, limit: 200});
+  const row = (s, cells) => `<tr data-id="${s.id}">${cells.map(c => `<td>${c}</td>`).join("")}</tr>`;
+  let html;
+  if (what === "hotspots") html = `<table class="grid"><tr><th>symbol</th><th>fan-in</th><th>lines</th><th>commits (90d)</th><th>location</th></tr>${d.map(h => row(h.sym, [`<b>${esc(label(h.sym))}</b>`, h.fan_in, h.lines, h.churn, `<span class="path">${esc(h.sym.path)}:${h.sym.line}</span>`])).join("")}</table>`;
+  else if (what === "dead") html = `<p class="path">Nothing in the project references these. Reflection, string dispatch and external callers are invisible to the graph — verify before deleting.</p><table class="grid"><tr><th>symbol</th><th>kind</th><th>location</th></tr>${d.map(s => row(s, [`<b>${esc(label(s))}</b>`, kindTag(s.kind), `<span class="path">${esc(s.path)}:${s.start_line}</span>`])).join("")}</table>`;
+  else if (what === "cycles") html = d.length ? d.map(c => `<p><b>${c.files.length} files</b><br><span class="path">${c.path.map(esc).join(" → ")}</span></p>`).join("") : `<p class="path">No import cycles.</p>`;
+  else html = `<table class="grid"><tr><th>entry</th><th>why</th><th>location</th></tr>${d.map(e => row(e.sym, [`<b>${esc(label(e.sym))}</b>`, esc(e.why), `<span class="path">${esc(e.sym.path)}:${e.sym.line}</span>`])).join("")}</table>`;
+  $("#iout").innerHTML = html;
+  $("#iout").onclick = e => { const tr = e.target.closest("[data-id]"); if (tr) go(+tr.dataset.id); };
 }
 
 // ---------- force layout
@@ -269,7 +349,22 @@ async function openFile(path) {
   $("#side").innerHTML = `<div>${kindTag("file")}</div><h2>${esc(f.path)}</h2>
     <h3>Symbols (${f.symbols.length})</h3><ul class="list">${f.symbols.map(x => `<li data-id="${x.id}">${kindTag(x.kind)}<span>${esc(label(x))}</span><span class="path">:${x.line}</span></li>`).join("")}</ul>
     <h3>Used by (${f.dependents.length})</h3><ul class="list">${f.dependents.map(p => `<li data-file="${esc(p)}"><span class="path">${esc(p)}</span></li>`).join("")}</ul>
-    <h3>Depends on (${f.dependencies.length})</h3><ul class="list">${f.dependencies.map(p => `<li data-file="${esc(p)}"><span class="path">${esc(p)}</span></li>`).join("")}</ul>`;
+    <h3>Depends on (${f.dependencies.length})</h3><ul class="list">${f.dependencies.map(p => `<li data-file="${esc(p)}"><span class="path">${esc(p)}</span></li>`).join("")}</ul>
+    <h3>Code <span class="path">(underlined names link to their definitions)</span></h3><pre class="src" id="fcode">…</pre>`;
+  const fc = await api("/api/filecode", {path});
+  const byLine = {};
+  for (const r of fc.refs || []) (byLine[r.line] = byLine[r.line] || []).push(r);
+  $("#fcode").innerHTML = (fc.lines || []).map((text, i) => {
+    const refs = (byLine[i + 1] || []).slice().sort((a, b) => a.col - b.col);
+    let out = "", pos = 0;
+    for (const r of refs) {
+      const at = text.indexOf(r.name, Math.max(pos, r.col));
+      if (at < 0) continue;
+      out += esc(text.slice(pos, at)) + `<a class="ref" data-id="${r.target}" title="${esc(r.kind + " → " + r.qname)}">${esc(r.name)}</a>`;
+      pos = at + r.name.length;
+    }
+    return `<span class="ln">${i + 1}</span>${out + esc(text.slice(pos))}`;
+  }).join("\n");
 }
 
 // ---------- routing

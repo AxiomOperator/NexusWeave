@@ -123,22 +123,29 @@ impl Graph {
         };
         let norm = q.replace("::", ".").replace('#', ".").replace("->", ".");
         let (qual, name) = match norm.rsplit_once('.') { Some((a, b)) => (Some(a.to_string()), b.to_string()), None => (None, norm.clone()) };
-        let mut st = self.db.conn.prepare_cached(&format!(
-            "SELECT {SYM_COLS} FROM nodes n JOIN files f ON f.id=n.file_id WHERE n.name=? COLLATE NOCASE AND n.kind != 0 LIMIT 500"))?;
-        let mut v: Vec<Sym> = st.query_map([&name], sym_row)?.collect::<rusqlite::Result<_>>()?;
-        if let Some(fh) = &file_hint {
-            let fh = fh.trim_start_matches("./");
-            v.retain(|s| s.path == fh || s.path.ends_with(&format!("/{fh}")) || s.path.contains(fh));
-        }
-        if let Some(qual) = &qual {
-            let qual_l = qual.to_ascii_lowercase();
-            let tail = qual_l.rsplit('.').next().unwrap_or(&qual_l).to_string();
-            let filt: Vec<Sym> = v.iter().filter(|s| {
-                let qn = s.qname.replace("::", ".").to_ascii_lowercase();
-                qn.ends_with(&format!("{qual_l}.{}", name.to_ascii_lowercase())) || qn.contains(&format!("{tail}."))
-                    || s.path.to_ascii_lowercase().contains(&tail)
-            }).cloned().collect();
-            v = filt;
+        let lookup = |name: &str| -> Result<Vec<Sym>> {
+            let mut st = self.db.conn.prepare_cached(&format!(
+                "SELECT {SYM_COLS} FROM nodes n JOIN files f ON f.id=n.file_id WHERE n.name=? COLLATE NOCASE AND n.kind != 0 LIMIT 500"))?;
+            let mut v: Vec<Sym> = st.query_map([name], sym_row)?.collect::<rusqlite::Result<_>>()?;
+            if let Some(fh) = &file_hint {
+                let fh = fh.trim_start_matches("./");
+                v.retain(|s| s.path == fh || s.path.ends_with(&format!("/{fh}")) || s.path.contains(fh));
+            }
+            if let Some(qual) = &qual {
+                let qual_l = qual.to_ascii_lowercase();
+                let tail = qual_l.rsplit('.').next().unwrap_or(&qual_l).to_string();
+                v.retain(|s| {
+                    let qn = s.qname.replace("::", ".").to_ascii_lowercase();
+                    qn.ends_with(&format!("{qual_l}.{}", name.to_ascii_lowercase())) || qn.contains(&format!("{tail}."))
+                        || s.path.to_ascii_lowercase().contains(&tail)
+                });
+            }
+            Ok(v)
+        };
+        let mut v = lookup(&name)?;
+        if v.is_empty() && !name.starts_with('#') {
+            // TS/JS private members are named `#dispatch`
+            v = lookup(&format!("#{name}"))?;
         }
         // exact-case first, definitions with bodies first, non-test first
         v.sort_by_key(|s| (s.name != name, s.is_test, s.kind == NodeKind::Variable, std::cmp::Reverse(s.end_line - s.start_line)));
