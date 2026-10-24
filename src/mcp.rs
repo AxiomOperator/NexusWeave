@@ -43,6 +43,8 @@ fn tool_defs() -> Vec<Value> {
             "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "projectPath": pp}}}),
         json!({"name": "xgraph_diff_impact", "description": "Before committing or reviewing: which symbols the current change (git diff against `base`, default HEAD) touches, who calls them, the HTTP routes whose flows reach them, and the tests to run.",
             "inputSchema": {"type": "object", "properties": {"base": {"type": "string", "description": "git ref to diff against (default HEAD = all uncommitted changes)"}, "depth": {"type": "integer", "default": 2}, "projectPath": pp}}}),
+        json!({"name": "xgraph_analyze", "description": "Whole-codebase analysis: `dead` (unreferenced code), `cycles` (import cycles), `entry` (routes, listeners, mains, package APIs), `hotspots` (fan-in × size × recent churn).",
+            "inputSchema": {"type": "object", "properties": {"what": {"type": "string", "enum": ["dead", "cycles", "entry", "hotspots"]}, "limit": {"type": "integer", "default": 50}, "projectPath": pp}, "required": ["what"]}}),
         json!({"name": "xgraph_status", "description": "Index statistics and freshness.",
             "inputSchema": {"type": "object", "properties": {"projectPath": pp}}}),
     ]
@@ -133,6 +135,7 @@ impl Server {
                 let diff = crate::impact::git_diff(&g.root, s("base").unwrap_or("HEAD"), false)?;
                 crate::impact::render(&g.diff_impact(&diff, n("depth").unwrap_or(2).clamp(1, 6) as u32)?)
             }
+            "xgraph_analyze" => crate::analyze::render(g, s("what").unwrap_or("hotspots"), n("limit").unwrap_or(50).min(500) as usize, false)?,
             "xgraph_status" => serde_json::to_string_pretty(&g.status()?)?,
             _ => return Err(anyhow!("unknown tool {name}")),
         };

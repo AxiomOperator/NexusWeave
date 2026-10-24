@@ -89,6 +89,16 @@ fn api(g: &Graph, path: &str, q: &HashMap<String, String>) -> Result<Value> {
             let to = g.find_symbols(q.get("to").map(String::as_str).unwrap_or(""), None, 6)?;
             json!({"path": flow(g, &from, &to)?.iter().map(sym_json).collect::<Vec<_>>()})
         }
+        "/api/analyze" => {
+            let what = q.get("what").map(String::as_str).unwrap_or("hotspots");
+            let lim = limit.max(50);
+            match what {
+                "dead" => serde_json::to_value(g.dead_code(q.get("exported").is_some_and(|v| v == "1"), lim)?)?,
+                "cycles" => serde_json::to_value(g.cycles(lim)?)?,
+                "entry" => json!(g.entry_points(lim)?.iter().map(|(w, s)| json!({"why": w, "sym": sym_json(s)})).collect::<Vec<_>>()),
+                _ => json!(g.hotspots(lim)?.iter().map(|h| json!({"sym": sym_json(&h.symbol), "fan_in": h.fan_in, "lines": h.lines, "churn": h.churn, "score": h.score})).collect::<Vec<_>>()),
+            }
+        }
         "/api/explore" => json!({"text": g.explore(q.get("q").map(String::as_str).unwrap_or(""), &Default::default())?}),
         _ => json!({"error": "unknown endpoint", "endpoints": ["/api/stats", "/api/search?q", "/api/node?id", "/api/graph?id&depth", "/api/source?path&from&to", "/api/file?path", "/api/modules?depth", "/api/flow?from&to", "/api/explore?q"]}),
     })

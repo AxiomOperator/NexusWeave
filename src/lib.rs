@@ -1,5 +1,6 @@
 //! xgraph — a fast local code graph for AI coding agents.
 
+pub mod analyze;
 pub mod db;
 pub mod explore;
 pub mod extract;

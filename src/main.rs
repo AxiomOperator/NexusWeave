@@ -44,6 +44,9 @@ enum Cmd {
         #[arg(short, long)] filter: Option<String>, #[arg(short, long)] json: bool, #[arg(short, long)] quiet: bool },
     /// List indexed files
     Files { path: Option<String>, #[arg(long)] symbols: bool },
+    /// Whole-graph analyses: dead | cycles | entry | hotspots
+    Analyze { what: String, #[arg(short, long, default_value_t = 50)] limit: usize,
+        #[arg(long, help = "dead: include exported symbols")] exported: bool, #[arg(short, long)] json: bool },
     /// What the current change touches: changed symbols, callers, affected routes and tests
     DiffImpact {
         #[arg(long, default_value = "HEAD", help = "git ref to diff against")] base: String,
@@ -190,6 +193,21 @@ fn main() -> Result<()> {
                 let (p, n) = r?;
                 println!("{p} ({} symbols)", n - 1);
                 if symbols { for s in g.file_symbols(&p)? { if s.parent_id.is_some_and(|_| true) { println!("    {:<10} {}:{}", s.kind.as_str(), explore::display_name(&s), s.start_line); } } }
+            }
+        }
+        Cmd::Analyze { what, limit, exported, json } => {
+            let g = graph_here()?;
+            if json {
+                let v = match what.as_str() {
+                    "dead" => serde_json::to_value(g.dead_code(exported, limit)?)?,
+                    "cycles" => serde_json::to_value(g.cycles(limit)?)?,
+                    "entry" => serde_json::to_value(g.entry_points(limit)?)?,
+                    "hotspots" => serde_json::to_value(g.hotspots(limit)?)?,
+                    other => bail!("unknown analysis `{other}` (dead | cycles | entry | hotspots)"),
+                };
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                print!("{}", analyze::render(&g, &what, limit, exported)?);
             }
         }
         Cmd::DiffImpact { base, staged, stdin, depth, json } => {
