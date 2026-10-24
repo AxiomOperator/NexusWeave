@@ -58,15 +58,33 @@ fn enabled_tools() -> Vec<String> {
     }
 }
 
-struct Server {
+/// Answers tool calls. Used in-process by `serve`, and by the shared daemon for many sessions.
+pub struct Server {
     default_root: Option<PathBuf>,
-    /// per-project memory of what explore already sent in this session
-    seen: HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<crate::explore::Seen>>>,
+    /// per (session, project) memory of what explore already sent
+    seen: HashMap<(u64, PathBuf), std::sync::Arc<std::sync::Mutex<crate::explore::Seen>>>,
     graphs: HashMap<PathBuf, Graph>,
-    _watcher: Option<crate::watch::Watcher>,
+    pub watcher: Option<crate::watch::Watcher>,
 }
 
 impl Server {
+    pub fn new(default_root: Option<PathBuf>, watcher: Option<crate::watch::Watcher>) -> Server {
+        Server { default_root, seen: HashMap::new(), graphs: HashMap::new(), watcher }
+    }
+
+    /// Forget a session's explore memory (its client disconnected).
+    pub fn end_session(&mut self, session: u64) { self.seen.retain(|(s, _), _| *s != session); }
+
+    /// Run one tool call for `session` (watcher changes are applied first); returns (text, is_error).
+    pub fn handle(&mut self, session: u64, name: &str, args: &Value) -> (String, bool) {
+        if let Some(w) = &self.watcher { w.flush(); }
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.call(session, name, args))) {
+            Ok(Ok(t)) => (t, false),
+            Ok(Err(e)) => (format!("{e:#}"), true),
+            Err(_) => ("internal error while answering; please retry or use built-in tools".to_string(), true),
+        }
+    }
+
     fn graph(&mut self, project: Option<&str>) -> Result<&Graph> {
         let root = match project {
             Some(p) => find_root(Path::new(p)).ok_or_else(|| anyhow!("{p} has no xgraph index. Use your built-in tools for that project."))?,
@@ -76,13 +94,13 @@ impl Server {
         Ok(&self.graphs[&root])
     }
 
-    fn call(&mut self, name: &str, a: &Value) -> Result<String> {
+    fn call(&mut self, session: u64, name: &str, a: &Value) -> Result<String> {
         let s = |k: &str| a.get(k).and_then(Value::as_str);
         let n = |k: &str| a.get(k).and_then(Value::as_u64);
         let dedup = std::env::var("XGRAPH_EXPLORE_DEDUP").map(|v| v != "0").unwrap_or(true)
             && !a.get("fresh").and_then(Value::as_bool).unwrap_or(false);
         let root = self.graph(s("projectPath"))?.root.clone();
-        let seen = dedup.then(|| self.seen.entry(root).or_default().clone());
+        let seen = dedup.then(|| self.seen.entry((session, root)).or_default().clone());
         let g = self.graph(s("projectPath"))?;
         let out = match name {
             "xgraph_explore" => {
@@ -219,15 +237,28 @@ fn cap(mut s: String) -> String {
 }
 
 pub fn serve(root: Option<PathBuf>, watch: bool) -> Result<()> {
-    let watcher = match (&root, watch) {
-        (Some(r), true) => {
-            // Catch up on changes made while no server was running, then watch.
-            let _ = crate::index::sync(r, None);
-            crate::watch::start(r, |_| {}).ok()
-        }
+    // Prefer the project's shared daemon (one watcher + warm cache for every agent session);
+    // fall back to answering in-process.
+    #[cfg(unix)]
+    let mut daemon = match (&root, watch) {
+        (Some(r), true) if std::env::var_os("XGRAPH_NO_DAEMON").is_none() => crate::daemon::connect_or_spawn(r),
         _ => None,
     };
-    let mut srv = Server { default_root: root, seen: HashMap::new(), graphs: HashMap::new(), _watcher: watcher };
+    #[cfg(not(unix))]
+    let daemon: Option<()> = None;
+    let mut local: Option<Server> = None;
+    let make_local = |root: &Option<PathBuf>| {
+        let watcher = match (root, watch) {
+            (Some(r), true) => {
+                // Catch up on changes made while no server was running, then watch.
+                let _ = crate::index::sync(r, None);
+                crate::watch::start(r, |_| {}).ok()
+            }
+            _ => None,
+        };
+        Server::new(root.clone(), watcher)
+    };
+    if daemon.is_none() { local = Some(make_local(&root)); }
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     let tools = enabled_tools();
@@ -245,7 +276,7 @@ pub fn serve(root: Option<PathBuf>, watch: bool) -> Result<()> {
         let result: Option<Result<Value, (i64, String)>> = match method {
             "initialize" => {
                 let v = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOL).to_string();
-                let instr = if srv.default_root.is_some() { INSTRUCTIONS.to_string() } else {
+                let instr = if root.is_some() { INSTRUCTIONS.to_string() } else {
                     format!("{INSTRUCTIONS}\n\nNOTE: the server's working directory has no index; pass projectPath to query an indexed project.")
                 };
                 Some(Ok(json!({"protocolVersion": v, "capabilities": {"tools": {"listChanged": false}},
@@ -256,13 +287,28 @@ pub fn serve(root: Option<PathBuf>, watch: bool) -> Result<()> {
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("").to_string();
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                // Pick up edits that landed between watcher ticks.
-                if let Some(w) = &srv._watcher { w.flush(); }
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| srv.call(&name, &args)));
-                let (text, is_err) = match r {
-                    Ok(Ok(t)) => (t, false),
-                    Ok(Err(e)) => (format!("{e:#}"), true),
-                    Err(_) => ("internal error while answering; please retry or use built-in tools".to_string(), true),
+                // Calls for other projects (projectPath) are answered in-process; the daemon owns this one.
+                let other_project = args.get("projectPath").and_then(Value::as_str)
+                    .is_some_and(|p| find_root(Path::new(p)) != root);
+                #[cfg(unix)]
+                let via_daemon = if other_project { None } else { daemon.as_mut().and_then(|d| d.call(&name, &args).ok()) };
+                #[cfg(not(unix))]
+                let via_daemon: Option<(String, bool)> = { let _ = (&daemon, other_project); None };
+                let (text, is_err) = match via_daemon {
+                    Some(r) => r,
+                    None => {
+                        #[cfg(unix)]
+                        if !other_project && daemon.is_some() {
+                            daemon = root.as_ref().and_then(crate::daemon::connect_or_spawn);  // daemon went away: reconnect
+                            if let Some(r) = daemon.as_mut().and_then(|d| d.call(&name, &args).ok()) {
+                                let resp = json!({"content": [{"type": "text", "text": r.0}], "isError": r.1});
+                                writeln!(stdout, "{}", json!({"jsonrpc": "2.0", "id": id, "result": resp}))?;
+                                stdout.flush()?;
+                                continue;
+                            }
+                        }
+                        local.get_or_insert_with(|| make_local(&root)).handle(0, &name, &args)
+                    }
                 };
                 Some(Ok(json!({"content": [{"type": "text", "text": text}], "isError": is_err})))
             }

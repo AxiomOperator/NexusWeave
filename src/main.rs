@@ -55,6 +55,8 @@ enum Cmd {
         #[arg(short, long, default_value_t = 2)] depth: u32,
         #[arg(short, long)] json: bool,
     },
+    /// Shared per-repo background process used by `serve`: run | status | stop
+    Daemon { action: Option<String>, path: Option<PathBuf> },
     /// Watch the project and keep the graph in sync
     Watch { path: Option<PathBuf> },
     /// Run the MCP server on stdio
@@ -217,6 +219,24 @@ fn main() -> Result<()> {
             let diff = if stdin { let mut s = String::new(); std::io::stdin().read_to_string(&mut s)?; s } else { impact::git_diff(&root, &base, staged)? };
             let r = g.diff_impact(&diff, depth)?;
             if json { println!("{}", serde_json::to_string_pretty(&r)?); } else { print!("{}", impact::render(&r)); }
+        }
+        Cmd::Daemon { action, path } => {
+            let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `xgraph init`"))? };
+            #[cfg(unix)]
+            match action.as_deref().unwrap_or("status") {
+                "run" => daemon::run(&root)?,
+                "status" => match daemon::connect(&root) {
+                    Some(mut c) => println!("{}", serde_json::to_string_pretty(&c.status()?)?),
+                    None => println!("no daemon running for {}", root.display()),
+                },
+                "stop" => match daemon::connect(&root) {
+                    Some(mut c) => { let _ = c.stop(); println!("stopped"); }
+                    None => println!("no daemon running for {}", root.display()),
+                },
+                other => bail!("unknown daemon action `{other}` (run | status | stop)"),
+            }
+            #[cfg(not(unix))]
+            { let _ = (action, root); bail!("the shared daemon needs Unix sockets; `xgraph serve` runs in-process on this platform"); }
         }
         Cmd::Watch { path } => {
             let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).unwrap_or(root_arg(None)?) };
