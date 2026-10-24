@@ -1,6 +1,6 @@
 //! Whole-graph analyses: dead code, import cycles, entry points, hotspots.
 
-use crate::query::{Graph, SYM_COLS, Sym, sym_row};
+use crate::query::{Graph, SYM_COLS, SYM_N, Sym, sym_row};
 use anyhow::Result;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -175,7 +175,7 @@ impl Graph {
              FROM nodes n JOIN files f ON f.id = n.file_id
              WHERE n.kind IN (3, 4, 9, 10, 11) AND f.is_test = 0 AND f.generated = 0");
         let mut st = self.db.conn.prepare(&sql)?;
-        let mut v: Vec<Hotspot> = st.query_map([], |r| Ok((sym_row(r)?, r.get::<_, i64>(14)?)))?
+        let mut v: Vec<Hotspot> = st.query_map([], |r| Ok((sym_row(r)?, r.get::<_, i64>(SYM_N)?)))?
             .filter_map(|r| r.ok()).filter(|(_, fan)| *fan > 0)
             .map(|(s, fan)| {
                 let lines = s.end_line - s.start_line + 1;

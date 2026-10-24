@@ -157,7 +157,7 @@ impl Graph {
             // A word that happens to name many symbols is weak evidence; a unique symbol is strong.
             let strength = if t.is_symbol { 12.0 } else { 3.0 } / (n as f64).sqrt();
             for s in defs.into_iter().take(if t.is_symbol { 4 } else { 2 }) {
-                let w = if s.is_test { strength * 0.4 } else { strength };
+                let w = if s.is_test { strength * 0.4 } else { strength } * if s.low { 0.5 } else { 1.0 };
                 // any exact definition match is a flow endpoint, even a plain word like `audit`
                 seeds.push(Seed { sym: s, score: w, named: true });
             }
@@ -247,6 +247,7 @@ impl Graph {
             let Some(s) = local.syms.get(id) else { continue };
             let mut m = *m;
             if s.is_test && !query_mentions_tests { m *= 0.25; }
+            if s.low { m *= 0.4; }
             *file_mass.entry(s.path.clone()).or_default() += m;
         }
         let mut flow_nodes: HashSet<i64> = HashSet::new();

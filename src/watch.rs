@@ -22,7 +22,7 @@ struct State {
 /// Files whose change alters module resolution: drop the warm resolver state.
 fn is_config(rel: &str) -> bool {
     let f = rel.rsplit('/').next().unwrap_or(rel);
-    matches!(f, "package.json" | "go.mod" | "Cargo.toml" | "compile_commands.json" | "jsconfig.json" | "pnpm-workspace.yaml" | "nexusweave.stubs.toml" | "xgraph.stubs.toml" | "stubs.toml" | "index.scip")
+    matches!(f, "nexusweave.json" | "package.json" | "go.mod" | "Cargo.toml" | "compile_commands.json" | "jsconfig.json" | "pnpm-workspace.yaml" | "nexusweave.stubs.toml" | "xgraph.stubs.toml" | "stubs.toml" | "index.scip")
         || f.starts_with("tsconfig") && f.ends_with(".json")
 }
 
@@ -84,7 +84,7 @@ pub fn start(root: &Path, on_sync: impl Fn(&Stats) + Send + 'static) -> Result<W
                         continue;
                     }
                     if index::excluded(&root2, &rel) { continue; }
-                    if crate::model::Lang::from_path(&rel).is_some() { p.0.insert(rel); any = true; }
+                    if crate::config::get(&root2).lang(&rel).is_some() { p.0.insert(rel); any = true; }
                     else if path.is_dir() || (!path.exists() && !rel.contains('.')) {
                         // directory created/removed/renamed: reconcile everything
                         p.1 = true; any = true;

@@ -194,3 +194,31 @@ fn tracked_files_beat_gitignore() {
     assert!(!nexusweave::index::excluded(&p.0, "conf.h") && nexusweave::index::excluded(&p.0, "scratch.c"));
     p.expect("total", "uLong", "conf.h", 40, 100);
 }
+
+/// `nexusweave.json`: extension mapping, exclude, include (despite .gitignore), deprioritize,
+/// and a rebuild when the settings change.
+#[test]
+fn project_config() {
+    let p = Project::new("config", &[
+        ("nexusweave.json", r#"{"extensions": {".inc": "php"}, "exclude": ["skip/**"], "include": ["gen/**"], "deprioritize": ["legacy/**"]}"#),
+        (".gitignore", "/gen/\n"),
+        ("lib/util.inc", "<?php\nfunction helper_inc() { return 1; }\n"),
+        ("skip/x.py", "def skipped():\n    pass\n"),
+        ("gen/api.py", "def generated_api():\n    pass\n"),
+        ("legacy/old.py", "def handle_request():\n    pass\n"),
+        ("app/new.py", "def handle_request():\n    pass\n"),
+    ]);
+    let files: Vec<String> = nexusweave::index::discover(&p.0).into_iter().map(|c| c.rel).collect();
+    assert!(files.contains(&"lib/util.inc".into()), "mapped extension: {files:?}");
+    assert!(!files.contains(&"skip/x.py".into()), "excluded: {files:?}");
+    assert!(files.contains(&"gen/api.py".into()), "included despite .gitignore: {files:?}");
+    let g = nexusweave::query::Graph::open(&p.0).unwrap();
+    let hits = g.search("handle_request", None, 5).unwrap();
+    assert_eq!(hits[0].0.path, "app/new.py", "deprioritized path ranks below: {:?}", hits.iter().map(|h| &h.0.path).collect::<Vec<_>>());
+    drop(g);
+    // changing the settings rebuilds on the next sync: the excluded file comes back
+    std::fs::write(p.0.join("nexusweave.json"), r#"{"extensions": {".inc": "php"}}"#).unwrap();
+    nexusweave::index::sync(&p.0, None).unwrap();
+    let g = nexusweave::query::Graph::open(&p.0).unwrap();
+    assert!(!g.search("skipped", None, 5).unwrap().is_empty(), "no longer excluded after the change");
+}

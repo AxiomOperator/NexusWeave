@@ -19,7 +19,16 @@ const AGENTS: &[Agent] = &[
     Agent { key: "codex", name: "Codex CLI", marker: |h| h.join(".codex") },
     Agent { key: "gemini", name: "Gemini CLI", marker: |h| h.join(".gemini") },
     Agent { key: "opencode", name: "opencode", marker: |h| h.join(".config/opencode") },
+    Agent { key: "kiro", name: "Kiro", marker: |h| h.join(".kiro") },
+    Agent { key: "vscode", name: "VS Code (Copilot)", marker: |h| vscode_user_dir(h) },
 ];
+
+/// VS Code's per-user settings directory (where its user-level `mcp.json` lives).
+fn vscode_user_dir(h: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") { h.join("Library/Application Support/Code/User") }
+    else if cfg!(windows) { std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| h.join("AppData/Roaming")).join("Code/User") }
+    else { std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| h.join(".config")).join("Code/User") }
+}
 
 fn home() -> Result<PathBuf> {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).context("cannot determine home directory")
@@ -159,6 +168,12 @@ fn apply(agent: &Agent, h: &Path, add: bool) -> Result<String> {
             Ok(p.display().to_string())
         }
         "codex" => { let p = h.join(".codex/config.toml"); codex_toml(&p, add)?; Ok(p.display().to_string()) }
+        "kiro" => { let p = h.join(".kiro/settings/mcp.json"); set_json_server(&p, "mcpServers", add.then_some(entry))?; Ok(p.display().to_string()) }
+        "vscode" => {
+            let p = vscode_user_dir(h).join("mcp.json");
+            set_json_server(&p, "servers", add.then(|| json!({"type": "stdio", "command": exe(), "args": ["serve"]})))?;
+            Ok(p.display().to_string())
+        }
         _ => unreachable!(),
     }
 }
@@ -167,7 +182,19 @@ fn selected(targets: &[String], h: &Path) -> Vec<&'static Agent> {
     AGENTS.iter().filter(|a| if targets.is_empty() { (a.marker)(h).exists() } else { targets.iter().any(|t| t.eq_ignore_ascii_case(a.key) || t == "all") }).collect()
 }
 
-pub fn install(targets: &[String], print: bool, hooks: bool) -> Result<()> {
+/// Optional extras of `nexusweave install` (each undone by `nexusweave uninstall`).
+#[derive(Default, Clone, Copy)]
+pub struct Extras {
+    /// Claude Code PreToolUse hint hook on Grep/Glob
+    pub hooks: bool,
+    /// a marked NexusWeave section in the agents' global instruction files
+    pub instructions: bool,
+    /// allow NexusWeave's MCP tools in Claude Code without a permission prompt
+    pub allow: bool,
+}
+
+pub fn install(targets: &[String], print: bool, extras: Extras) -> Result<()> {
+    let hooks = extras.hooks;
     if print {
         println!("{}", serde_json::to_string_pretty(&json!({"mcpServers": {"nexusweave": {"command": exe(), "args": ["serve"]}}}))?);
         return Ok(());
@@ -175,7 +202,7 @@ pub fn install(targets: &[String], print: bool, hooks: bool) -> Result<()> {
     let h = home()?;
     let agents = selected(targets, &h);
     if agents.is_empty() {
-        eprintln!("No supported agents detected. Use --target claude|cursor|codex|gemini|opencode, or --print for a config snippet.");
+        eprintln!("No supported agents detected. Use --target claude|cursor|codex|gemini|opencode|kiro|vscode, or --print for a config snippet.");
         return Ok(());
     }
     for a in agents {
@@ -190,8 +217,95 @@ pub fn install(targets: &[String], print: bool, hooks: bool) -> Result<()> {
             Err(e) => eprintln!("✗ Claude Code hook — {e:#}"),
         }
     }
+    if extras.instructions {
+        for (name, p) in instruction_files(&h) {
+            match set_section(&p, true) {
+                Ok(_) => eprintln!("✓ {name} instructions — {}", p.display()),
+                Err(e) => eprintln!("✗ {name} instructions — {e:#}"),
+            }
+        }
+    }
+    if extras.allow {
+        match claude_allow(&h, true) {
+            Ok(p) => eprintln!("✓ Claude Code permissions — {p} (NexusWeave tools allowed)"),
+            Err(e) => eprintln!("✗ Claude Code permissions — {e:#}"),
+        }
+    }
     eprintln!("\nNext: run `nexusweave init` in each project. The server keeps the graph in sync while your agent works.");
     Ok(())
+}
+
+const SECTION_START: &str = "<!-- nexusweave:start (managed by `nexusweave install --instructions`; `nexusweave uninstall` removes it) -->";
+const SECTION_END: &str = "<!-- nexusweave:end -->";
+const SECTION: &str = "## NexusWeave
+
+In a repository indexed by NexusWeave (it has a `.nexusweave/` directory at its root), call the
+`nexusweave_explore` MCP tool first for any question about the code, before Grep, Glob or Read: one
+call returns the relevant line-numbered source, the call path between the symbols you name, and
+what depends on them. Each file section's header says what it shows (\"entire file\", or line
+ranges plus any symbols only partly shown); read further only for what it marks as not shown.
+Use `nexusweave_diff_impact` before committing to see what a change affects and which tests to run.";
+
+/// Global instruction files of the detected agents that read one.
+fn instruction_files(h: &Path) -> Vec<(&'static str, PathBuf)> {
+    [("Claude Code", h.join(".claude"), "CLAUDE.md"), ("Codex CLI", h.join(".codex"), "AGENTS.md"), ("Gemini CLI", h.join(".gemini"), "GEMINI.md")]
+        .into_iter().filter(|(_, d, _)| d.is_dir()).map(|(n, d, f)| (n, d.join(f))).collect()
+}
+
+/// `text` with the managed section added (or refreshed) or removed; everything else untouched.
+fn section_text(text: &str, add: bool) -> String {
+    let mut out = match (text.find(SECTION_START), text.find(SECTION_END)) {
+        (Some(a), Some(b)) if b > a => {
+            let end = b + SECTION_END.len();
+            let end = end + text[end..].chars().take_while(|&c| c == '\n').count().min(1);
+            let start = if a >= 1 && text[..a].ends_with("\n\n") { a - 1 } else { a };
+            format!("{}{}", &text[..start], &text[end..])
+        }
+        _ => text.to_string(),
+    };
+    if add {
+        if !out.is_empty() && !out.ends_with('\n') { out.push('\n'); }
+        if !out.is_empty() { out.push('\n'); }
+        out.push_str(&format!("{SECTION_START}\n{SECTION}\n{SECTION_END}\n"));
+    }
+    out
+}
+
+/// Add or remove the managed section in one instruction file; whether the file changed.
+fn set_section(p: &Path, add: bool) -> Result<bool> {
+    let text = read_config(p)?;
+    let next = section_text(&text, add);
+    if next == text || (!add && !p.exists()) { return Ok(false); }
+    if let Some(d) = p.parent() { std::fs::create_dir_all(d)?; }
+    backup(p)?;
+    if next.trim().is_empty() { std::fs::remove_file(p)?; } else { std::fs::write(p, next)?; }
+    Ok(true)
+}
+
+/// The Claude Code permission rule covering every NexusWeave MCP tool.
+const ALLOW_RULE: &str = "mcp__nexusweave";
+
+/// Add or remove the NexusWeave allow rule in Claude Code's user settings (other rules untouched).
+fn claude_allow(h: &Path, add: bool) -> Result<String> {
+    let p = h.join(".claude/settings.json");
+    if !add && !p.exists() { return Ok(p.display().to_string()); }
+    let (cur, text) = read_json(&p)?;
+    let mut next = if cur.is_object() { cur.clone() } else { json!({}) };
+    let list: Vec<Value> = next.get("permissions").and_then(|x| x.get("allow")).and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut list: Vec<Value> = list.into_iter().filter(|v| v.as_str() != Some(ALLOW_RULE)).collect();
+    if add { list.push(json!(ALLOW_RULE)); }
+    let perms = next.as_object_mut().unwrap().entry("permissions").or_insert_with(|| json!({}));
+    if !perms.is_object() { *perms = json!({}); }
+    let po = perms.as_object_mut().unwrap();
+    if list.is_empty() { po.remove("allow"); } else { po.insert("allow".into(), Value::Array(list)); }
+    if po.is_empty() { next.as_object_mut().unwrap().remove("permissions"); }
+    if next != cur {
+        let allow = next.get("permissions").and_then(|x| x.get("allow")).cloned();
+        let mut edits: Vec<Edit> = vec![(&["permissions", "allow"], allow.as_ref())];
+        if next.get("permissions").is_none() { edits.push((&["permissions"], None)); }
+        write_json(&p, &text, &edits, &next)?;
+    }
+    Ok(p.display().to_string())
 }
 
 fn claude_hook(h: &Path, add: bool) -> Result<String> {
@@ -211,6 +325,14 @@ fn claude_hook(h: &Path, add: bool) -> Result<String> {
 pub fn uninstall(targets: &[String]) -> Result<()> {
     let h = home()?;
     if let Err(e) = claude_hook(&h, false) { eprintln!("✗ Claude Code hook — {e:#}"); }
+    if let Err(e) = claude_allow(&h, false) { eprintln!("✗ Claude Code permissions — {e:#}"); }
+    for (name, p) in instruction_files(&h) {
+        match set_section(&p, false) {
+            Ok(true) => eprintln!("✓ removed {name} instructions — {}", p.display()),
+            Ok(false) => {}
+            Err(e) => eprintln!("✗ {name} instructions — {e:#}"),
+        }
+    }
     for a in selected(targets, &h) {
         match apply(a, &h, false) {
             Ok(w) => eprintln!("✓ removed from {} — {}", a.name, w),
@@ -224,6 +346,34 @@ pub fn uninstall(targets: &[String]) -> Result<()> {
 mod tests {
     use super::codex_toml_text;
     use serde_json::json;
+
+    #[test]
+    fn instruction_section_round_trip() {
+        let mine = "# My rules\n\nAlways run tests.\n";
+        let added = super::section_text(mine, true);
+        assert!(added.starts_with(mine) && added.contains("nexusweave_explore"), "{added}");
+        assert_eq!(super::section_text(&added, true), added, "install is idempotent");
+        assert_eq!(super::section_text(&added, false), mine, "uninstall restores the file");
+        assert_eq!(super::section_text("", false), "");
+    }
+
+    #[test]
+    fn claude_allow_round_trip() {
+        let home = std::env::temp_dir().join(format!("nexusweave-allow-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let p = home.join(".claude/settings.json");
+        let orig = "{\n  // mine\n  \"permissions\": { \"allow\": [\"Bash(ls:*)\"] }\n}\n";
+        std::fs::write(&p, orig).unwrap();
+        super::claude_allow(&home, true).unwrap();
+        super::claude_allow(&home, true).unwrap();
+        let (v, text) = super::read_json(&p).unwrap();
+        assert_eq!(v["permissions"]["allow"], json!(["Bash(ls:*)", "mcp__nexusweave"]), "added once");
+        assert!(text.contains("// mine"));
+        super::claude_allow(&home, false).unwrap();
+        let (v, _) = super::read_json(&p).unwrap();
+        assert_eq!(v["permissions"]["allow"], json!(["Bash(ls:*)"]));
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     #[test]
     fn json_configs_keep_comments() {

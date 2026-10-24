@@ -35,6 +35,9 @@ pub struct Sym {
     pub is_test: bool,
     #[serde(skip)]
     pub lang: i64,
+    /// generated, or deprioritized in `nexusweave.json`: ranked below everything else
+    #[serde(skip)]
+    pub low: bool,
 }
 
 /// One step of a control-flow walk from `?1`: calls, constructions, callbacks passed, and
@@ -42,13 +45,15 @@ pub struct Sym {
 pub const FLOW_STEP_SQL: &str = "SELECT target_id, kind FROM refs WHERE (src_id=?1 OR src_owner_id=?1) AND target_id IS NOT NULL AND kind IN (0, 1, 7, 10, 12)
      UNION SELECT src_id, 9 FROM refs WHERE target_id=?1 AND kind = 8";
 
-pub const SYM_COLS: &str = "n.id, n.kind, n.name, n.qname, f.path, n.start_line, n.end_line, n.signature, n.doc, n.exported, n.file_id, n.parent_id, f.is_test, f.lang";
+/// Columns in [`SYM_COLS`]: extra selected columns start at this index.
+pub const SYM_N: usize = 15;
+pub const SYM_COLS: &str = "n.id, n.kind, n.name, n.qname, f.path, n.start_line, n.end_line, n.signature, n.doc, n.exported, n.file_id, n.parent_id, f.is_test, f.lang, f.generated";
 
 pub fn sym_row(r: &Row<'_>) -> rusqlite::Result<Sym> {
     Ok(Sym {
         id: r.get(0)?, kind: NodeKind::from_i64(r.get(1)?).unwrap_or(NodeKind::Variable), name: r.get(2)?, qname: r.get(3)?,
         path: r.get(4)?, start_line: r.get(5)?, end_line: r.get(6)?, signature: r.get(7)?, doc: r.get(8)?, exported: r.get(9)?,
-        file_id: r.get(10)?, parent_id: r.get(11)?, is_test: r.get(12)?, lang: r.get(13)?,
+        file_id: r.get(10)?, parent_id: r.get(11)?, is_test: r.get(12)?, lang: r.get(13)?, low: r.get(14)?,
     })
 }
 
@@ -162,7 +167,7 @@ impl Graph {
         let mut st = self.db.conn.prepare_cached(&format!(
             "SELECT {SYM_COLS}, r.kind, r.line, r.confidence FROM refs r JOIN nodes n ON n.id = COALESCE(r.src_owner_id, r.src_id)
              JOIN files f ON f.id=n.file_id WHERE r.target_id=? ORDER BY f.is_test, f.path, r.line LIMIT ?"))?;
-        let rows = st.query_map(params![id, limit as i64 * 4], |r| Ok(Edge { sym: sym_row(r)?, kind: RefKind::from_i64(r.get(14)?).unwrap_or(RefKind::Call), line: r.get(15)?, confidence: r.get::<_, i64>(16)? as u8 }))?;
+        let rows = st.query_map(params![id, limit as i64 * 4], |r| Ok(Edge { sym: sym_row(r)?, kind: RefKind::from_i64(r.get(SYM_N)?).unwrap_or(RefKind::Call), line: r.get(SYM_N + 1)?, confidence: r.get::<_, i64>(SYM_N + 2)? as u8 }))?;
         Ok(dedup_edges(rows.collect::<rusqlite::Result<_>>()?, limit))
     }
 
@@ -170,7 +175,7 @@ impl Graph {
         let mut st = self.db.conn.prepare_cached(&format!(
             "SELECT {SYM_COLS}, r.kind, r.line, r.confidence FROM refs r JOIN nodes n ON n.id = r.target_id
              JOIN files f ON f.id=n.file_id WHERE (r.src_id=?1 OR r.src_owner_id=?1) AND r.target_id != ?1 ORDER BY r.line LIMIT ?2"))?;
-        let rows = st.query_map(params![id, limit as i64 * 4], |r| Ok(Edge { sym: sym_row(r)?, kind: RefKind::from_i64(r.get(14)?).unwrap_or(RefKind::Call), line: r.get(15)?, confidence: r.get::<_, i64>(16)? as u8 }))?;
+        let rows = st.query_map(params![id, limit as i64 * 4], |r| Ok(Edge { sym: sym_row(r)?, kind: RefKind::from_i64(r.get(SYM_N)?).unwrap_or(RefKind::Call), line: r.get(SYM_N + 1)?, confidence: r.get::<_, i64>(SYM_N + 2)? as u8 }))?;
         Ok(dedup_edges(rows.collect::<rusqlite::Result<_>>()?, limit))
     }
 
@@ -193,7 +198,7 @@ impl Graph {
         let mut st = self.db.conn.prepare_cached(&format!(
             "SELECT {SYM_COLS}, r.kind, r.line, r.confidence FROM refs r JOIN nodes n ON n.id = COALESCE(r.src_owner_id, r.src_id)
              JOIN files f ON f.id=n.file_id WHERE r.target_id=? AND r.kind IN {kinds} LIMIT 100"))?;
-        let downs = st.query_map([id], |r| Ok(Edge { sym: sym_row(r)?, kind: RefKind::from_i64(r.get(14)?).unwrap_or(RefKind::Extends), line: r.get(15)?, confidence: r.get::<_, i64>(16)? as u8 }))?
+        let downs = st.query_map([id], |r| Ok(Edge { sym: sym_row(r)?, kind: RefKind::from_i64(r.get(SYM_N)?).unwrap_or(RefKind::Extends), line: r.get(SYM_N + 1)?, confidence: r.get::<_, i64>(SYM_N + 2)? as u8 }))?
             .collect::<rusqlite::Result<_>>()?;
         Ok((ups, downs))
     }
@@ -292,7 +297,7 @@ impl Graph {
             "SELECT {SYM_COLS}, bm25(nodes_fts, 10.0, 3.0, 1.0, 3.0) AS s FROM nodes_fts JOIN nodes n ON n.id = nodes_fts.rowid
              JOIN files f ON f.id = n.file_id WHERE nodes_fts MATCH ?1 AND n.kind != 0 {kind_clause} ORDER BY s LIMIT 600");
         let mut st = self.db.conn.prepare_cached(&sql)?;
-        let mut cands: Vec<(Sym, f64)> = st.query_map([&fts], |r| Ok((sym_row(r)?, r.get::<_, f64>(14)?)))?.filter_map(|r| r.ok()).collect();
+        let mut cands: Vec<(Sym, f64)> = st.query_map([&fts], |r| Ok((sym_row(r)?, r.get::<_, f64>(SYM_N)?)))?.filter_map(|r| r.ok()).collect();
         // files whose path matches the query contribute their symbols as candidates too
         if concepts.len() > 1 || kind.is_some() {
             let pq = concepts.iter().map(|t| format!("path:\"{}\"*", t.replace('"', ""))).collect::<Vec<_>>().join(" OR ");
@@ -335,6 +340,7 @@ impl Graph {
             };
             if s.exported { score += 0.5; }
             if s.is_test { score *= 0.5; }
+            if s.low { score *= 0.5; }
             (s, score)
         }).collect();
         v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));

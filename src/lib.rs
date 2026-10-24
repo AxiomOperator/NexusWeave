@@ -1,6 +1,7 @@
 //! NexusWeave — connected code intelligence for AI agents.
 
 pub mod analyze;
+pub mod config;
 pub mod daemon;
 pub mod db;
 pub mod explore;

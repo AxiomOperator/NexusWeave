@@ -65,7 +65,9 @@ enum Cmd {
     Ui { path: Option<PathBuf>, #[arg(long, default_value_t = 7878)] port: u16, #[arg(long)] no_open: bool },
     /// Register the MCP server with coding agents (Claude Code, Cursor, Codex, ...)
     Install { #[arg(long)] target: Vec<String>, #[arg(long)] print: bool,
-              #[arg(long, help = "also add a Claude Code PreToolUse hook that suggests nexusweave_explore for symbol greps")] hooks: bool },
+              #[arg(long, help = "also add a Claude Code PreToolUse hook that suggests nexusweave_explore for symbol greps")] hooks: bool,
+              #[arg(long, help = "also add a NexusWeave section to the agents' global instruction files (CLAUDE.md, AGENTS.md, GEMINI.md)")] instructions: bool,
+              #[arg(long, help = "also allow NexusWeave's MCP tools in Claude Code without a permission prompt")] allow: bool },
     /// Remove the MCP server registration (and the Claude Code hook)
     Uninstall { #[arg(long)] target: Vec<String> },
     /// Replace this binary with the latest GitHub release (checksum-verified)
@@ -263,7 +265,7 @@ fn main() -> Result<()> {
             let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `nexusweave init`"))? };
             ui::serve(&root, port, !no_open)?;
         }
-        Cmd::Install { target, print, hooks } => install::install(&target, print, hooks)?,
+        Cmd::Install { target, print, hooks, instructions, allow } => install::install(&target, print, install::Extras { hooks, instructions, allow })?,
         Cmd::Upgrade { version, check, force } => upgrade::run(version.as_deref(), check, force)?,
         Cmd::Hook { event } => match event.as_str() {
             "pretool" => hook::pretool()?,

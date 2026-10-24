@@ -28,8 +28,9 @@ accuracy, and token-efficient answers. Nothing leaves your machine.
 ```bash
 git clone https://github.com/AxiomOperator/NexusWeave.git && cd NexusWeave
 cargo install --path .            # Rust 1.88+; one ~37 MB binary in ~/.cargo/bin
-nexusweave install                # register the MCP server with Claude Code / Cursor / Codex / Gemini / opencode
-                                  #   --hooks also adds a Claude Code hint hook (see below)
+nexusweave install                # register the MCP server with Claude Code / Cursor / Codex / Gemini / opencode / Kiro / VS Code
+                                  #   --hooks: a Claude Code hint hook (see below); --instructions: a NexusWeave section in
+                                  #   CLAUDE.md / AGENTS.md / GEMINI.md; --allow: no permission prompts for its tools
 cd your-project && nexusweave init
 nexusweave explore "How does authentication work?"
 nexusweave ui                     # optional: browse the graph at http://127.0.0.1:7878
@@ -125,7 +126,7 @@ nexusweave watch [path]             keep the graph in sync from the terminal
 nexusweave serve [--no-watch]       MCP server on stdio (auto-syncs; shares one daemon per repo)
 nexusweave daemon [status|stop]     the shared per-repo index process
 nexusweave ui [path] [--port 7878] [--no-open]   viewer: overview, call graph, module map, routes, call paths, insights, ask
-nexusweave install | uninstall      (un)register the MCP server with agents (--target, --print, --hooks)
+nexusweave install | uninstall      (un)register the MCP server with agents (--target, --print, --hooks, --instructions, --allow)
 nexusweave upgrade [--check] [--version TAG] [--force]   self-update from GitHub releases
 ```
 
@@ -211,6 +212,22 @@ discover (ignore-aware, parallel) ─► parse + extract (rayon, tree-sitter, pe
 - `.gitignore`, `.git/info/exclude` and `.nexusweaveignore` are respected. Vendored and build
   directories (`node_modules`, `vendor`, `target`, `dist`, …) are always skipped, as are files
   over 1.5 MB, minified files, and generated files (detected by content banners).
+- `nexusweave.json` at the project root (optional, comments allowed):
+
+  ```json
+  {
+    "extensions": { ".inc": "php" },
+    "exclude": ["fixtures/huge/**"],
+    "include": ["generated/api/**"],
+    "deprioritize": ["legacy/**"]
+  }
+  ```
+
+  `extensions` maps file suffixes to a supported language; `exclude` drops paths (committed or
+  not); `include` brings back paths a `.gitignore` hides; `deprioritize` keeps paths indexed but
+  ranks them below everything else, like generated code. Patterns use `.gitignore` syntax.
+  Changing the file rebuilds the index on the next sync. Files git tracks are indexed even if a
+  `.gitignore` pattern matches them, as git itself treats them.
 - The index lives in `.nexusweave/graph.db`. That directory ignores itself in git. An index written by an
   incompatible NexusWeave version is rebuilt automatically.
 - `nexusweave.stubs.toml` (or `.nexusweave/stubs.toml`) declares return types of libraries that aren't

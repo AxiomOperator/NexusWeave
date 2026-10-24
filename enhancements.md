@@ -364,6 +364,8 @@ for cost. Next steps, each measurable with the harness:
    answer never included. So there is no redundant re-reading to remove; the follow-up Reads
    fetch code explore didn't show. The levers are coverage (more of the cut-off seed bodies,
    better file recall) and eager tool listing (client side), not de-duplication.
+   Tried and reverted: giving named functions their whole body (budget permitting). A second
+   traced pilot showed reads past cut-off bodies going *up* (11 → 20) and tokens +4%; no benefit.
 3. List `nexusweave_explore` eagerly instead of behind `ToolSearch` (client behavior; nothing to
    change server-side).
 4. ✅ Harder tasks authored (`gin-render-impls`, `httpx-transport-dispatch`,
