@@ -39,7 +39,7 @@ pub struct Sym {
 
 /// One step of a control-flow walk from `?1`: calls, constructions, callbacks passed, and
 /// dynamic dispatch from an interface/base method to its implementations.
-pub const FLOW_STEP_SQL: &str = "SELECT target_id, kind FROM refs WHERE (src_id=?1 OR src_owner_id=?1) AND target_id IS NOT NULL AND kind IN (0, 1, 7, 10)
+pub const FLOW_STEP_SQL: &str = "SELECT target_id, kind FROM refs WHERE (src_id=?1 OR src_owner_id=?1) AND target_id IS NOT NULL AND kind IN (0, 1, 7, 10, 12)
      UNION SELECT src_id, 9 FROM refs WHERE target_id=?1 AND kind = 8";
 
 pub const SYM_COLS: &str = "n.id, n.kind, n.name, n.qname, f.path, n.start_line, n.end_line, n.signature, n.doc, n.exported, n.file_id, n.parent_id, f.is_test, f.lang";

@@ -37,6 +37,13 @@ impl Py {
     fn decorator_route(&self, deco: Node<'_>, call: Node<'_>, cx: &mut Cx<'_>) {
         let Some(f) = call.child_by_field_name("function").filter(|f| f.kind() == "attribute") else { return };
         let attr = cx.field_text(f, "attribute").unwrap_or("");
+        // @sio.on("message") / @emitter.on("x") — an event listener, not a route
+        if event_register(attr) && let Some(ev) = call.child_by_field_name("arguments").and_then(|a| a.named_child(0)).and_then(|a| string_lit(cx, a))
+            && let Some(func) = deco.parent().filter(|p| p.kind() == "decorated_definition").and_then(|p| p.child_by_field_name("definition"))
+            && let Some(name) = cx.field_text(func, "name") {
+            cx.add_event(&ev, deco, Some((None, name)));
+            return;
+        }
         let Some(mut method) = http_method(attr) else { return };
         let Some(args) = call.child_by_field_name("arguments") else { return };
         let Some(path) = args.named_child(0).and_then(|a| string_lit(cx, a)) else { return };
@@ -189,6 +196,21 @@ impl LangHooks for Py {
                     cx.add_import(ImportKind::Glob, &module, "", "", n);
                 }
                 Visit::Skip
+            }
+            "call" if n.child_by_field_name("function").filter(|f| f.kind() == "attribute")
+                .and_then(|f| f.child_by_field_name("attribute")).is_some_and(|a| event_register(cx.text(a)) || event_emit(cx.text(a)))
+                && n.child_by_field_name("arguments").and_then(|a| a.named_child(0)).and_then(|a| string_lit(cx, a)).is_some() => {
+                let f = n.child_by_field_name("function").unwrap();
+                let attr = cx.field_text(f, "attribute").unwrap_or("").to_string();
+                let args = n.child_by_field_name("arguments").unwrap();
+                let name = args.named_child(0).and_then(|a| string_lit(cx, a)).unwrap_or_default();
+                let obj = cx.field_text(f, "object").map(str::to_string);
+                cx.add_ref(RefKind::Call, &attr, obj.as_deref(), f);
+                if event_register(&attr) && args.named_child_count() >= 2 {
+                    return Visit::Def(Def::new(NodeKind::Event, name));  // handler args become callbacks of the event
+                }
+                cx.add_ref(RefKind::Emit, &name, None, n);
+                Visit::Continue
             }
             "call" => {
                 // app.register_blueprint(bp, url_prefix="/x") / app.include_router(router, prefix="/x")

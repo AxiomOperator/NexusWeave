@@ -87,6 +87,8 @@ fn want_for(kind: RefKind) -> fn(NodeKind) -> bool {
         // a bare name passed as a value: a function, or a class (`isinstance(x, Foo)`, `register(Foo)`)
         RefKind::Callback => |k| k.is_callable() || k.is_type() && k != NodeKind::TypeAlias,
         RefKind::Overrides | RefKind::Dispatch | RefKind::Handles => |k| k.is_callable(),
+        // raw emit sites are wired to listeners by the `triggers` synthesis, not by name resolution
+        RefKind::Emit | RefKind::Triggers => |_| false,
     }
 }
 
@@ -791,7 +793,7 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
         pending_rows = p;
         v
     } else {
-        let base = "SELECT id, file_id, src_id, kind, name, qualifier, recv_type, target_id, via_id FROM refs WHERE kind != 8 AND (1=1";
+        let base = "SELECT id, file_id, src_id, kind, name, qualifier, recv_type, target_id, via_id FROM refs WHERE kind NOT IN (8, 11, 12) AND (1=1";
         let sql = match &scope {
             Scope::All | Scope::Fresh(_) => format!("{base})"),
             Scope::Incremental { files, names, via_refs, .. } => {
@@ -991,12 +993,41 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
             }
         }
         {
+            // triggers: every emit site → every listener of that event name (fan-out)
+            let mut events: HashMap<&str, Vec<i64>> = HashMap::new();
+            for n in mem.nodes.iter().filter(|n| n.alive && n.kind == NodeKind::Event) { events.entry(n.name.as_str()).or_default().push(n.id); }
+            let mut want: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+            let mut emit_rows: Vec<(i64, i64, String, i64)> = Vec::new();
+            {
+                let mut q = tx.prepare("SELECT file_id, src_id, name, line FROM refs WHERE kind IN (2, 3, 8, 11, 12) AND kind = 11")?;
+                let mut rows = q.query([])?;
+                while let Some(r) = rows.next()? { emit_rows.push((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)); }
+            }
+            let mut have: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+            let mut stale = Vec::new();
+            {
+                let mut q = tx.prepare("SELECT id, src_id, target_id FROM refs WHERE kind IN (2, 3, 8, 11, 12) AND kind = 12")?;
+                let mut rows = q.query([])?;
+                while let Some(r) = rows.next()? { have.insert((r.get(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0))); stale.push((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0))); }
+            }
+            let mut ins = tx.prepare("INSERT INTO refs(file_id,src_id,kind,name,name_h,line,col,target_id,confidence) VALUES(?,?,12,?,?,?,0,?,80)")?;
+            for (f, src, name, line) in &emit_rows {
+                for &ev in events.get(name.as_str()).into_iter().flatten() {
+                    if want.insert((*src, ev)) && !have.contains(&(*src, ev)) {
+                        ins.execute(rusqlite::params![f, src, name, crate::db::name_hash(name), line, ev])?;
+                    }
+                }
+            }
+            let mut del = tx.prepare("DELETE FROM refs WHERE id = ?")?;
+            for (id, s, t) in stale { if !want.contains(&(s, t)) { del.execute([id])?; } }
+        }
+        {
             // diff against what's stored (indexed by the partial heritage index) — write only changes
             let want: std::collections::HashSet<(i64, i64)> = overrides.iter().map(|&(m, x)| (mem.node(m).id, mem.node(x).id)).collect();
             let mut have: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
             let mut stale: Vec<i64> = Vec::new();
             {
-                let mut q = tx.prepare("SELECT id, src_id, target_id FROM refs WHERE kind IN (2, 3, 8) AND kind = 8")?;
+                let mut q = tx.prepare("SELECT id, src_id, target_id FROM refs WHERE kind IN (2, 3, 8, 11, 12) AND kind = 8")?;
                 let mut rows = q.query([])?;
                 while let Some(r) = rows.next()? {
                     let (id, s, t) = (r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?);

@@ -14,3 +14,5 @@ GET /health -> health
 Guest.greet -> User.greet
 Service.get -> User.display
 GET /api/items/{item_id} -> read_item
+pay -> order:paid
+order:paid -> ship

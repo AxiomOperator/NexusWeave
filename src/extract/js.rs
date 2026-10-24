@@ -154,6 +154,28 @@ impl Js {
         for (m, path, d) in routes { cx.add_route(m, &join_route(&prefix, &path), d, Some((Some("this"), method_name))); }
     }
 
+    /// `bus.on("user:created", handler)` → event node (inline handler is its scope);
+    /// `bus.emit("user:created")` / `el.dispatchEvent(new Event("x"))` → emit site.
+    fn event_call<'t>(&self, n: Node<'t>, cx: &mut Cx<'_>) -> Option<Visit<'t>> {
+        let f = n.child_by_field_name("function").filter(|f| f.kind() == "member_expression")?;
+        let prop = cx.field_text(f, "property")?;
+        let args = n.child_by_field_name("arguments")?;
+        let first = args.named_child(0)?;
+        if event_register(prop) && args.named_child_count() >= 2 && let Some(name) = string_lit(cx, first).filter(|s| !s.is_empty() && !s.starts_with('/')) {
+            let obj = f.child_by_field_name("object").map(|o| cx.text(o));
+            cx.add_ref(RefKind::Call, prop, obj, f);
+            let last = args.named_child(args.named_child_count() - 1).filter(|l| is_fn_value(l.kind()));
+            return Some(Visit::Def(Def::new(NodeKind::Event, name).body(last.and_then(|l| l.child_by_field_name("body")))));
+        }
+        let emitted = if event_emit(prop) { string_lit(cx, first) }
+            else if prop == "dispatchEvent" && first.kind() == "new_expression" {
+                // dispatchEvent(new CustomEvent("x", ...))
+                first.child_by_field_name("arguments").and_then(|a| a.named_child(0)).and_then(|a| string_lit(cx, a))
+            } else { None };
+        if let Some(name) = emitted.filter(|s| !s.is_empty()) { cx.add_ref(RefKind::Emit, &name, None, first); }
+        None
+    }
+
     /// Express / Koa / Fastify / Hono style `app.get('/x', auth, handler)` — the route becomes the scope of an inline handler.
     fn call_route<'t>(&self, n: Node<'t>, cx: &mut Cx<'_>) -> Option<Visit<'t>> {
         let f = n.child_by_field_name("function").filter(|f| f.kind() == "member_expression")?;
@@ -365,6 +387,7 @@ impl LangHooks for Js {
                 Visit::Continue
             }
             "call_expression" => {
+                if let Some(d) = self.event_call(n, cx) { return d; }
                 if let Some(d) = self.call_route(n, cx) { return d; }
                 if let Some(f) = n.child_by_field_name("function") {
                     if f.kind() == "import" {

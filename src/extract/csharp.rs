@@ -190,8 +190,31 @@ impl LangHooks for CSharp {
                 }
                 Visit::Skip
             }
+            // `button.Click += OnClick` — subscribe a handler to an event
+            "assignment_expression" if cx.text(n).contains("+=")
+                && n.child_by_field_name("left").is_some_and(|l| split_qual(cx.text(l)).1.starts_with(|c: char| c.is_uppercase()))
+                && n.child_by_field_name("right").is_some_and(|r| r.kind().contains("lambda") || split_qual(cx.text(r)).1.starts_with(|c: char| c.is_uppercase())) => {
+                let l = n.child_by_field_name("left").unwrap();
+                let r = n.child_by_field_name("right").unwrap();
+                let ev = split_qual(cx.text(l)).1.to_string();
+                if r.kind().contains("lambda") {
+                    let body = r.child_by_field_name("body");
+                    return Visit::Def(Def::new(NodeKind::Event, ev).body(body));
+                }
+                let (q, h) = split_qual(cx.text(r));
+                let (q, h) = (q.map(str::to_string), h.to_string());
+                cx.add_event(&ev, n, Some((q.as_deref(), &h)));
+                Visit::Skip
+            }
             "invocation_expression" => {
                 if let Some(v) = self.minimal_api(n, cx) { return v; }
+                // `Click?.Invoke(this, e)` raises the event
+                if let Some(f) = n.child_by_field_name("function") {
+                    let t = cx.text(f).replace("?.", ".");
+                    if let Some(ev) = t.strip_suffix(".Invoke") && is_ident(ev) && ev.starts_with(|c: char| c.is_uppercase()) {
+                        cx.add_ref(RefKind::Emit, ev, None, f);
+                    }
+                }
                 if let Some(f) = n.child_by_field_name("function") && let Some((q, nm)) = callee_parts(cx, f) {
                     cx.add_ref(RefKind::Call, nm, q.map(short_qual), f);
                 }

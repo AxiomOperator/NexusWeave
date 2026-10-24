@@ -8,3 +8,5 @@ Extensions.Shout -> User.Greet
 GET /api/Users/{id} -> UsersController.Get
 SqlRepo.Find -> IRepo.Find
 UserService.Fetch -> IRepo.Find
+Button.Press -> Click
+Click -> Form.OnOk

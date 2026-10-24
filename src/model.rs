@@ -49,6 +49,8 @@ int_enum!(NodeKind {
     Union = 18 => "union",
     // HTTP route registration (`GET /users/{id}`), linked to its handler.
     Route = 19 => "route",
+    // event topic registered by on("name", h) / addEventListener / `Evt += h`; listeners hang off it
+    Event = 20 => "event",
 });
 
 impl NodeKind {
@@ -83,6 +85,10 @@ int_enum!(
     Dispatch = 9 => "dispatches",
     // route → its handler (synthesized from a decorator / registration, no call site)
     Handles = 10 => "handles",
+    // raw emit site: emit("name") (never resolved itself; the resolver synthesizes `triggers`)
+    Emit = 11 => "emits",
+    // emit site → every event node with that name (synthesized)
+    Triggers = 12 => "triggers",
 });
 
 int_enum!(Lang {

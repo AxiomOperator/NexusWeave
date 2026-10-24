@@ -25,3 +25,6 @@ MemRepo.find -> Repo.find
 UserService.getUser -> User.label
 useRepo -> MemRepo.find
 GET /api/users/:id -> listUsers
+createUser -> user:created
+user:created -> onUserCreated
+user:created -> audit

@@ -234,6 +234,19 @@ impl<'a> Cx<'a> {
         if let Some((q, h)) = handler { self.add_ref_from(id, RefKind::Handles, h, q, at); }
     }
 
+    /// An event listener registered at `at` (decorator style), linked to its handler.
+    pub fn add_event(&mut self, name: &str, at: Node<'_>, handler: Option<(Option<&str>, &str)>) {
+        let id = self.out.nodes.len() as u32;
+        let line = compact_ws(self.text(at).lines().next().unwrap_or(""));
+        self.out.nodes.push(ExNode {
+            kind: NodeKind::Event, qname: name.to_string(), name: name.to_string(), parent: Some(self.cur_node()), owner: None,
+            start_line: at.start_position().row as u32 + 1, end_line: at.end_position().row as u32 + 1,
+            start_byte: at.start_byte() as u32, end_byte: at.end_byte() as u32, exported: true,
+            signature: Some(truncate(&line, SIG_MAX)), doc: None, type_hint: None, ext_of: None,
+        });
+        if let Some((q, h)) = handler { self.add_ref_from(id, RefKind::Callback, h, q, at); }
+    }
+
     /// A route Def (call-style registration whose inline handler becomes the route's scope).
     pub fn route_def<'t>(&self, binding: Option<&str>, method: &str, path: &str, body: Option<Node<'t>>) -> Def<'t> {
         let path = match binding { Some(b) => join_route(&self.route_prefix(b), path), None => path.to_string() };
@@ -507,7 +520,7 @@ fn push_def(cx: &mut Cx<'_>, n: Node<'_>, d: &Def<'_>) -> u32 {
         (Some(o), p) => format!("{p}{sep}{o}"),
         (None, p) => p,
     };
-    let qname = if prefix.is_empty() || d.kind == NodeKind::Route { d.name.clone() } else { format!("{prefix}{sep}{}", d.name) };
+    let qname = if prefix.is_empty() || matches!(d.kind, NodeKind::Route | NodeKind::Event) { d.name.clone() } else { format!("{prefix}{sep}{}", d.name) };
     let sig_end = d.body.map(|b| b.start_byte()).unwrap_or(n.end_byte()).min(n.end_byte());
     let sig_start = n.start_byte();
     let signature = if sig_end > sig_start {
@@ -699,6 +712,15 @@ pub fn http_method(name: &str) -> Option<&'static str> {
         "all" | "any" | "route" | "handle" | "handlefunc" | "match" | "api_route" | "request" | "methods" | "websocket" => "ANY",
         _ => return None,
     })
+}
+
+/// Listener registration / emission method names (`bus.on("x", h)`, `bus.emit("x")`).
+pub fn event_register(name: &str) -> bool {
+    matches!(name, "on" | "once" | "addListener" | "addEventListener" | "prependListener" | "prependOnceListener"
+        | "subscribe" | "add_listener" | "listen" | "addEventHandler")
+}
+pub fn event_emit(name: &str) -> bool {
+    matches!(name, "emit" | "emitAsync" | "trigger" | "dispatch_event" | "publish" | "instrument" | "fire" | "broadcast")
 }
 
 pub fn route_name(method: &str, path: &str) -> String {
