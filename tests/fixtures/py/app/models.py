@@ -5,6 +5,10 @@ class User:
     def greet(self):
         return "hi"
 
+    @property
+    def display(self) -> str:
+        return self.name
+
 
 class Admin(User):
     def ban(self):

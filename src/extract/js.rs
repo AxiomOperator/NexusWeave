@@ -240,7 +240,8 @@ impl LangHooks for Js {
                 let name = cx.field_text(n, "name").unwrap_or("");
                 if n.kind() == "method_definition" { self.decorator_routes(n, cx, name); }
                 let ctor = name == "constructor";
-                let kind = if ctor { NodeKind::Constructor } else { NodeKind::Method };
+                let accessor = { let mut c = n.walk(); n.children(&mut c).any(|ch| !ch.is_named() && matches!(ch.kind(), "get" | "set")) };
+                let kind = if ctor { NodeKind::Constructor } else if accessor { NodeKind::Property } else { NodeKind::Method };
                 let private = name.starts_with('#') || cx.text(n).starts_with("private ");
                 let rt = cx.field_text(n, "return_type").map(|t| t.trim_start_matches(':').trim().to_string());
                 Visit::Def(Def::new(kind, name).body(n.child_by_field_name("body")).exported(!private).hint(rt))
@@ -352,6 +353,19 @@ impl LangHooks for Js {
                         let q = q.map(short_qual);
                         cx.add_ref(RefKind::Call, name, q, f);
                     }
+                }
+                Visit::Continue
+            }
+            // `obj.prop` read (not a call target / assignment target): links to getters & properties
+            "member_expression" => {
+                let parent = n.parent();
+                let is_callee = parent.is_some_and(|p| p.kind() == "call_expression" && p.child_by_field_name("function").is_some_and(|f| f.id() == n.id()));
+                let is_target = parent.is_some_and(|p| matches!(p.kind(), "assignment_expression" | "augmented_assignment_expression") && p.child_by_field_name("left").is_some_and(|l| l.id() == n.id()));
+                let is_new = parent.is_some_and(|p| p.kind() == "new_expression");
+                if !is_callee && !is_target && !is_new
+                    && let (Some(o), Some(prop)) = (n.child_by_field_name("object"), n.child_by_field_name("property")) {
+                    let (o, name) = (cx.text(o), cx.text(prop));
+                    cx.add_ref(RefKind::Read, name, Some(short_qual(o)), prop);
                 }
                 Visit::Continue
             }

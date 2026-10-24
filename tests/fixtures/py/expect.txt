@@ -12,3 +12,4 @@ run_factory -> User.greet
 POST /users/<id> -> create_user
 GET /health -> health
 Guest.greet -> User.greet
+Service.get -> User.display

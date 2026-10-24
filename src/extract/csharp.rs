@@ -197,6 +197,15 @@ impl LangHooks for CSharp {
                 }
                 Visit::Continue
             }
+            "member_access_expression" => {
+                let parent = n.parent();
+                let is_callee = parent.is_some_and(|p| p.kind() == "invocation_expression" && p.child_by_field_name("function").is_some_and(|f| f.id() == n.id()));
+                let is_target = parent.is_some_and(|p| p.kind() == "assignment_expression" && p.child_by_field_name("left").is_some_and(|l| l.id() == n.id()));
+                if !is_callee && !is_target && let Some((q, nm)) = callee_parts(cx, n) {
+                    cx.add_ref(RefKind::Read, nm, q.map(short_qual), n.child_by_field_name("name").unwrap_or(n));
+                }
+                Visit::Continue
+            }
             "object_creation_expression" => {
                 if let Some(t) = n.child_by_field_name("type") {
                     let tn = normalize_type(cx.text(t));

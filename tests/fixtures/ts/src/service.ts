@@ -11,6 +11,7 @@ export class UserService extends BaseService {
     const u = this.repo.find(id);
     this.log("got");
     u.greet();
+    console.log(u.label);
     this.db.query("select");
     return new models.User("x");
   }

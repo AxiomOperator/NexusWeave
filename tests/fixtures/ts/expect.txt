@@ -22,3 +22,4 @@ schedule -> tick
 schedule -> double
 MemRepo.find -> Repo.find
 !schedule -> setTimeout
+UserService.getUser -> User.label

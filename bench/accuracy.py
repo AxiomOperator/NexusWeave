@@ -49,7 +49,7 @@ CACHE = BENCH / ".cache"
 TOOLS = CACHE / "tools"
 RESULTS = BENCH / "results"
 
-REF_KINDS = {0: "calls", 1: "instantiates", 2: "extends", 3: "implements", 4: "references", 7: "passes"}
+REF_KINDS = {0: "calls", 1: "instantiates", 2: "extends", 3: "implements", 4: "references", 6: "reads", 7: "passes"}
 TYPE_KINDS = {3, 4, 5, 6, 7, 16, 18}  # class struct interface trait enum type_alias union
 CTOR_NAMES = {"constructor", "__init__", "new", "<init>", "<constructor>", "__new__"}
 LINE_WINDOW = 8  # member-call refs are recorded at the receiver's line; the name may sit lower
@@ -282,7 +282,7 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
     # route -> handler (`handles`) edges are synthesized without a call site, so they aren't scored
     refs = con.execute("""SELECT f.path, r.line, r.name, r.kind, r.target_id, r.qualifier, r.confidence FROM refs r
                           JOIN files f ON f.id = r.file_id
-                          WHERE r.kind IN (0, 1, 2, 3, 4, 7) ORDER BY f.path, r.line""").fetchall()
+                          WHERE r.kind IN (0, 1, 2, 3, 4, 6, 7) ORDER BY f.path, r.line""").fetchall()
     truth_files = {d.path for d in docs}
     for path, line, name, kind, target, qual, conf in refs:
         if path not in truth_files:  # the indexer didn't cover this file (outside tsconfig, testdata, …)

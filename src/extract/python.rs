@@ -53,7 +53,17 @@ impl LangHooks for Py {
             "function_definition" => {
                 let name = cx.field_text(n, "name").unwrap_or("");
                 let in_class = cx.cur().kind == NodeKind::Class;
+                // @property / @cached_property / @x.setter: an accessor, read like a field
+                let is_prop = in_class && n.parent().filter(|p| p.kind() == "decorated_definition").is_some_and(|p| {
+                    let mut c = p.walk();
+                    p.named_children(&mut c).filter(|x| x.kind() == "decorator").any(|d| {
+                        let t = cx.text(d).trim_start_matches('@').trim();
+                        let last = t.rsplit('.').next().unwrap_or(t);
+                        matches!(last, "property" | "cached_property" | "setter" | "getter" | "deleter" | "hybrid_property" | "computed_field")
+                    })
+                });
                 let kind = match (in_class, name) {
+                    (true, _) if is_prop => NodeKind::Property,
                     (true, "__init__") => NodeKind::Constructor,
                     (true, _) => NodeKind::Method,
                     _ => NodeKind::Function,
@@ -171,6 +181,18 @@ impl LangHooks for Py {
                 if let Some(f) = n.child_by_field_name("function") && let Some((q, name)) = callee_parts(cx, f) {
                     let kind = if q.is_none() && name.chars().next().is_some_and(|c| c.is_uppercase()) { RefKind::Instantiate } else { RefKind::Call };
                     cx.add_ref(kind, name, q.map(short_qual), f);
+                }
+                Visit::Continue
+            }
+            // `obj.prop` read (not a call target, not an assignment target): links to accessors
+            "attribute" => {
+                let parent = n.parent();
+                let is_callee = parent.is_some_and(|p| p.kind() == "call" && p.child_by_field_name("function").is_some_and(|f| f.id() == n.id()));
+                let is_target = parent.is_some_and(|p| matches!(p.kind(), "assignment" | "augmented_assignment") && p.child_by_field_name("left").is_some_and(|l| l.id() == n.id()));
+                if !is_callee && !is_target
+                    && let (Some(o), Some(a)) = (n.child_by_field_name("object"), n.child_by_field_name("attribute")) {
+                    let (o, a) = (cx.text(o), cx.text(a));
+                    cx.add_ref(RefKind::Read, a, Some(short_qual(o)), n.child_by_field_name("attribute").unwrap());
                 }
                 Visit::Continue
             }

@@ -10,6 +10,7 @@ class Service:
     def get(self, id):
         u = self.repo.find(id)
         u.greet()
+        print(u.display)
         a = models.Admin("x")
         a.greet()
         os.path.join("a", "b")

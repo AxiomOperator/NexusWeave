@@ -81,7 +81,9 @@ fn want_for(kind: RefKind) -> fn(NodeKind) -> bool {
         RefKind::Instantiate => |k| k.is_type() || k == NodeKind::Function,
         RefKind::Extends | RefKind::Implements => |k| k.is_type(),
         RefKind::TypeRef => |k| k.is_type() || matches!(k, NodeKind::Namespace | NodeKind::Module | NodeKind::EnumMember),
-        RefKind::Read | RefKind::Import => |k| k != NodeKind::File,
+        // property reads only link to accessors / declared properties (fields would explode the graph)
+        RefKind::Read => |k| k == NodeKind::Property,
+        RefKind::Import => |k| k != NodeKind::File,
         // a bare name passed as a value: a function, or a class (`isinstance(x, Foo)`, `register(Foo)`)
         RefKind::Callback => |k| k.is_callable() || k.is_type() && k != NodeKind::TypeAlias,
         RefKind::Overrides | RefKind::Dispatch | RefKind::Handles => |k| k.is_callable(),
@@ -139,6 +141,16 @@ const COMMON_METHODS: &[&str] = &[
     "subscribe", "dispatch", "render", "use", "query", "fetch", "list", "test", "match", "some", "every", "includes",
     "indexOf", "concat", "Add", "Get", "Set", "Remove", "ToString", "Equals", "Count", "String", "Error", "Close", "Write",
     "Read", "Len", "each", "assert", "assertEqual", "assertEquals", "to", "with", "is", "exists", "value", "data", "name",
+    // Python builtins (dict/list/str/set/bytes) — receivers of unknown type are usually these
+    "setdefault", "popitem", "fromkeys", "remove", "discard", "union", "intersection", "difference", "issubset",
+    "startswith", "endswith", "lstrip", "rstrip", "splitlines", "partition", "rpartition", "casefold", "isdigit",
+    "isalpha", "zfill", "ljust", "rjust", "center", "expandtabs", "translate", "maketrans", "hex", "tobytes",
+    // JS builtins (Array/String/Map/Set/Promise/Object)
+    "flatMap", "findIndex", "findLast", "lastIndexOf", "fill", "splice", "shift", "unshift", "at", "flat", "padStart",
+    "padEnd", "trimStart", "trimEnd", "toLowerCase", "toUpperCase", "charAt", "charCodeAt", "codePointAt", "localeCompare",
+    "normalize", "repeat", "search", "substring", "finally", "toJSON", "valueOf", "hasOwnProperty", "assign", "freeze",
+    // Go stdlib interfaces
+    "Unwrap", "Is", "As", "Flush", "Seek", "ReadFrom", "WriteTo", "WriteString", "ServeHTTP", "Header", "Status",
 ];
 
 impl<'a> Rx<'a> {
@@ -524,7 +536,7 @@ impl<'a> Rx<'a> {
             return None; // external Go package
         }
         if segs.len() == 1 && self.is_external_binding(r.file, segs[0]) { return None; }
-        if r.kind == RefKind::Callback { return None; }
+        if matches!(r.kind, RefKind::Callback | RefKind::Read) { return None; }
         self.global(r.file, &r.name, want, Some(q))
     }
 
@@ -909,7 +921,7 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
             for (i, r) in pending_rows.iter().enumerate() {
                 let (t, c, o, v, m) = by_id[i + 1];
                 // most bare-name arguments are plain values; keep only the ones that are functions
-                if r.kind == RefKind::Callback && t.is_none() { continue; }
+                if matches!(r.kind, RefKind::Callback | RefKind::Read) && t.is_none() { continue; }
                 ins.execute(rusqlite::params![i as i64 + 1, r.file_id, r.src_id, r.kind as i64, r.name, crate::db::name_hash(&r.name), r.qualifier, r.recv_type, r.line, r.col, t, c, o, v, m])?;
             }
         }
@@ -965,7 +977,7 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
     }
     if !new_files.is_empty() {
         let list = new_files.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-        tx.execute_batch(&format!("DELETE FROM refs WHERE kind = 7 AND target_id IS NULL AND file_id IN ({list})"))?;
+        tx.execute_batch(&format!("DELETE FROM refs WHERE kind IN (6, 7) AND target_id IS NULL AND file_id IN ({list})"))?;
     }
     if want_cache && let Some(idx) = refidx.as_mut() && !new_files.is_empty() {
         let list = new_files.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
