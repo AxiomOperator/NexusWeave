@@ -112,7 +112,8 @@ impl Graph {
             let strength = if t.is_symbol { 12.0 } else { 3.0 } / (n as f64).sqrt();
             for s in defs.into_iter().take(if t.is_symbol { 4 } else { 2 }) {
                 let w = if s.is_test { strength * 0.4 } else { strength };
-                seeds.push(Seed { sym: s, score: w, named: t.is_symbol });
+                // any exact definition match is a flow endpoint, even a plain word like `audit`
+                seeds.push(Seed { sym: s, score: w, named: true });
             }
         }
         let words: Vec<&QueryToken> = tokens.iter().collect();
