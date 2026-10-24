@@ -732,7 +732,7 @@ const graph = (() => {
 // ======================================================================= drawer
 const drawer = (() => {
   const el = $("#drawer"), body = $("#dbody");
-  let stack = [], cur = null;
+  let stack = [], cur = null, seq = 0;
   const isOpen = () => el.classList.contains("open");
   function open(item, push = true) {
     if (push && cur && !(cur.type === item.type && cur.key === item.key)) stack.push(cur);
@@ -741,9 +741,12 @@ const drawer = (() => {
     body.scrollTop = 0;
     body.innerHTML = `<div class="skel" style="height:22px;width:60%;margin:8px 0"></div><div class="skel" style="height:14px;width:80%;margin:10px 0"></div><div class="skel" style="height:220px;margin-top:18px"></div>`;
     const render = item.type === "sym" ? renderSym : item.type === "file" ? renderFile : renderDir;
-    render(item.key, item.line).catch(e => { body.innerHTML = errBox(e); });
+    // renders are async: only the latest open() may write (a slow earlier one must not overwrite it)
+    const mine = ++seq;
+    const live = () => mine === seq && isOpen();
+    render(item.key, item.line, live).catch(e => { if (live()) body.innerHTML = errBox(e); });
   }
-  function close() { el.classList.remove("open"); stack = []; cur = null; }
+  function close() { el.classList.remove("open"); stack = []; cur = null; seq++; }
   $("#dclose").onclick = close;
   $("#dback").onclick = () => { const p = stack.pop(); if (p) open(p, false); };
   const sec = (title, n, inner, closed = false) => `<div class="sec${closed ? " closed" : ""}"><div class="sh"><h4>${title}</h4>${n != null ? `<span class="n">${fmt(n)}</span>` : ""}${ICON.chev}</div><div class="sb">${inner}</div></div>`;
@@ -765,12 +768,13 @@ const drawer = (() => {
     const x = key ? e[key] : e;
     return `<li data-id="${x.id}" title="${esc((x.qname || x.name) + "  ·  " + x.path)}">${kindDot(x.kind)}<span class="name">${esc(label(x))}</span>${e.kind && key ? `<span class="ek">${esc(e.kind)}</span>` : ""}<span class="path">${esc(x.path.split("/").slice(-2).join("/"))}:${e.line || x.line}</span></li>`;
   }).join("")}</ul>`;
-  async function renderSym(id) {
+  async function renderSym(id, _line, live) {
     const d = await api("/api/node", {id});
     const s = d.sym;
     const span = Math.min(s.end, s.line + 400);
     const src = await api("/api/source", {path: s.path, from: s.line, to: span}).catch(() => ({lines: []}));
     const qn = (s.qname || "").replace(/::/g, ".");
+    if (!live()) return;
     body.innerHTML = `
       <div style="display:flex;gap:6px;flex-wrap:wrap">${kindBadge(s.kind)}${s.exported ? '<span class="badge" style="--c:var(--ok)">exported</span>' : ""}${s.test ? '<span class="badge" style="--c:var(--warn)">test</span>' : ""}</div>
       <h2>${esc(label(s))}</h2>
@@ -792,7 +796,7 @@ const drawer = (() => {
       ${src.lines?.length ? sec("Source", src.lines.length, codeBlock(src.lines, s.line, s.path) + (s.end > span ? `<p class="muted">… ${fmt(s.end - span)} more lines — <a data-file="${esc(s.path)}">open the file</a></p>` : "")) : ""}
       ${!d.callers.length && !d.callees.length && !d.children.length ? `<p class="muted" style="margin-top:16px">No resolved relationships for this symbol.</p>` : ""}`;
   }
-  async function renderFile(path, line = 0) {
+  async function renderFile(path, line = 0, live) {
     const [f, fc] = await Promise.all([api("/api/file", {path}), api("/api/filecode", {path})]);
     const byLine = {};
     for (const r of fc.refs || []) (byLine[r.line] = byLine[r.line] || []).push(r);
@@ -809,6 +813,7 @@ const drawer = (() => {
       return out + highlight(text.slice(pos), f.path);
     };
     const syms = f.symbols.filter(x => x.kind !== "file");
+    if (!live()) return;
     const plist = ps => `<ul class="row-list">${ps.slice(0, 200).map(p => `<li data-file="${esc(p)}">${ICON.file.replace("<svg", '<svg style="width:14px;height:14px;color:var(--muted)"')}<span class="path" style="margin:0;max-width:none">${esc(p)}</span></li>`).join("")}</ul>${ps.length > 200 ? `<p class="muted">… and ${fmt(ps.length - 200)} more</p>` : ""}`;
     body.innerHTML = `
       <div>${kindBadge("file")}</div>
@@ -821,8 +826,9 @@ const drawer = (() => {
       ${sec("Code", null, `<p class="muted" style="margin:0 0 8px;font-size:12.5px">Underlined names link to their definitions.</p>` + codeBlock(fc.lines || [], 1, f.path, {render, mark: line ? [line, line] : []}))}`;
     if (line) body.querySelector("pre.code .l.mark")?.scrollIntoView({block: "center"});
   }
-  async function renderDir(dir) {
+  async function renderDir(dir, _line, live) {
     const d = await api("/api/dir", {path: dir});
+    if (!live()) return;
     const max = Math.max(1, ...d.files.map(x => x.symbols));
     body.innerHTML = `<div><span class="badge" style="--c:var(--accent)">directory</span></div><h2 class="mono" style="font-size:15px">${esc(dir)}/</h2>
       <div class="loc muted">${fmt(d.files.length)}${d.files.length >= 400 ? "+" : ""} files, largest first</div>
@@ -930,6 +936,11 @@ async function viewGraph(id) {
     const g = await api("/api/graph", {id, depth: $("#depth").value, limit: 90, tests: $("#tests").checked ? 1 : 0});
     if (seq !== graphSeq) return;
     const root = g.nodes.find(n => n.id === id);
+    if (!root) {
+      // ids change when the project is re-indexed, so old links can point nowhere
+      $("#groot").innerHTML = `<span class="hint">That symbol isn't in the index any more (it was re-indexed or removed). Search to pick another.</span>`;
+      graphRoot = null; graph.set([], []); drawer.close(); return;
+    }
     $("#groot").innerHTML = root ? `${kindBadge(root.kind)}<span class="name" title="${esc(root.qname)}">${esc(label(root))}</span><span class="hint">${fmt(g.nodes.length - 1)} neighbors${auto ? " · a central function — search or double-click a node to move" : " · double-click a node to re-center"}</span>` : "";
     $("#subtitle").textContent = root ? `${root.path}:${root.line}` : "";
     graph.set(g.nodes, g.edges, {mode: "calls", root: id});
