@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo test --release
+
+  accuracy:
+    # Resolution accuracy against compiler-grade SCIP indexes; fails on precision/recall regressions.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          # indexers, checkouts and ground-truth SCIP indexes are keyed by the pinned versions/commits
+          path: bench/.cache
+          key: bench-${{ hashFiles('bench/setup.sh', 'bench/corpus.toml') }}
+      - run: cargo build --release
+      - run: bench/setup.sh
+      - run: python3 bench/accuracy.py --check bench/baseline.json
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accuracy-report
+          path: |
+            bench/results/latest.json
+            bench/.cache/reports/

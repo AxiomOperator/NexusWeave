@@ -1,0 +1,56 @@
+# Accuracy benchmark corpus. Every entry is pinned to a commit so results are comparable
+# across xgraph versions. `indexer` produces the ground truth (a SCIP index).
+#
+#   indexer = "scip-typescript" | "scip-python" | "scip-go" | "rust-analyzer"
+#   args    = extra indexer arguments
+#   prepare = shell commands run once in the checkout before indexing (dependency fetches)
+
+[[repo]]
+name = "hono"
+lang = "typescript"
+url = "https://github.com/honojs/hono"
+commit = "5ca49b0720755c585c9a9835f0a479ceea36fb52"
+indexer = "scip-typescript"
+
+[[repo]]
+name = "codegraph"
+lang = "typescript"
+url = "https://github.com/colbymchenry/codegraph"
+commit = "3a93f57ae1796b47cf6f27e8685e58de957392c3"
+indexer = "scip-typescript"
+
+[[repo]]
+name = "express"
+lang = "javascript"
+url = "https://github.com/expressjs/express"
+commit = "1c6f1b0fe4000977b9a7b4f34097e4d527dd9824"
+indexer = "scip-typescript"
+args = ["--infer-tsconfig"]
+
+[[repo]]
+name = "flask"
+lang = "python"
+url = "https://github.com/pallets/flask"
+commit = "d086db856be187255b8ec61ef409357393020f32"
+indexer = "scip-python"
+
+[[repo]]
+name = "httpx"
+lang = "python"
+url = "https://github.com/encode/httpx"
+commit = "b5addb64f0161ff6bfe94c124ef76f6a1fba5254"
+indexer = "scip-python"
+
+[[repo]]
+name = "gin"
+lang = "go"
+url = "https://github.com/gin-gonic/gin"
+commit = "0f09c3a9b4626d9fe9979cf4d0521d6ae32ab646"
+indexer = "scip-go"
+
+[[repo]]
+name = "ripgrep"
+lang = "rust"
+url = "https://github.com/BurntSushi/ripgrep"
+commit = "6892bc2b7efe5909cbbeec8f757ed2c4c76b1d30"
+indexer = "rust-analyzer"

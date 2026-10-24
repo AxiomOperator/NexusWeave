@@ -1,0 +1,10 @@
+Server.Handle -> Repo.Find
+Server.Handle -> User.Greet
+Server.Handle -> helper
+Repo.Find -> NewUser
+main -> Server.Handle
+main -> Server
+main -> run
+util -> helper
+!Server.Handle -> Println
+GET /users/:id -> handleUser

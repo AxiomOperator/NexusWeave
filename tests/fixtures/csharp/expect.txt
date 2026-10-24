@@ -1,0 +1,9 @@
+UserService.Get -> IRepo.Find
+UserService.Get -> User.Greet
+User -> IEntity
+!UserService.Get -> WriteLine
+Startup.Configure -> Extensions.AddApp
+Startup.Configure -> Extensions.Shout
+Extensions.Shout -> User.Greet
+GET /api/Users/{id} -> UsersController.Get
+SqlRepo.Find -> IRepo.Find

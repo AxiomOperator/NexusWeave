@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xgraph</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6b66; --line: #e3e2dd; --accent: #2f6fdb;
+  --code: #fbfbf9; --hl: #fff4c2; --edge: #b9b8b2;
+  --k-fn: #2f6fdb; --k-type: #c2562f; --k-iface: #8a4fd0; --k-var: #2f8f5b; --k-file: #77756e; --k-other: #a08a2a;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #161615; --panel: #1f1f1d; --ink: #e9e8e3; --muted: #9b9a93; --line: #34332f; --accent: #6fa0ff;
+    --code: #1a1a18; --hl: #4a4220; --edge: #55544e;
+    --k-fn: #6fa0ff; --k-type: #f08a5d; --k-iface: #b88cf0; --k-var: #5fc48c; --k-file: #9b9a93; --k-other: #d6bd55; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; gap: 12px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: relative; z-index: 5; }
+header b { font-size: 15px; letter-spacing: .2px; }
+nav { display: flex; gap: 4px; }
+nav button { border: 0; background: none; color: var(--muted); padding: 6px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
+nav button.on { background: var(--bg); color: var(--ink); }
+#q { flex: 1; max-width: 520px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--ink); font: inherit; }
+#stats { color: var(--muted); font-size: 12px; margin-left: auto; white-space: nowrap; }
+#sugg { position: absolute; top: 46px; left: 0; width: min(620px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.15); max-height: 60vh; overflow: auto; display: none; }
+#sugg div { padding: 7px 12px; cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
+#sugg div:hover, #sugg div.sel { background: var(--bg); }
+.kind { font-size: 11px; padding: 1px 6px; border-radius: 4px; border: 1px solid currentColor; opacity: .85; white-space: nowrap; }
+.path { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+main { display: grid; grid-template-columns: 1fr minmax(360px, 42%); height: calc(100% - 51px); }
+#stage { position: relative; overflow: hidden; }
+canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+#legend { position: absolute; left: 12px; bottom: 10px; font-size: 12px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; }
+#gopts { position: absolute; right: 12px; top: 10px; display: flex; gap: 12px; font-size: 12px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; }
+#gopts select { font: inherit; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 4px; }
+#legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; background: var(--c); }
+aside { border-left: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 16px 18px 40px; }
+aside h2 { margin: 0 0 4px; font-size: 17px; word-break: break-word; }
+aside h3 { margin: 18px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+.sig { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; background: var(--code); padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); overflow-x: auto; white-space: pre; }
+.doc { color: var(--muted); margin: 8px 0; }
+pre.src { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 8px 0; overflow: auto; max-height: 52vh; margin: 0; }
+pre.src span.ln { display: inline-block; width: 4.2em; text-align: right; padding-right: 1em; color: var(--muted); user-select: none; }
+ul.list { list-style: none; padding: 0; margin: 0; }
+ul.list li { padding: 4px 6px; border-radius: 5px; cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
+ul.list li:hover { background: var(--bg); }
+a { color: var(--accent); cursor: pointer; text-decoration: none; }
+.empty { color: var(--muted); padding: 40px 0; text-align: center; }
+.tool { padding: 16px; display: flex; flex-direction: column; gap: 10px; height: 100%; overflow: auto; }
+.tool input, .tool textarea { padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--ink); font: inherit; }
+.tool button { align-self: flex-start; padding: 7px 14px; border-radius: 7px; border: 1px solid var(--accent); background: var(--accent); color: white; cursor: pointer; font: inherit; }
+.tool pre { white-space: pre-wrap; font: 12.5px/1.5 ui-monospace, Menlo, monospace; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 12px; margin: 0; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.row input { flex: 1; min-width: 160px; }
+.chain li { cursor: pointer; padding: 6px 0; }
+@media (max-width: 860px) {
+  main { grid-template-columns: 1fr; grid-template-rows: 46% 54%; }
+  aside { border-left: 0; border-top: 1px solid var(--line); }
+  #stats { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <b>xgraph</b>
+  <nav><button data-v="graph" class="on">Graph</button><button data-v="modules">Modules</button><button data-v="flow">Flow</button><button data-v="explore">Explore</button></nav>
+  <input id="q" placeholder="Search symbols…  (/ to focus)" autocomplete="off">
+  <div id="sugg"></div>
+  <span id="stats"></span>
+</header>
+<main>
+  <div id="stage"><canvas id="cv"></canvas><div id="legend"></div><div id="gopts"><label>depth <select id="depth"><option>1</option><option>2</option></select></label><label><input type="checkbox" id="tests"> tests</label></div><div id="tool" class="tool" style="display:none"></div></div>
+  <aside id="side"><div class="empty">Search for a symbol to start.<br>Click nodes to navigate; drag to move; scroll to zoom.</div></aside>
+</main>
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const api = (p, q = {}) => fetch(p + "?" + new URLSearchParams(q)).then(r => r.json());
+const kindVar = k => ({function:"--k-fn",method:"--k-fn",constructor:"--k-fn",macro:"--k-fn",class:"--k-type",struct:"--k-type",enum:"--k-type",union:"--k-type",
+  type_alias:"--k-type",interface:"--k-iface",trait:"--k-iface",variable:"--k-var",constant:"--k-var",field:"--k-var",property:"--k-var",enum_member:"--k-var",file:"--k-file"}[k] || "--k-other");
+const kindColor = k => css(kindVar(k));
+const label = s => { const q = (s.qname || s.name).replace(/::/g, "."); const p = q.split("."); return s.kind !== "file" && p.length > 1 ? p.slice(-2).join(".") : s.name; };
+const kindTag = k => `<span class="kind" style="color:var(${kindVar(k)})">${esc(k)}</span>`;
+
+// ---------- stats
+api("/api/stats").then(s => { $("#stats").textContent = `${s.files} files · ${s.symbols} symbols · ${s.resolved_edges} edges`; });
+
+// ---------- search
+let suggIdx = -1, suggItems = [], timer;
+$("#q").addEventListener("input", e => {
+  clearTimeout(timer);
+  const v = e.target.value.trim();
+  if (!v) return hideSugg();
+  timer = setTimeout(async () => {
+    suggItems = await api("/api/search", {q: v, limit: 20});
+    suggIdx = -1;
+    $("#sugg").innerHTML = suggItems.map((s, i) => `<div data-i="${i}">${kindTag(s.kind)}<span>${esc(label(s))}</span><span class="path">${esc(s.path)}:${s.line}</span></div>`).join("") || `<div class="path">no matches</div>`;
+    $("#sugg").style.display = "block";
+  }, 120);
+});
+$("#q").addEventListener("keydown", e => {
+  const n = suggItems.length;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); suggIdx = (suggIdx + (e.key === "ArrowDown" ? 1 : -1) + n) % n; [...$("#sugg").children].forEach((c, i) => c.classList.toggle("sel", i === suggIdx)); }
+  if (e.key === "Enter" && n) { go(suggItems[Math.max(0, suggIdx)].id); }
+  if (e.key === "Escape") hideSugg();
+});
+$("#sugg").addEventListener("click", e => { const d = e.target.closest("[data-i]"); if (d) go(suggItems[+d.dataset.i].id); });
+document.addEventListener("keydown", e => { if (e.key === "/" && document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "TEXTAREA") { e.preventDefault(); $("#q").focus(); } });
+document.addEventListener("click", e => { if (!e.target.closest("header")) hideSugg(); });
+function hideSugg() { $("#sugg").style.display = "none"; }
+function go(id) { hideSugg(); location.hash = "#/sym/" + id; }
+
+// ---------- views
+let view = "graph";
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => setView(b.dataset.v));
+function setView(v) {
+  view = v;
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
+  const tool = $("#tool"), cv = $("#cv");
+  tool.style.display = (v === "flow" || v === "explore") ? "flex" : "none";
+  cv.style.display = (v === "graph" || v === "modules") ? "block" : "none";
+  $("#gopts").style.display = v === "graph" ? "flex" : "none";
+  $("#legend").style.display = (v === "graph" || v === "modules") ? "flex" : "none";
+  if (v === "modules") loadModules();
+  if (v === "graph" && current) loadGraph(current);
+  if (v === "flow") tool.innerHTML = `<div class="row"><input id="ff" placeholder="from symbol (e.g. handleRequest)"><input id="ft" placeholder="to symbol (e.g. Db.query)"></div><button id="fgo">Find call path</button><ol id="fout" class="chain"></ol>`,
+    $("#fgo").onclick = async () => { const r = await api("/api/flow", {from: $("#ff").value, to: $("#ft").value});
+      $("#fout").innerHTML = r.path.length ? r.path.map(s => `<li data-id="${s.id}">${kindTag(s.kind)} <b>${esc(label(s))}</b> <span class="path">${esc(s.path)}:${s.line}</span></li>`).join("") : `<li class="path">No call path found (within 12 hops).</li>`;
+      $("#fout").onclick = e => { const li = e.target.closest("[data-id]"); if (li) openSide(+li.dataset.id); }; };
+  if (v === "explore") tool.innerHTML = `<textarea id="eq" rows="3" placeholder="Ask like an agent would: how does UserService.login validate the token?"></textarea><button id="ego">Explore</button><pre id="eout" class="path">The same output the xgraph_explore MCP tool returns.</pre>`,
+    $("#ego").onclick = async () => { $("#eout").textContent = "…"; const r = await api("/api/explore", {q: $("#eq").value}); $("#eout").textContent = r.text || r.error; };
+  resize();
+}
+
+// ---------- force layout
+const cv = $("#cv"), ctx = cv.getContext("2d");
+let nodes = [], links = [], byId = new Map(), cam = {x: 0, y: 0, k: 1}, drag = null, hover = null, alpha = 0, rootId = null, moduleMode = false;
+function resize() { const r = cv.parentElement.getBoundingClientRect(); const d = devicePixelRatio || 1; cv.width = r.width * d; cv.height = r.height * d; ctx.setTransform(d, 0, 0, d, 0, 0); draw(); }
+addEventListener("resize", resize);
+function setGraph(ns, ls, root) {
+  const old = new Map(nodes.map(n => [n.id, n]));
+  const counts = {};
+  nodes = ns.map((n, i) => {
+    const o = old.get(n.id), side = n.dir || 0, slot = (counts[side] = (counts[side] || 0) + 1);
+    const x0 = side * 230 * (n.depth || 1) + (Math.random() - .5) * 40, y0 = (slot % 2 ? 1 : -1) * Math.ceil(slot / 2) * 26;
+    return Object.assign(n, {x: o ? o.x : (moduleMode ? Math.cos(i * 2.4) * (40 + i * 3) : x0), y: o ? o.y : (moduleMode ? Math.sin(i * 2.4) * (40 + i * 3) : y0), vx: 0, vy: 0});
+  });
+  byId = new Map(nodes.map(n => [n.id, n]));
+  links = ls.filter(l => byId.has(l.source) && byId.has(l.target)).map(l => ({...l, s: byId.get(l.source), t: byId.get(l.target)}));
+  rootId = root; alpha = 1; cam = {x: 0, y: 0, k: 1}; tick();
+}
+function tick() {
+  if (alpha < 0.02) { draw(); return; }
+  const n = nodes.length;
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+    const a = nodes[i], b = nodes[j]; let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy + .01;
+    const f = (moduleMode ? 2600 : 1500) / d2; const d = Math.sqrt(d2); dx /= d; dy /= d;
+    a.vx -= dx * f; a.vy -= dy * f; b.vx += dx * f; b.vy += dy * f;
+  }
+  for (const l of links) {
+    const dx = l.t.x - l.s.x, dy = l.t.y - l.s.y, d = Math.sqrt(dx * dx + dy * dy) || 1, f = (d - (moduleMode ? 120 : 80)) * .02;
+    l.s.vx += dx / d * f; l.s.vy += dy / d * f; l.t.vx -= dx / d * f; l.t.vy -= dy / d * f;
+  }
+  for (const a of nodes) {
+    if (!moduleMode && a.dir) a.vx += ((a.dir * 230 * (a.depth || 1)) - a.x) * .03; // callers left, callees right
+    a.vx -= a.x * (moduleMode ? .004 : .001); a.vy -= a.y * .004;
+    if (a === drag?.node) continue;
+    a.x += a.vx * alpha; a.y += a.vy * alpha; a.vx *= .6; a.vy *= .6;
+  }
+  alpha *= .985; draw(); requestAnimationFrame(tick);
+}
+function radius(n) { return moduleMode ? 6 + Math.sqrt(n.symbols || 1) * .9 : (n.id === rootId ? 9 : 6); }
+function toScreen(n) { const r = cv.getBoundingClientRect(); return [r.width / 2 + (n.x + cam.x) * cam.k, r.height / 2 + (n.y + cam.y) * cam.k]; }
+function draw() {
+  const r = cv.getBoundingClientRect(); ctx.clearRect(0, 0, r.width, r.height);
+  ctx.lineWidth = 1;
+  for (const l of links) {
+    const [x1, y1] = toScreen(l.s), [x2, y2] = toScreen(l.t);
+    const hot = hover && (l.s === hover || l.t === hover);
+    ctx.strokeStyle = hot ? css("--accent") : css("--edge");
+    ctx.setLineDash(l.kind === "references" ? [3, 3] : []);
+    ctx.lineWidth = moduleMode ? Math.min(6, 0.5 + Math.log2(1 + (l.weight || 1)) * .5) : (l.kind === "extends" || l.kind === "implements" ? 2 : 1);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    if (!moduleMode) { // arrow head
+      const a = Math.atan2(y2 - y1, x2 - x1), rr = radius(l.t) * cam.k + 2;
+      const ax = x2 - Math.cos(a) * rr, ay = y2 - Math.sin(a) * rr;
+      ctx.setLineDash([]); ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax - Math.cos(a - .4) * 7, ay - Math.sin(a - .4) * 7); ctx.lineTo(ax - Math.cos(a + .4) * 7, ay - Math.sin(a + .4) * 7); ctx.closePath(); ctx.fillStyle = ctx.strokeStyle; ctx.fill();
+    }
+  }
+  ctx.setLineDash([]);
+  ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+  for (const n of nodes) {
+    const [x, y] = toScreen(n), rr = radius(n) * Math.max(.6, cam.k);
+    ctx.beginPath(); ctx.arc(x, y, rr, 0, 7);
+    ctx.fillStyle = moduleMode ? css("--k-file") : kindColor(n.kind); ctx.fill();
+    if (n.id === rootId || n === hover) { ctx.lineWidth = 2.5; ctx.strokeStyle = css("--ink"); ctx.stroke(); }
+    if (cam.k > .9 || n === hover || n.id === rootId || nodes.length < 60 || (!moduleMode && n.depth === 1)) {
+      ctx.fillStyle = css("--ink"); ctx.globalAlpha = n.test ? .55 : 1;
+      const t = moduleMode ? n.id : label(n);
+      if (!moduleMode && n.dir < 0) { ctx.textAlign = "right"; ctx.fillText(t, x - rr - 4, y + 4); ctx.textAlign = "left"; }
+      else ctx.fillText(t, x + rr + 4, y + 4);
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+function hit(ev) {
+  const r = cv.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
+  let best = null, bd = 1e9;
+  for (const n of nodes) { const [x, y] = toScreen(n), d = (x - mx) ** 2 + (y - my) ** 2; if (d < bd && d < (radius(n) * cam.k + 6) ** 2) { bd = d; best = n; } }
+  return best;
+}
+cv.addEventListener("mousedown", ev => { const n = hit(ev); drag = {node: n, x: ev.clientX, y: ev.clientY, moved: false}; cv.style.cursor = "grabbing"; });
+addEventListener("mousemove", ev => {
+  if (drag) {
+    const dx = (ev.clientX - drag.x) / cam.k, dy = (ev.clientY - drag.y) / cam.k; drag.x = ev.clientX; drag.y = ev.clientY;
+    if (Math.abs(dx) + Math.abs(dy) > .5) drag.moved = true;
+    if (drag.node) { drag.node.x += dx; drag.node.y += dy; alpha = Math.max(alpha, .3); tick(); } else { cam.x += dx; cam.y += dy; draw(); }
+  } else if (ev.target === cv) { const h = hit(ev); if (h !== hover) { hover = h; cv.style.cursor = h ? "pointer" : "grab"; draw(); } }
+});
+addEventListener("mouseup", () => {
+  if (drag && !drag.moved && drag.node) { if (moduleMode) { $("#q").value = drag.node.id + "/"; } else go(drag.node.id); }
+  drag = null; cv.style.cursor = "grab";
+});
+cv.addEventListener("wheel", ev => { ev.preventDefault(); cam.k = Math.min(4, Math.max(.15, cam.k * (ev.deltaY < 0 ? 1.12 : 0.89))); draw(); }, {passive: false});
+
+const legendHTML = [["function", "callable"], ["class", "type"], ["interface", "interface / trait"], ["variable", "value"], ["file", "file"]].map(([k, t]) => `<span style="--c:var(${kindVar(k)})">${t}</span>`).join("") + `<span style="--c:transparent">dashed = type reference</span>`;
+
+async function loadGraph(id) {
+  moduleMode = false; $("#legend").innerHTML = legendHTML;
+  const g = await api("/api/graph", {id, depth: +($("#depth")?.value || 1), limit: 70, tests: $("#tests")?.checked ? 1 : 0});
+  setGraph(g.nodes, g.edges, id);
+}
+async function loadModules() {
+  moduleMode = true; $("#legend").innerHTML = `<span style="--c:var(--k-file)">directory (size = symbols)</span><span style="--c:transparent">line weight = cross-directory references</span>`;
+  const m = await api("/api/modules", {depth: 2});
+  const top = new Set(m.modules.sort((a, b) => b.symbols - a.symbols).slice(0, 80).map(x => x.id));
+  setGraph(m.modules.filter(x => top.has(x.id)), m.links.filter(l => top.has(l.source) && top.has(l.target)), null);
+}
+
+// ---------- side panel
+let current = null;
+async function openSide(id) {
+  const d = await api("/api/node", {id});
+  if (d.error) { $("#side").innerHTML = `<div class="empty">${esc(d.error)}</div>`; return; }
+  const s = d.sym;
+  const src = await api("/api/source", {path: s.path, from: s.line, to: Math.min(s.end, s.line + 300)});
+  const lines = (src.lines || []).map((l, i) => `<span class="ln">${s.line + i}</span>${esc(l)}`).join("\n");
+  const list = (title, items, key = "sym") => items.length ? `<h3>${title} (${items.length})</h3><ul class="list">${items.map(e => { const x = key ? e[key] : e; return `<li data-id="${x.id}">${kindTag(x.kind)}<span>${esc(label(x))}</span><span class="path">${esc(x.path)}:${e.line || x.line}</span></li>`; }).join("")}</ul>` : "";
+  $("#side").innerHTML = `
+    <div>${kindTag(s.kind)} ${s.test ? '<span class="kind">test</span>' : ""}</div>
+    <h2>${esc(label(s))}</h2>
+    <div class="path"><a data-file="${esc(s.path)}">${esc(s.path)}</a>:${s.line}–${s.end}${d.parent ? ` · in <a data-id="${d.parent.id}">${esc(label(d.parent))}</a>` : ""}</div>
+    ${s.signature ? `<h3>Signature</h3><div class="sig">${esc(s.signature)}</div>` : ""}
+    ${s.doc ? `<div class="doc">${esc(s.doc)}</div>` : ""}
+    <h3>Source</h3><pre class="src">${lines}${s.end > s.line + 300 ? "\n…" : ""}</pre>
+    ${list("Supertypes", d.supertypes)}${list("Subtypes", d.subtypes)}
+    ${list("Called by", d.callers)}${list("Calls / uses", d.callees)}${list("Members", d.children, null)}`;
+  $("#side").onclick = e => {
+    const f = e.target.closest("[data-file]"); if (f) return openFile(f.dataset.file);
+    const li = e.target.closest("[data-id]"); if (li) go(+li.dataset.id);
+  };
+}
+async function openFile(path) {
+  const f = await api("/api/file", {path});
+  $("#side").innerHTML = `<div>${kindTag("file")}</div><h2>${esc(f.path)}</h2>
+    <h3>Symbols (${f.symbols.length})</h3><ul class="list">${f.symbols.map(x => `<li data-id="${x.id}">${kindTag(x.kind)}<span>${esc(label(x))}</span><span class="path">:${x.line}</span></li>`).join("")}</ul>
+    <h3>Used by (${f.dependents.length})</h3><ul class="list">${f.dependents.map(p => `<li data-file="${esc(p)}"><span class="path">${esc(p)}</span></li>`).join("")}</ul>
+    <h3>Depends on (${f.dependencies.length})</h3><ul class="list">${f.dependencies.map(p => `<li data-file="${esc(p)}"><span class="path">${esc(p)}</span></li>`).join("")}</ul>`;
+}
+
+// ---------- routing
+async function route() {
+  const m = location.hash.match(/^#\/sym\/(\d+)/);
+  if (!m) return;
+  current = +m[1];
+  if (view !== "graph") setView("graph"); else loadGraph(current);
+  openSide(current);
+}
+addEventListener("hashchange", route);
+["#depth", "#tests"].forEach(s => $(s).addEventListener("change", () => current && view === "graph" && loadGraph(current)));
+setView("graph"); route();
+</script>
+</body>
+</html>

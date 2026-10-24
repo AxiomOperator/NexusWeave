@@ -1,0 +1,7 @@
+UserService::run -> Repo::find
+UserService::run -> User::greet
+UserService::run -> Model::save
+UserService::run -> User
+User -> Model
+!UserService::run -> strlen
+GET /users -> UserService::run

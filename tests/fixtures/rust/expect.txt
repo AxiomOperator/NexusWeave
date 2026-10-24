@@ -1,0 +1,9 @@
+main -> Repo::new
+main -> Repo::find
+main -> User::greet
+main -> User::new
+main -> User::name
+main -> helper
+Repo::find -> User::new
+User -> Named
+User::name -> Named::name

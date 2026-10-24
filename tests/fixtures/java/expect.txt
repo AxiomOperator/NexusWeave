@@ -1,0 +1,11 @@
+Service.handle -> Repo.find
+Service.handle -> User.greet
+Service.handle -> Person.name
+Service.handle -> Helper.util
+User -> Person
+Repo.find -> User
+!Service.handle -> add
+GET /api/users/{id} -> UserController.get
+UserController.get -> Repo.find
+Repo.find -> Finder.find
+Dispatch.lookup -> Finder.find

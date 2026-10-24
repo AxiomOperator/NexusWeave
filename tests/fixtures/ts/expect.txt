@@ -1,0 +1,24 @@
+UserService.getUser -> MemRepo.find
+UserService.getUser -> BaseService.log
+UserService.getUser -> User.greet
+UserService.getUser -> Database.query
+UserService.getUser -> User
+UserService -> BaseService
+MemRepo -> Repo
+makeService -> UserService
+makeService -> Database
+main -> makeService
+main -> UserService.getUser
+main -> main.handler
+!main -> get
+!main -> express
+wire -> createUser
+wire -> User.greet
+wire -> MemRepo.find
+GET /users/:id -> auth
+GET /users/:id -> UserService.getUser
+GET /users/:id -> UsersController.find
+schedule -> tick
+schedule -> double
+MemRepo.find -> Repo.find
+!schedule -> setTimeout

@@ -1,0 +1,14 @@
+Service.get -> Repo.find
+Service.get -> User.greet
+Service.get -> Admin
+Service.get -> helper
+Admin.ban -> User.greet
+Admin -> User
+Repo.find -> User
+!Service.get -> join
+make_and_find -> make_repo
+make_and_find -> Repo.find
+run_factory -> User.greet
+POST /users/<id> -> create_user
+GET /health -> health
+Guest.greet -> User.greet

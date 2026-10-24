@@ -1,0 +1,313 @@
+use xgraph::*;
+
+use anyhow::{Result, bail};
+use clap::{Parser, Subcommand};
+use model::NodeKind;
+use query::Graph;
+use std::io::{IsTerminal, Read};
+use std::path::{Path, PathBuf};
+
+#[derive(Parser)]
+#[command(name = "xgraph", version, about = "Fast local code graph for AI coding agents", propagate_version = true)]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Create .xgraph/ in a project and build its graph
+    Init { path: Option<PathBuf>, #[arg(short, long)] quiet: bool },
+    /// Remove a project's .xgraph/ directory
+    Uninit { path: Option<PathBuf> },
+    /// Rebuild the graph from scratch
+    Index { path: Option<PathBuf>, #[arg(short, long)] quiet: bool },
+    /// Incrementally update the graph
+    Sync { path: Option<PathBuf>, #[arg(short, long)] quiet: bool },
+    /// Show index statistics
+    Status { path: Option<PathBuf>, #[arg(short, long)] json: bool },
+    /// Search symbols
+    #[command(alias = "search")]
+    Query { query: Vec<String>, #[arg(short, long)] kind: Option<String>, #[arg(short, long, default_value_t = 15)] limit: usize, #[arg(short, long)] json: bool },
+    /// Relevant source + call paths + blast radius in one shot
+    Explore { query: Vec<String>, #[arg(long, help = "budget in tokens")] budget: Option<usize> },
+    /// One symbol's source and relationships, or a file's contents
+    Node { target: String, #[arg(short, long)] file: Option<String>, #[arg(long)] no_code: bool },
+    /// What calls a symbol
+    Callers { symbol: String, #[arg(short, long)] file: Option<String>, #[arg(short, long, default_value_t = 30)] limit: usize, #[arg(short, long)] json: bool },
+    /// What a symbol calls
+    Callees { symbol: String, #[arg(short, long)] file: Option<String>, #[arg(short, long, default_value_t = 30)] limit: usize, #[arg(short, long)] json: bool },
+    /// What is affected by changing a symbol
+    Impact { symbol: String, #[arg(short, long)] file: Option<String>, #[arg(short, long, default_value_t = 2)] depth: u32, #[arg(short, long)] json: bool },
+    /// Test files affected by changed files (args or --stdin)
+    Affected { files: Vec<String>, #[arg(long)] stdin: bool, #[arg(short, long, default_value_t = 5)] depth: u32,
+        #[arg(short, long)] filter: Option<String>, #[arg(short, long)] json: bool, #[arg(short, long)] quiet: bool },
+    /// List indexed files
+    Files { path: Option<String>, #[arg(long)] symbols: bool },
+    /// Watch the project and keep the graph in sync
+    Watch { path: Option<PathBuf> },
+    /// Run the MCP server on stdio
+    Serve { #[arg(long)] path: Option<PathBuf>, #[arg(long)] no_watch: bool },
+    /// Open the graph viewer in a browser
+    Ui { path: Option<PathBuf>, #[arg(long, default_value_t = 7878)] port: u16, #[arg(long)] no_open: bool },
+    /// Register the MCP server with coding agents (Claude Code, Cursor, Codex, ...)
+    Install { #[arg(long)] target: Vec<String>, #[arg(long)] print: bool },
+    /// Remove the MCP server registration
+    Uninstall { #[arg(long)] target: Vec<String> },
+    /// Debug: dump extraction for a file
+    #[command(hide = true)]
+    Dump { file: PathBuf },
+    /// Debug: time warm (cached) incremental syncs after editing `file` (restores it afterwards)
+    #[command(hide = true)]
+    BenchSync { file: String, #[arg(short, long, default_value_t = 5)] n: usize },
+    /// Debug: print a file's tree-sitter syntax tree
+    #[command(hide = true)]
+    Ast { file: PathBuf },
+    /// Debug: sample unresolved refs that have same-named definitions (`miss`) or low-confidence edges (`low`)
+    #[command(hide = true)]
+    Debug { what: String, #[arg(short, long, default_value_t = 40)] n: usize, #[arg(short, long)] lang: Option<String>, #[arg(short, long)] kind: Option<String> },
+}
+
+fn root_arg(p: Option<PathBuf>) -> Result<PathBuf> {
+    let p = p.unwrap_or_else(|| PathBuf::from("."));
+    Ok(std::fs::canonicalize(&p)?)
+}
+
+fn graph_here() -> Result<Graph> { Graph::discover(Path::new(".")) }
+
+fn pick(g: &Graph, symbol: &str, file: Option<&str>) -> Result<Vec<query::Sym>> {
+    let v = g.find_symbols(symbol, file, 10)?;
+    if v.is_empty() {
+        let sugg = g.search(symbol, None, 5)?;
+        let s: Vec<String> = sugg.iter().map(|(s, _)| format!("{} ({}:{})", explore::display_name(s), s.path, s.start_line)).collect();
+        if s.is_empty() { bail!("no symbol named `{symbol}`"); }
+        bail!("no symbol named `{symbol}`. Did you mean:\n  {}", s.join("\n  "));
+    }
+    Ok(v)
+}
+
+fn print_stats(st: &index::Stats, quiet: bool) {
+    if quiet { return; }
+    eprintln!("indexed {} files ({} changed, {} removed) · {} symbols · {} refs · {} resolved · {} ms (discover {} / parse {} / resolve {})",
+        st.files_scanned, st.files_indexed, st.files_removed, st.nodes, st.refs, st.resolved, st.ms_total, st.ms_discover, st.ms_parse, st.ms_resolve);
+}
+
+fn progress(quiet: bool) -> impl FnMut(usize, usize) {
+    let tty = std::io::stderr().is_terminal() && !quiet;
+    move |d, t| if tty { eprint!("\r\x1b[2Kparsing {d}/{t}"); if d == t { eprint!("\r\x1b[2K"); } }
+}
+
+fn main() -> Result<()> {
+    // Behave like a normal Unix tool when piped into `head`.
+    #[cfg(unix)]
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL); }
+    let cli = Cli::parse();
+    match cli.cmd {
+        Cmd::Init { path, quiet } | Cmd::Index { path, quiet } => {
+            let root = root_arg(path)?;
+            let st = index::full_index(&root, progress(quiet))?;
+            print_stats(&st, quiet);
+        }
+        Cmd::Uninit { path } => {
+            let root = root_arg(path)?;
+            let d = root.join(".xgraph");
+            if d.exists() { std::fs::remove_dir_all(&d)?; eprintln!("removed {}", d.display()); } else { eprintln!("no .xgraph/ in {}", root.display()); }
+        }
+        Cmd::Sync { path, quiet } => {
+            let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).unwrap_or(root_arg(None)?) };
+            let st = index::sync(&root, None)?;
+            print_stats(&st, quiet);
+        }
+        Cmd::Status { path, json } => {
+            let g = match path { Some(p) => Graph::open(&root_arg(Some(p))?)?, None => graph_here()? };
+            let s = g.status()?;
+            if json { println!("{}", serde_json::to_string_pretty(&s)?); }
+            else {
+                println!("root       {}", s["root"].as_str().unwrap_or(""));
+                println!("files      {}", s["files"]);
+                println!("symbols    {}", s["symbols"]);
+                println!("refs       {} ({} resolved)", s["references"], s["resolved_edges"]);
+                println!("db size    {:.1} MB", s["db_bytes"].as_f64().unwrap_or(0.0) / 1e6);
+                println!("languages  {}", s["languages"]);
+                println!("kinds      {}", s["kinds"]);
+            }
+        }
+        Cmd::Query { query, kind, limit, json } => {
+            let g = graph_here()?;
+            let kind = kind.as_deref().and_then(NodeKind::parse);
+            let v = g.search(&query.join(" "), kind, limit)?;
+            if json { println!("{}", serde_json::to_string_pretty(&v.iter().map(|(s, _)| s).collect::<Vec<_>>())?); }
+            else { for (s, _) in v { println!("{:<11} {:<40} {}:{}", s.kind.as_str(), explore::display_name(&s), s.path, s.start_line); } }
+        }
+        Cmd::Explore { query, budget } => {
+            let g = graph_here()?;
+            let opts = explore::Opts { max_chars: budget.map(|t| t * 4).unwrap_or(0), ..Default::default() };
+            print!("{}", g.explore(&query.join(" "), &opts)?);
+        }
+        Cmd::Node { target, file, no_code } => {
+            let g = graph_here()?;
+            print!("{}", mcp::node_text(&g, &target, file.as_deref(), !no_code, None, None)?);
+        }
+        Cmd::Callers { symbol, file, limit, json } => edges_cmd(true, &symbol, file.as_deref(), limit, json)?,
+        Cmd::Callees { symbol, file, limit, json } => edges_cmd(false, &symbol, file.as_deref(), limit, json)?,
+        Cmd::Impact { symbol, file, depth, json } => {
+            let g = graph_here()?;
+            let defs = pick(&g, &symbol, file.as_deref())?;
+            let ids: Vec<i64> = defs.iter().map(|d| d.id).collect();
+            let v = g.impact(&ids, depth, 2000)?;
+            if json { println!("{}", serde_json::to_string_pretty(&v.iter().map(|(s, d)| serde_json::json!({"symbol": s, "depth": d})).collect::<Vec<_>>())?); }
+            else {
+                println!("impact of {} — {} dependents (depth {depth})", symbol, v.len());
+                let mut by_file: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
+                for (s, d) in &v { by_file.entry(&s.path).or_default().push(format!("{}:{} (d{d})", s.name, s.start_line)); }
+                for (f, syms) in by_file { println!("  {f}\n    {}", syms.join(", ")); }
+            }
+        }
+        Cmd::Affected { mut files, stdin, depth, filter, json, quiet } => {
+            let g = graph_here()?;
+            if stdin { let mut s = String::new(); std::io::stdin().read_to_string(&mut s)?; files.extend(s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string)); }
+            let matcher = filter.as_deref().map(glob_to_regex);
+            let is_test = |p: &str| match &matcher { Some(m) => m(p), None => index::is_test_path(p) };
+            let (tests, traversed) = g.affected_tests(&files, depth, &is_test)?;
+            if json { println!("{}", serde_json::json!({"changedFiles": files, "affectedTests": tests, "totalDependentsTraversed": traversed})); }
+            else if quiet { for t in tests { println!("{t}"); } }
+            else { println!("{} affected test files ({} files traversed)", tests.len(), traversed); for t in tests { println!("  {t}"); } }
+        }
+        Cmd::Files { path, symbols } => {
+            let g = graph_here()?;
+            let mut st = g.db.conn.prepare("SELECT path, node_count FROM files WHERE path LIKE ? ORDER BY path")?;
+            let pat = format!("{}%", path.unwrap_or_default().trim_start_matches("./"));
+            for r in st.query_map([pat], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+                let (p, n) = r?;
+                println!("{p} ({} symbols)", n - 1);
+                if symbols { for s in g.file_symbols(&p)? { if s.parent_id.is_some_and(|_| true) { println!("    {:<10} {}:{}", s.kind.as_str(), explore::display_name(&s), s.start_line); } } }
+            }
+        }
+        Cmd::Watch { path } => {
+            let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).unwrap_or(root_arg(None)?) };
+            if !db::db_path(&root).exists() { print_stats(&index::full_index(&root, progress(false))?, false); }
+            eprintln!("watching {} (ctrl-c to stop)", root.display());
+            let _w = watch::start(&root, |st| print_stats(st, false))?;
+            loop { std::thread::park(); }
+        }
+        Cmd::Serve { path, no_watch } => {
+            let root = match path { Some(p) => Some(root_arg(Some(p))?), None => query::find_root(Path::new(".")) };
+            mcp::serve(root, !no_watch)?;
+        }
+        Cmd::Ui { path, port, no_open } => {
+            let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `xgraph init`"))? };
+            ui::serve(&root, port, !no_open)?;
+        }
+        Cmd::Install { target, print } => install::install(&target, print)?,
+        Cmd::Uninstall { target } => install::uninstall(&target)?,
+        Cmd::Debug { what, n, lang, kind } => {
+            let g = graph_here()?;
+            let lang_clause = lang.as_deref().and_then(model::Lang::parse).map(|l| format!(" AND f.lang = {}", l as i64)).unwrap_or_default();
+            let kind_clause = kind.as_deref().and_then(model::RefKind::parse).map(|k| format!(" AND r.kind = {}", k as i64)).unwrap_or_default();
+            let sql = match what.as_str() {
+                "miss" => format!("SELECT f.path, r.line, r.kind, r.name, r.qualifier, r.recv_type, (SELECT COUNT(*) FROM nodes x WHERE x.name = r.name AND x.kind != 0), 0
+                    FROM refs r JOIN files f ON f.id = r.file_id WHERE r.target_id IS NULL{lang_clause}{kind_clause}
+                    AND EXISTS (SELECT 1 FROM nodes x WHERE x.name = r.name AND x.kind != 0) ORDER BY random() LIMIT {n}"),
+                _ => format!("SELECT f.path, r.line, r.kind, r.name, r.qualifier, r.recv_type, r.confidence, t.qname || ' @' || tf.path
+                    FROM refs r JOIN files f ON f.id = r.file_id JOIN nodes t ON t.id = r.target_id JOIN files tf ON tf.id = t.file_id
+                    WHERE r.confidence < 70{lang_clause}{kind_clause} ORDER BY random() LIMIT {n}"),
+            };
+            let mut st = g.db.conn.prepare(&sql)?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<String>>(5)?, r.get::<_, i64>(6)?, r.get::<_, rusqlite::types::Value>(7)?)))?;
+            for r in rows {
+                let (p, l, k, name, q, rt, c, t) = r?;
+                println!("{p}:{l} {} {}{name} recv={rt:?} {} {}", model::RefKind::from_i64(k).map(|k| k.as_str()).unwrap_or("?"),
+                    q.map(|q| format!("{q}.")).unwrap_or_default(), if what == "miss" { format!("defs={c}") } else { format!("conf={c}") },
+                    match t { rusqlite::types::Value::Text(s) => format!("→ {s}"), _ => String::new() });
+            }
+            if what == "miss" {
+                let tot: i64 = g.db.conn.query_row(&format!("SELECT COUNT(*) FROM refs r JOIN files f ON f.id=r.file_id WHERE r.target_id IS NULL{lang_clause}{kind_clause} AND EXISTS (SELECT 1 FROM nodes x WHERE x.name = r.name AND x.kind != 0)"), [], |r| r.get(0))?;
+                let all: i64 = g.db.conn.query_row(&format!("SELECT COUNT(*) FROM refs r JOIN files f ON f.id=r.file_id WHERE 1=1{lang_clause}{kind_clause}"), [], |r| r.get(0))?;
+                let res: i64 = g.db.conn.query_row(&format!("SELECT COUNT(*) FROM refs r JOIN files f ON f.id=r.file_id WHERE r.target_id IS NOT NULL{lang_clause}{kind_clause}"), [], |r| r.get(0))?;
+                println!("-- refs {all}, resolved {res}, unresolved-but-name-exists {tot}");
+            }
+        }
+        Cmd::BenchSync { file, n } => {
+            let root = query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index"))?;
+            let original = std::fs::read(root.join(&file))?;
+            let mut cache = None;
+            let only = vec![file.clone()];
+            let res = (|| -> Result<()> {
+                for i in 0..=n {
+                    let mut s = original.clone();
+                    s.extend_from_slice(format!("\n// bench {i}\n").as_bytes());
+                    std::fs::write(root.join(&file), s)?;
+                    let st = index::sync_with(&root, Some(&only), Some(&mut cache))?;
+                    eprintln!("{} sync {i}: {} ms (resolve {} ms)", if i == 0 { "cold" } else { "warm" }, st.ms_total, st.ms_resolve);
+                }
+                Ok(())
+            })();
+            std::fs::write(root.join(&file), &original)?;
+            index::sync_with(&root, Some(&only), Some(&mut cache))?;
+            res?;
+        }
+        Cmd::Ast { file } => {
+            let src = std::fs::read(&file)?;
+            let p = file.to_string_lossy().to_string();
+            let Some(lang) = model::Lang::from_path(&p) else { bail!("unsupported file type") };
+            let tree = lang::parse(lang, &src).ok_or_else(|| anyhow::anyhow!("parse failed"))?;
+            fn pr(n: tree_sitter::Node, src: &[u8], d: usize) {
+                if !n.is_named() { return; }
+                let t = n.utf8_text(src).unwrap_or("");
+                let t = if n.child_count() == 0 { format!(" {:?}", t.chars().take(40).collect::<String>()) } else { String::new() };
+                let f = n.parent().and_then(|p| { let mut c = p.walk(); p.children(&mut c).position(|x| x.id() == n.id()).and_then(|i| p.field_name_for_child(i as u32)) });
+                println!("{}{}{}{}", "  ".repeat(d), f.map(|f| format!("{f}: ")).unwrap_or_default(), n.kind(), t);
+                let mut c = n.walk();
+                for ch in n.children(&mut c) { pr(ch, src, d + 1); }
+            }
+            pr(tree.root_node(), &src, 0);
+        }
+        Cmd::Dump { file } => {
+            let src = std::fs::read(&file)?;
+            let p = file.to_string_lossy().to_string();
+            let Some(lang) = model::Lang::from_path(&p) else { bail!("unsupported file type") };
+            let ex = extract::extract(lang, &p, &src);
+            for (i, n) in ex.nodes.iter().enumerate() {
+                println!("N{i} {} {} q={} parent={:?} owner={:?} L{}-{} exported={} hint={:?}", n.kind, n.name, n.qname, n.parent, n.owner, n.start_line, n.end_line, n.exported, n.type_hint);
+            }
+            for r in &ex.refs { println!("R from=N{} {} {} qual={:?} recv={:?} L{}", r.from, r.kind, r.name, r.qualifier, r.recv_type, r.line); }
+            for i in &ex.imports { println!("I {:?} {:?} {:?} as {:?} L{}", i.kind, i.module, i.imported, i.local, i.line); }
+            println!("package={:?} parse_errors={}", ex.package, ex.parse_errors);
+        }
+    }
+    Ok(())
+}
+
+fn edges_cmd(callers: bool, symbol: &str, file: Option<&str>, limit: usize, json: bool) -> Result<()> {
+    let g = graph_here()?;
+    let defs = pick(&g, symbol, file)?;
+    let mut all = Vec::new();
+    for d in &defs {
+        let edges = if callers { g.callers(d.id, limit)? } else { g.callees(d.id, limit)? };
+        if json { all.push(serde_json::json!({"symbol": d, "edges": edges})); continue; }
+        println!("{} {} ({}:{}) — {} {}", if callers { "callers of" } else { "callees of" }, explore::display_name(d), d.path, d.start_line, edges.len(), if edges.len() == 1 { "edge" } else { "edges" });
+        for e in edges { println!("  {:<12} {:<40} {}:{}", e.kind.as_str(), explore::display_name(&e.sym), e.sym.path, if callers { e.line } else { e.sym.start_line }); }
+    }
+    if json { println!("{}", serde_json::to_string_pretty(&all)?); }
+    Ok(())
+}
+
+/// Minimal glob: `*` (no slash), `**` (any), `?`.
+fn glob_to_regex(glob: &str) -> impl Fn(&str) -> bool {
+    let g: Vec<char> = glob.chars().collect();
+    move |s: &str| glob_match(&g, &s.chars().collect::<Vec<_>>())
+}
+
+fn glob_match(p: &[char], s: &[char]) -> bool {
+    match (p.first(), s.first()) {
+        (None, None) => true,
+        (Some('*'), _) if p.get(1) == Some(&'*') => {
+            let rest = if p.get(2) == Some(&'/') { &p[3..] } else { &p[2..] };
+            (0..=s.len()).any(|i| glob_match(rest, &s[i..]))
+        }
+        (Some('*'), _) => (0..=s.len()).take_while(|&i| i == 0 || s[i - 1] != '/').any(|i| glob_match(&p[1..], &s[i..])),
+        (Some('?'), Some(c)) if *c != '/' => glob_match(&p[1..], &s[1..]),
+        (Some(a), Some(b)) if a == b => glob_match(&p[1..], &s[1..]),
+        _ => false,
+    }
+}

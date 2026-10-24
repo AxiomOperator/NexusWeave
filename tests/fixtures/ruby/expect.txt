@@ -1,0 +1,8 @@
+App.Service.run -> App.User
+App.Service.run -> App.User.greet
+App.Service.run -> App.Base.save
+App.Service.run -> App.Repo.find
+App.Service.run -> App.Service.helper
+App.User -> App.Base
+GET /users -> UsersController.index
+UsersController -> UsersController.authenticate
