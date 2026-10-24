@@ -89,6 +89,9 @@ enum Cmd {
     Debug { what: String, #[arg(short, long, default_value_t = 40)] n: usize, #[arg(short, long)] lang: Option<String>, #[arg(short, long)] kind: Option<String> },
 }
 
+/// Escape `%`, `_` and `\` for a `LIKE … ESCAPE '\'` prefix match.
+fn like_escape(s: &str) -> String { s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_") }
+
 fn root_arg(p: Option<PathBuf>) -> Result<PathBuf> {
     let p = p.unwrap_or_else(|| PathBuf::from("."));
     Ok(xgraph::canonical(&p)?)
@@ -197,8 +200,8 @@ fn main() -> Result<()> {
         }
         Cmd::Files { path, symbols } => {
             let g = graph_here()?;
-            let mut st = g.db.conn.prepare("SELECT path, node_count FROM files WHERE path LIKE ? ORDER BY path")?;
-            let pat = format!("{}%", path.unwrap_or_default().trim_start_matches("./"));
+            let mut st = g.db.conn.prepare("SELECT path, node_count FROM files WHERE path LIKE ? ESCAPE '\\' ORDER BY path")?;
+            let pat = format!("{}%", like_escape(path.unwrap_or_default().trim_start_matches("./")));
             for r in st.query_map([pat], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
                 let (p, n) = r?;
                 println!("{p} ({} symbols)", n - 1);

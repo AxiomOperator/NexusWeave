@@ -26,8 +26,9 @@ pub struct Cycle { pub files: Vec<String>, pub path: Vec<String> }
 pub struct Hotspot { pub symbol: Sym, pub fan_in: usize, pub lines: u32, pub churn: usize, pub score: f64 }
 
 impl Graph {
-    /// Callables and types nothing in the project references. Exported symbols, tests, routes,
-    /// framework hooks and interface implementations are excluded unless `include_exported`.
+    /// Callables and types nothing in the project references, resolved or not (a name some
+    /// unresolved reference uses is left out). Exported symbols, tests, routes, framework hooks and
+    /// interface implementations are excluded unless `include_exported`.
     pub fn dead_code(&self, include_exported: bool, limit: usize) -> Result<Vec<Sym>> {
         let sql = format!(
             "SELECT {SYM_COLS} FROM nodes n JOIN files f ON f.id = n.file_id

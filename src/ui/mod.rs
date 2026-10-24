@@ -120,7 +120,33 @@ fn api(g: &Graph, path: &str, q: &HashMap<String, String>) -> Result<Value> {
                 _ => json!(g.hotspots(lim)?.iter().map(|h| json!({"sym": sym_json(&h.symbol), "fan_in": h.fan_in, "lines": h.lines, "churn": h.churn, "score": h.score})).collect::<Vec<_>>()),
             }
         }
-        "/api/explore" => json!({"text": g.explore(q.get("q").map(String::as_str).unwrap_or(""), &Default::default())?}),
+        "/api/explore" => {
+            let mut opts = crate::explore::Opts::default();
+            if let Some(b) = q.get("budget").and_then(|b| b.parse::<usize>().ok()) { opts.max_chars = b.clamp(500, 40_000) * 4; }
+            json!({"text": g.explore(q.get("q").map(String::as_str).unwrap_or(""), &opts)?})
+        }
+        "/api/start" => {
+            // A good first graph: among the hot spots, the function with the most balanced mix of
+            // callers and callees (a tiny helper called from everywhere makes a one-sided hairball).
+            let mut fo = g.db.conn.prepare_cached("SELECT COUNT(DISTINCT target_id) FROM refs WHERE (src_id = ?1 OR src_owner_id = ?1) AND target_id IS NOT NULL AND kind IN (0, 1, 7)")?;
+            let mut best: Option<(f64, i64)> = None;
+            for h in g.hotspots(120)? {
+                if !matches!(h.symbol.kind, NodeKind::Function | NodeKind::Method) || h.symbol.is_test { continue; }
+                let out: i64 = fo.query_row([h.symbol.id], |r| r.get(0))?;
+                let score = (h.fan_in.min(30) as f64).sqrt() * (out.min(30) as f64).sqrt();
+                if best.is_none_or(|(b, _)| score > b) { best = Some((score, h.symbol.id)); }
+            }
+            json!({"id": best.map(|(_, id)| id)})
+        }
+        "/api/dir" => {
+            // files under a directory prefix, largest first
+            let dir = q.get("path").map(|p| p.trim_matches('/').to_string()).unwrap_or_default();
+            let pat = if dir.is_empty() || dir == "(root)" { "%".to_string() } else { format!("{}/%", dir.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")) };
+            let mut st = g.db.conn.prepare("SELECT path, node_count - 1, lang, is_test FROM files WHERE path LIKE ? ESCAPE '\\' ORDER BY node_count DESC LIMIT 400")?;
+            let rows = st.query_map([&pat], |r| Ok(json!({"path": r.get::<_, String>(0)?, "symbols": r.get::<_, i64>(1)?,
+                "lang": crate::model::Lang::from_i64(r.get(2)?).map(|l| l.as_str()).unwrap_or(""), "test": r.get::<_, bool>(3)?})))?;
+            json!({"path": dir, "files": rows.collect::<rusqlite::Result<Vec<_>>>()?})
+        }
         _ => json!({"error": "unknown endpoint", "endpoints": ["/api/stats", "/api/search?q", "/api/node?id", "/api/graph?id&depth", "/api/source?path&from&to", "/api/file?path", "/api/modules?depth", "/api/flow?from&to", "/api/explore?q", "/api/routes", "/api/filecode?path", "/api/analyze?what"]}),
     })
 }
@@ -249,4 +275,66 @@ fn hdr(k: &str, v: &str) -> tiny_http::Header { tiny_http::Header::from_bytes(k.
 fn open_browser(url: &str) {
     let cmd = if cfg!(target_os = "macos") { "open" } else if cfg!(windows) { "explorer" } else { "xdg-open" };
     let _ = std::process::Command::new(cmd).arg(url).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> (std::path::PathBuf, Graph) {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ts");
+        let dir = std::env::temp_dir().join(format!("xgraph-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        fn copy(a: &Path, b: &Path) {
+            std::fs::create_dir_all(b).unwrap();
+            for e in std::fs::read_dir(a).unwrap() {
+                let e = e.unwrap();
+                if e.file_type().unwrap().is_dir() { copy(&e.path(), &b.join(e.file_name())); } else { std::fs::copy(e.path(), b.join(e.file_name())).unwrap(); }
+            }
+        }
+        copy(&src, &dir);
+        crate::index::full_index(&dir, |_, _| {}).unwrap();
+        let g = Graph::open(&dir).unwrap();
+        (dir, g)
+    }
+
+    fn call(g: &Graph, path: &str, q: &[(&str, &str)]) -> Value {
+        let q: HashMap<String, String> = q.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let v = api(g, path, &q).unwrap_or_else(|e| panic!("{path}: {e:#}"));
+        assert!(v.get("error").is_none(), "{path} returned {v}");
+        v
+    }
+
+    /// Every endpoint the viewer uses answers without an error on a real index.
+    #[test]
+    fn endpoints() {
+        let (dir, g) = fixture();
+        assert!(call(&g, "/api/stats", &[])["symbols"].as_u64().unwrap() > 10);
+        let hits = call(&g, "/api/search", &[("q", "UserService"), ("limit", "5")]);
+        let id = hits[0]["id"].as_i64().expect("search finds UserService").to_string();
+        let node = call(&g, "/api/node", &[("id", &id)]);
+        let path = node["sym"]["path"].as_str().unwrap().to_string();
+        assert!(call(&g, "/api/graph", &[("id", &id), ("depth", "2")])["nodes"].as_array().unwrap().len() > 1);
+        assert!(!call(&g, "/api/source", &[("path", &path), ("from", "1"), ("to", "5")])["lines"].as_array().unwrap().is_empty());
+        call(&g, "/api/file", &[("path", &path)]);
+        assert!(!call(&g, "/api/filecode", &[("path", &path)])["refs"].as_array().unwrap().is_empty());
+        assert!(!call(&g, "/api/modules", &[("depth", "2")])["modules"].as_array().unwrap().is_empty());
+        assert!(!call(&g, "/api/routes", &[]).as_array().unwrap().is_empty());
+        assert!(!call(&g, "/api/flow", &[("from", "UserService.getUser"), ("to", "Database.query")])["path"].as_array().unwrap().is_empty());
+        for what in ["hotspots", "entry", "dead", "cycles"] { call(&g, "/api/analyze", &[("what", what)]); }
+        assert!(call(&g, "/api/explore", &[("q", "how does getUser work"), ("budget", "800")])["text"].as_str().unwrap().contains("getUser"));
+        assert!(call(&g, "/api/start", &[])["id"].as_i64().is_some(), "a default graph root exists");
+        assert!(!call(&g, "/api/dir", &[("path", "src")])["files"].as_array().unwrap().is_empty());
+        // `_` and `%` in a directory name are literal, not LIKE wildcards
+        assert!(call(&g, "/api/dir", &[("path", "s_c")])["files"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn query_decoding() {
+        let q = qs("/api/search?q=a%20b+c&limit=5&x");
+        assert_eq!(q["q"], "a b c");
+        assert_eq!(q["limit"], "5");
+        assert_eq!(q["x"], "");
+    }
 }
