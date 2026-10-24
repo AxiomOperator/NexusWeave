@@ -3,7 +3,8 @@
 //!
 //! Election is an exclusive `flock` on `.xgraph/daemon.lock`; the socket lives in the temp dir
 //! (short path) and is recorded in `.xgraph/daemon.json`. The daemon exits after
-//! `XGRAPH_DAEMON_IDLE` seconds (default 900) without connected clients.
+//! `XGRAPH_DAEMON_IDLE` seconds (default 900) without connected clients, or once its executable
+//! has been replaced (`cargo install`, `xgraph upgrade`): clients then respawn the new build.
 
 #![cfg(unix)]
 
@@ -60,7 +61,10 @@ pub fn connect(root: &Path) -> Option<Client> {
 /// Connect to the project's daemon, starting one if none is running.
 pub fn connect_or_spawn(root: &PathBuf) -> Option<Client> {
     if let Some(c) = connect(root) { return Some(c); }
-    let exe = std::env::current_exe().ok()?;
+    let mut exe = std::env::current_exe().ok()?;
+    // this binary was replaced on disk since it started (Linux reports `path (deleted)`): start
+    // the new build at that path
+    if !exe.exists() && let Some(p) = exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) { exe = p.into(); }
     let mut cmd = std::process::Command::new(exe);
     cmd.args(["daemon", "run"]).arg(root)
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
@@ -107,16 +111,23 @@ pub fn run(root: &Path) -> Result<()> {
     let clients = Arc::new(AtomicUsize::new(0));
     let served = Arc::new(AtomicU64::new(0));
     let started = Instant::now();
+    let busy = Arc::new(AtomicUsize::new(0));
+    let exe = std::env::current_exe().ok();
+    let exe_id = exe.as_deref().and_then(crate::db::file_id);
+    let replaced = move || exe.as_deref().is_some_and(|e| crate::db::file_id(e) != exe_id);
 
     // one worker owns the graph connections and the watcher (rusqlite connections aren't Sync)
     let root_w = root.to_path_buf();
     let served_w = served.clone();
+    let busy_w = busy.clone();
     std::thread::spawn(move || {
         let mut srv = crate::mcp::Server::new(Some(root_w), watcher);
         for job in rx {
             match job {
                 Job::Call { session, tool, args, reply } => {
+                    busy_w.fetch_add(1, Ordering::SeqCst);
                     let (text, error) = srv.handle(session, &tool, &args);
+                    busy_w.fetch_sub(1, Ordering::SeqCst);
                     served_w.fetch_add(1, Ordering::Relaxed);
                     let _ = reply.send(json!({"text": text, "error": error}));
                 }
@@ -125,7 +136,8 @@ pub fn run(root: &Path) -> Result<()> {
         }
     });
 
-    // idle shutdown
+    // idle shutdown, and handing over to a replaced executable between calls (clients reconnect
+    // on a closed connection and spawn the new build)
     let idle = Duration::from_secs(std::env::var("XGRAPH_DAEMON_IDLE").ok().and_then(|v| v.parse().ok()).unwrap_or(900));
     let clients_i = clients.clone();
     let sock_i = sock.clone();
@@ -133,6 +145,10 @@ pub fn run(root: &Path) -> Result<()> {
         let mut quiet_since = Instant::now();
         loop {
             std::thread::sleep(Duration::from_secs(5));
+            if busy.load(Ordering::SeqCst) == 0 && replaced() {
+                let _ = std::fs::remove_file(&sock_i);
+                std::process::exit(0);
+            }
             if clients_i.load(Ordering::Relaxed) > 0 { quiet_since = Instant::now(); continue; }
             if quiet_since.elapsed() >= idle {
                 let _ = std::fs::remove_file(&sock_i);
@@ -158,7 +174,7 @@ pub fn run(root: &Path) -> Result<()> {
                     Some("ping") => json!({"ok": true}),
                     // `clients` excludes the connection asking
                     Some("status") => json!({"pid": std::process::id(), "root": root.display().to_string(), "clients": clients.load(Ordering::Relaxed).saturating_sub(1),
-                        "served": served.load(Ordering::Relaxed), "uptime_s": started.elapsed().as_secs()}),
+                        "served": served.load(Ordering::Relaxed), "uptime_s": started.elapsed().as_secs(), "version": env!("CARGO_PKG_VERSION")}),
                     Some("stop") => {
                         let _ = writeln!(out, "{}", json!({"ok": true}));
                         let _ = std::fs::remove_file(&sock);

@@ -242,7 +242,7 @@ fn flow(g: &Graph, from: &[Sym], to: &[Sym]) -> Result<Vec<Sym>> {
 }
 
 pub fn serve(root: &Path, port: u16, open: bool) -> Result<()> {
-    let g = Graph::open(root)?;
+    let mut g = Graph::open(root)?;
     let server = tiny_http::Server::http(("127.0.0.1", port)).map_err(|e| anyhow::anyhow!("cannot bind 127.0.0.1:{port}: {e}"))?;
     let url = format!("http://127.0.0.1:{port}/");
     eprintln!("xgraph viewer for {} at {url}", root.display());
@@ -260,6 +260,7 @@ pub fn serve(root: &Path, port: u16, open: bool) -> Result<()> {
         let resp = if path == "/" || path == "/index.html" {
             tiny_http::Response::from_string(INDEX_HTML).with_header(hdr("Content-Type", "text/html; charset=utf-8"))
         } else if path.starts_with("/api/") {
+            if g.is_replaced() && let Ok(n) = Graph::open(root) { g = n; } // re-indexed meanwhile
             let body = match api(&g, &path, &qs(&url)) { Ok(v) => v.to_string(), Err(e) => json!({"error": format!("{e:#}")}).to_string() };
             tiny_http::Response::from_string(body).with_header(hdr("Content-Type", "application/json"))
         } else {

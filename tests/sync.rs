@@ -270,3 +270,30 @@ fn value_ref_resolves_when_target_appears() {
     assert!(has(&d, "setup -> auth"), "{:?}", edges(&d));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// `xgraph index` renames a fresh database over the old one while a daemon may hold the old
+/// file open: its graph must reopen and its warm resolver cache must not be reused.
+#[test]
+fn reindex_under_a_long_lived_holder() {
+    let d = setup("reindex");
+    let g = xgraph::query::Graph::open(&d).unwrap();
+    let mut cache = None;
+    let svc = std::fs::read_to_string(d.join("src/service.ts")).unwrap();
+    write(&d, "src/service.ts", &format!("{svc}\n"));
+    xgraph::index::sync_with(&d, Some(&["src/service.ts".to_string()]), Some(&mut cache)).unwrap();
+    assert!(cache.is_some() && !g.is_replaced());
+
+    // a file sorting first shifts every row id in the rebuilt database
+    write(&d, "src/aaa.ts", "export function early() { return 1; }\nexport class Early { run() { early(); } }\n");
+    xgraph::index::full_index(&d, |_, _| {}).unwrap();
+    assert!(g.is_replaced(), "a rebuilt database must be noticed");
+    assert!(!xgraph::query::Graph::open(&d).unwrap().is_replaced());
+
+    // a sync with the cache from before the rebuild converges to a full index
+    write(&d, "src/service.ts", &format!("\n\n{svc}"));
+    xgraph::index::sync_with(&d, Some(&["src/service.ts".to_string()]), Some(&mut cache)).unwrap();
+    let synced = edges(&d);
+    xgraph::index::full_index(&d, |_, _| {}).unwrap();
+    assert_eq!(synced, edges(&d));
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -86,7 +86,7 @@ xgraph diff-impact [--base REF] symbols touched by a git diff, their callers, ro
 xgraph analyze dead|cycles|entry|hotspots
 xgraph watch [path]             keep the graph in sync from the terminal
 xgraph serve                    MCP server on stdio (auto-syncs; shares one daemon per repo)
-xgraph daemon [status|stop]     the shared per-repo index process
+xgraph daemon [status|stop]     the shared per-repo index process (restarts itself after an upgrade)
 xgraph ui [--port 7878]         viewer: overview, call graph, module map, routes, call paths, insights, ask
 xgraph install | uninstall      (un)register the MCP server with agents (--target, --print, --hooks)
 xgraph upgrade [--check]        self-update from GitHub releases

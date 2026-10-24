@@ -290,6 +290,7 @@ fn sync_inner(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Optio
         drop(db);
         return rebuild(&mut cache);
     }
+    if let Some(c) = cache.as_mut() && c.as_ref().is_some_and(|c| c.db_file != db.file) { **c = None; } // re-indexed meanwhile
     db.ensure_sync_indexes()?;
     let mut st = Stats::default();
     let mut known: HashMap<String, Known> = HashMap::new();

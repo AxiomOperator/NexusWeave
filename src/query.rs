@@ -84,6 +84,10 @@ impl Graph {
         Ok(Graph { db, root: root.to_path_buf() })
     }
 
+    /// Whether `.xgraph/graph.db` has been replaced (rebuilt by `xgraph index`) or removed since
+    /// this graph opened it; long-lived holders reopen instead of serving the old file.
+    pub fn is_replaced(&self) -> bool { crate::db::file_id(&crate::db::db_path(&self.root)) != self.db.file }
+
     pub fn discover(start: &Path) -> Result<Graph> {
         match find_root(start) {
             Some(r) => Graph::open(&r),

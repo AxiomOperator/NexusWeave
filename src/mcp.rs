@@ -90,7 +90,10 @@ impl Server {
             Some(p) => find_root(Path::new(p)).ok_or_else(|| anyhow!("{p} has no xgraph index. Use your built-in tools for that project."))?,
             None => self.default_root.clone().ok_or_else(|| anyhow!("This workspace has no xgraph index. Pass projectPath for an indexed project, or use your built-in tools."))?,
         };
-        if !self.graphs.contains_key(&root) { self.graphs.insert(root.clone(), Graph::open(&root)?); }
+        if self.graphs.get(&root).is_none_or(Graph::is_replaced) {
+            self.graphs.insert(root.clone(), Graph::open(&root)?);
+            self.seen.retain(|(_, r), _| *r != root); // line numbers in what was sent may have moved
+        }
         Ok(&self.graphs[&root])
     }
 

@@ -292,6 +292,8 @@ xgraph was used to review its own code and the vscode index. These were found an
 | Unresolved value refs never came back incrementally | `app.use(auth)` stayed unlinked after `auth` was defined | `value_names` + targeted re-extraction |
 | Viewer: Graph tab empty until switching tabs | first page drew nothing | default root, ResizeObserver, redesign |
 | Upgrade used a predictable temp path | local archive swap between checksum and extract | private 0700 directory, created exclusively |
+| Long-lived processes kept the replaced database open | after `xgraph index`, a running daemon/viewer served the old file: stale symbols and wrong line ranges until restart | file identity checked per call; graph reopened, resolver cache dropped |
+| The daemon outlived binary upgrades | `cargo install` left the old build serving every session | the daemon exits between calls once its executable is replaced; clients respawn the new one |
 
 Recall rose on four repos (codegraph 92.8 → 93.9, express 86.9 → 89.8, flask 73.8 → 75.7,
 httpx 81.1 → 82.5) with precision unchanged or higher.

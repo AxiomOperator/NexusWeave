@@ -51,6 +51,8 @@ pub struct Cache {
     idx_added: usize,
     /// Resolved import targets per file; reused while the set of file paths is unchanged.
     targets: HashMap<u32, Vec<Target>>,
+    /// The database file these ids belong to: after a full re-index they mean nothing.
+    pub(crate) db_file: Option<crate::db::FileId>,
 }
 
 impl Cache {
@@ -1304,7 +1306,7 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
         for (i, name) in route_renames { mem.nodes[i as usize].name = name; }
         for (f, j, tf) in import_updates { if let Some(v) = mem.imports.get_mut(&f) { v[j].db_target = tf; } }
         let targets: HashMap<u32, Vec<Target>> = cached_targets.into_iter().collect();
-        *c = Some(Cache { mem, mods, refidx, targets, idx_built: idx_sizes.0, idx_added: idx_sizes.1 });
+        *c = Some(Cache { mem, mods, refidx, targets, idx_built: idx_sizes.0, idx_added: idx_sizes.1, db_file: db.file });
     }
     Ok(resolved)
 }

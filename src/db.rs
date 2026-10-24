@@ -125,12 +125,30 @@ CREATE INDEX IF NOT EXISTS idx_refs_recv ON refs(recv_id) WHERE recv_id IS NOT N
 
 pub struct Db {
     pub conn: Connection,
+    /// Identity of the file this connection opened; see [`file_id`].
+    pub file: Option<FileId>,
 }
 
 pub fn db_path(root: &Path) -> std::path::PathBuf { root.join(".xgraph").join("graph.db") }
 
+/// Which file a path currently names. A full index builds a new database and renames it over the
+/// old one, so a long-running process (daemon, viewer, watcher) compares this with [`Db::file`] to
+/// notice that its connection still reads the replaced file.
+pub type FileId = (u64, u64);
+
+pub fn file_id(path: &Path) -> Option<FileId> {
+    let m = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    { use std::os::unix::fs::MetadataExt; Some((m.dev(), m.ino())) }
+    #[cfg(not(unix))]
+    { m.created().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| (d.as_secs(), d.subsec_nanos() as u64)) }
+}
+
 impl Db {
     pub fn open(path: &Path) -> Result<Db> {
+        // taken before opening: a replacement in between then looks stale (a harmless reopen)
+        // rather than current
+        let file = file_id(path);
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.execute_batch(
@@ -138,7 +156,7 @@ impl Db {
              PRAGMA cache_size=-65536; PRAGMA mmap_size=268435456; PRAGMA foreign_keys=ON;",
         )?;
         conn.execute_batch("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);")?;
-        let db = Db { conn };
+        let db = Db { conn, file: file.or_else(|| file_id(path)) };
         match db.meta("schema_version")? {
             None => {
                 db.conn.execute_batch(SCHEMA)?;
@@ -151,10 +169,11 @@ impl Db {
     }
 
     pub fn open_readonly(path: &Path) -> Result<Db> {
+        let file = file_id(path);
         let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.execute_batch("PRAGMA temp_store=MEMORY; PRAGMA cache_size=-32768; PRAGMA mmap_size=268435456;")?;
-        Ok(Db { conn })
+        Ok(Db { conn, file })
     }
 
     /// Whether this database was built by a compatible version.
