@@ -24,7 +24,7 @@ fn home() -> Result<PathBuf> {
 }
 
 fn exe() -> String {
-    std::env::current_exe().ok().and_then(|p| std::fs::canonicalize(p).ok()).map(|p| p.display().to_string()).unwrap_or_else(|| "xgraph".into())
+    std::env::current_exe().ok().and_then(|p| crate::canonical(p).ok()).map(|p| p.display().to_string()).unwrap_or_else(|| "xgraph".into())
 }
 
 fn read_json(p: &Path) -> Result<Value> {
@@ -105,7 +105,7 @@ fn selected(targets: &[String], h: &Path) -> Vec<&'static Agent> {
     AGENTS.iter().filter(|a| if targets.is_empty() { (a.marker)(h).exists() } else { targets.iter().any(|t| t.eq_ignore_ascii_case(a.key) || t == "all") }).collect()
 }
 
-pub fn install(targets: &[String], print: bool) -> Result<()> {
+pub fn install(targets: &[String], print: bool, hooks: bool) -> Result<()> {
     if print {
         println!("{}", serde_json::to_string_pretty(&json!({"mcpServers": {"xgraph": {"command": exe(), "args": ["serve"]}}}))?);
         return Ok(());
@@ -122,12 +122,28 @@ pub fn install(targets: &[String], print: bool) -> Result<()> {
             Err(e) => eprintln!("✗ {} — {e:#}", a.name),
         }
     }
+    if hooks {
+        match claude_hook(&h, true) {
+            Ok(p) => eprintln!("✓ Claude Code hook — {p} (PreToolUse on Grep/Glob suggests xgraph_explore)"),
+            Err(e) => eprintln!("✗ Claude Code hook — {e:#}"),
+        }
+    }
     eprintln!("\nNext: run `xgraph init` in each project. The server keeps the graph in sync while your agent works.");
     Ok(())
 }
 
+fn claude_hook(h: &Path, add: bool) -> Result<String> {
+    let p = h.join(".claude/settings.json");
+    if !add && !p.exists() { return Ok(p.display().to_string()); }
+    let cur = read_json(&p)?;
+    let next = crate::hook::set_claude_hook(&cur, &exe(), add);
+    if next != cur { write_json(&p, &next)?; }
+    Ok(p.display().to_string())
+}
+
 pub fn uninstall(targets: &[String]) -> Result<()> {
     let h = home()?;
+    if let Err(e) = claude_hook(&h, false) { eprintln!("✗ Claude Code hook — {e:#}"); }
     for a in selected(targets, &h) {
         match apply(a, &h, false) {
             Ok(w) => eprintln!("✓ removed from {} — {}", a.name, w),

@@ -64,9 +64,17 @@ enum Cmd {
     /// Open the graph viewer in a browser
     Ui { path: Option<PathBuf>, #[arg(long, default_value_t = 7878)] port: u16, #[arg(long)] no_open: bool },
     /// Register the MCP server with coding agents (Claude Code, Cursor, Codex, ...)
-    Install { #[arg(long)] target: Vec<String>, #[arg(long)] print: bool },
-    /// Remove the MCP server registration
+    Install { #[arg(long)] target: Vec<String>, #[arg(long)] print: bool,
+              #[arg(long, help = "also add a Claude Code PreToolUse hook that suggests xgraph_explore for symbol greps")] hooks: bool },
+    /// Remove the MCP server registration (and the Claude Code hook)
     Uninstall { #[arg(long)] target: Vec<String> },
+    /// Replace this binary with the latest GitHub release (checksum-verified)
+    Upgrade { #[arg(long, help = "install this release tag instead of the latest")] version: Option<String>,
+              #[arg(long, help = "only report whether an update exists")] check: bool,
+              #[arg(long, help = "reinstall even when already up to date")] force: bool },
+    /// Agent hook entry points (`pretool`), invoked by Claude Code
+    #[command(hide = true)]
+    Hook { event: String },
     /// Debug: dump extraction for a file
     #[command(hide = true)]
     Dump { file: PathBuf },
@@ -83,7 +91,7 @@ enum Cmd {
 
 fn root_arg(p: Option<PathBuf>) -> Result<PathBuf> {
     let p = p.unwrap_or_else(|| PathBuf::from("."));
-    Ok(std::fs::canonicalize(&p)?)
+    Ok(xgraph::canonical(&p)?)
 }
 
 fn graph_here() -> Result<Graph> { Graph::discover(Path::new(".")) }
@@ -253,7 +261,12 @@ fn main() -> Result<()> {
             let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `xgraph init`"))? };
             ui::serve(&root, port, !no_open)?;
         }
-        Cmd::Install { target, print } => install::install(&target, print)?,
+        Cmd::Install { target, print, hooks } => install::install(&target, print, hooks)?,
+        Cmd::Upgrade { version, check, force } => upgrade::run(version.as_deref(), check, force)?,
+        Cmd::Hook { event } => match event.as_str() {
+            "pretool" => hook::pretool()?,
+            other => bail!("unknown hook event {other:?}"),
+        },
         Cmd::Uninstall { target } => install::uninstall(&target)?,
         Cmd::Debug { what, n, lang, kind } => {
             let g = graph_here()?;

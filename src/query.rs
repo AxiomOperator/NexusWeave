@@ -62,7 +62,7 @@ pub struct Edge {
 
 /// Find the project root: nearest ancestor with `.xgraph/graph.db`.
 pub fn find_root(start: &Path) -> Option<PathBuf> {
-    let start = std::fs::canonicalize(start).ok()?;
+    let start = crate::canonical(start).ok()?;
     let mut cur = Some(start.as_path());
     while let Some(d) = cur {
         if crate::db::db_path(d).exists() { return Some(d.to_path_buf()); }
@@ -105,7 +105,7 @@ impl Graph {
     pub fn match_path(&self, p: &str) -> Result<Option<String>> {
         let p = p.trim().trim_start_matches("./").replace('\\', "/");
         let p = p.split(':').next().unwrap_or(&p).to_string();
-        let rel = Path::new(&p).strip_prefix(&self.root).map(|r| r.to_string_lossy().to_string()).unwrap_or(p.clone());
+        let rel = Path::new(&p).strip_prefix(&self.root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or(p.clone());
         let exact: Option<String> = self.db.conn.prepare_cached("SELECT path FROM files WHERE path=?")?.query_row([&rel], |r| r.get(0)).optional()?;
         if exact.is_some() { return Ok(exact); }
         let mut q = self.db.conn.prepare_cached("SELECT path FROM files WHERE path LIKE ? ESCAPE '\\' LIMIT 3")?;

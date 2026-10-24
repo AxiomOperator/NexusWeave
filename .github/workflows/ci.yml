@@ -7,14 +7,20 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # path handling, file watching and process spawning differ per OS
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --release --all-targets -- -D warnings
+      - if: runner.os == 'Linux'
+        run: cargo clippy --release --all-targets -- -D warnings
       - run: cargo test --release
 
   accuracy:

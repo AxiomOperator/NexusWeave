@@ -480,7 +480,7 @@ fn compile_commands_includes(root: &Path) -> Vec<String> {
                     else { ["-I", "-isystem", "-iquote"].iter().find_map(|p| a.strip_prefix(p).map(str::to_string)) };
                 if let Some(p) = path {
                     let abs = if Path::new(&p).is_absolute() { std::path::PathBuf::from(&p) } else { Path::new(dir).join(&p) };
-                    let abs = std::fs::canonicalize(&abs).unwrap_or(abs);
+                    let abs = crate::canonical(&abs).unwrap_or(abs);
                     if let Ok(rel) = abs.strip_prefix(root) {
                         let r = rel.to_string_lossy().replace('\\', "/");
                         if !out.contains(&r) { out.push(r); }
