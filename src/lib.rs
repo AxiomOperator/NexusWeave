@@ -1,4 +1,4 @@
-//! xgraph — a fast local code graph for AI coding agents.
+//! NexusWeave — connected code intelligence for AI agents.
 
 pub mod analyze;
 #[cfg(unix)]

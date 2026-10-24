@@ -1,5 +1,5 @@
 //! Minimal SCIP (https://github.com/sourcegraph/scip) reader for importing compiler-accurate
-//! references. Only the fields needed to correct xgraph's edges are decoded: documents,
+//! references. Only the fields needed to correct NexusWeave's edges are decoded: documents,
 //! occurrences (range, symbol, roles) — both the packed `range` field and the typed range
 //! messages newer writers emit.
 
@@ -123,9 +123,9 @@ pub fn descriptor_name(sym: &str) -> String {
 }
 
 impl Index {
-    /// Load `index.scip` / `.xgraph/index.scip` from a project root, if present.
+    /// Load `index.scip` / `.nexusweave/index.scip` from a project root, if present.
     pub fn load_for(root: &Path) -> Option<Index> {
-        for rel in ["index.scip", ".xgraph/index.scip"] {
+        for rel in ["index.scip", ".nexusweave/index.scip"] {
             let p = root.join(rel);
             if p.is_file() { return Index::read(&p, root).ok(); }
         }

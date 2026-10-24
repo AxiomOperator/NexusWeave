@@ -1,4 +1,9 @@
-# xgraph — gaps closed and enhancement roadmap
+# NexusWeave — gaps closed and enhancement roadmap
+
+> NexusWeave was called **xgraph** until the rebrand (`brand/NexusWeave_Brand_Details.md`). The
+> measurements below were taken under the old name; the engine is unchanged. Upgrading keeps
+> existing indexes: `.xgraph/` is adopted as `.nexusweave/`, and `nexusweave install` replaces the
+> old MCP registrations and hook.
 
 This document has four parts:
 
@@ -16,14 +21,14 @@ Every limitation in section 2 and every roadmap item in section 3 is now impleme
 | item | status | where | result |
 |---|---|---|---|
 | 2: event emitters | ✅ | `add_event`, kinds `Event` / `Emit` / `Triggers` | `pay -> order:paid -> ship` flows (fixtures in TS, Python, C#, Ruby) |
-| 2: Django ORM / library types | ✅ via stubs | `resolve/stubs.toml`, `xgraph.stubs.toml` | fixture `py` |
+| 2: Django ORM / library types | ✅ via stubs | `resolve/stubs.toml`, `nexusweave.stubs.toml` | fixture `py` |
 | 2: C++ templates | ✅ via SCIP import | `src/scip.rs` | — |
 | 2: route prefixes | ✅ | `mounts` table, route renaming | Flask blueprints, FastAPI routers, Express `use`, gin `Group`, chi `Mount` |
 | 2: generic bounds | ✅ | `declare_type_params`, `bound_type_param` | `T: Repo` / `T extends Repo` / `where T : Repo` fixtures |
 | 3.1 accuracy benchmark | ✅ | `bench/` | section 4 |
 | 3.2 SCIP import | ✅ | `src/scip.rs`, confidence 100 | hono recall 79.0 → 84.3%, ripgrep 81.7 → 91.6% |
 | 3.3 agent evaluation | ✅ | `bench/agent/` | section 6 |
-| 3.4 diff-impact / PR mode | ✅ | `src/impact.rs`, `xgraph_diff_impact`, `.github/workflows/pr-impact.yml` | — |
+| 3.4 diff-impact / PR mode | ✅ | `src/impact.rs`, `nexusweave_diff_impact`, `.github/workflows/pr-impact.yml` | — |
 | 3.5 session-aware explore | ✅ | `explore::Seen`, staleness guard | — |
 | 3.6 framework stubs | ✅ | `resolve/stubs.toml` | — |
 | 3.7 event topics | ✅ | see section 2 row | — |
@@ -31,8 +36,8 @@ Every limitation in section 2 and every roadmap item in section 3 is now impleme
 | 3.9 viewer upgrades | ✅ | Routes, Flow (trails, Markdown/Mermaid export), file code view | — |
 | 3.10 shared daemon | ✅ | `src/daemon.rs` (Unix; Windows serves in-process) | — |
 | 3.11 more languages | ✅ | `extract/{kotlin,swift,dart,scala,lua,sfc}.rs` | fixtures + warm-sync equivalence for all seven |
-| 3.12 distribution | ✅ | `release.yml`, `scripts/install.sh`, `xgraph upgrade`, CI on Linux/macOS/Windows | — |
-| 3.13 Claude Code hook | ✅ | `src/hook.rs`, `xgraph install --hooks` | — |
+| 3.12 distribution | ✅ | `release.yml`, `scripts/install.sh`, `nexusweave upgrade`, CI on Linux/macOS/Windows | — |
+| 3.13 Claude Code hook | ✅ | `src/hook.rs`, `nexusweave install --hooks` | — |
 | 3.14 faster full index | ✅ partly | deferred sync indexes, no FTS prefix indexes, sampled ANALYZE, refidx-driven sync scope | below |
 | 3.15 smaller database | ✅ partly | interned `qualifier` / `recv_type` | below |
 
@@ -146,7 +151,7 @@ flow heuristics with data.
 
 ### Tier 2: agent experience
 
-**4. `xgraph diff-impact` / PR review mode (M)**
+**4. `nexusweave diff-impact` / PR review mode (M)**
 1. Map `git diff` hunks to the symbols they touch (line ranges are already stored).
 2. Report each changed symbol's blast radius, the routes whose flows reach it, and the affected tests.
 3. Ship it as a CLI command, an MCP tool and a CI step that comments on PRs.
@@ -161,7 +166,7 @@ This is the use case upstream is building its hosted product around.
 **6. Framework stubs (M)**
 Add a small declarative table of library return types: `Model.objects → Manager → QuerySet`,
 `axios.get → AxiosResponse`, `express() → Express`, and so on, applied when the library itself
-isn't indexed. Ship it as editable TOML under `.xgraph/stubs/`.
+isn't indexed. Ship it as editable TOML under `.nexusweave/stubs/`.
 
 **7. Event topics (M)**
 See section 2. This completes the callback story for Node, browser and Qt/C# event code.
@@ -195,12 +200,12 @@ Svelte single-file components should route `<script>` blocks through the TS/JS h
 
 **12. Distribution (M)**
 - Cross-compiled release binaries (Linux, macOS, Windows), checksums and a `curl | sh` installer.
-- `xgraph upgrade`.
+- `nexusweave upgrade`.
 - A Windows CI job; path handling has only been exercised on Unix so far.
 
 **13. Hooks integration for Claude Code (S)**
-An optional `PreToolUse` hook that suggests `xgraph_explore` when the agent starts a broad
-Grep/Glob sweep on an indexed repo. It would be shipped with `xgraph install --hooks`.
+An optional `PreToolUse` hook that suggests `nexusweave_explore` when the agent starts a broad
+Grep/Glob sweep on an indexed repo. It would be shipped with `nexusweave install --hooks`.
 
 ### Tier 5: performance headroom
 
@@ -226,7 +231,7 @@ file is ~0.45 s, of which 0.28 s is the alias-scope join over its ~1,000 importe
 
 ## 4. Measured accuracy (roadmap 3.1)
 
-`bench/accuracy.py` scores xgraph against compiler-grade SCIP indexes; methodology and
+`bench/accuracy.py` scores NexusWeave against compiler-grade SCIP indexes; methodology and
 exclusions are in `bench/README.md`. Baseline on 7 pinned repos:
 
 | repo | lang | truth refs | extracted | precision | recall |
@@ -244,7 +249,7 @@ precision wherever the truth has relationship data.
 
 ### What the benchmark found and fixed
 
-These are xgraph bugs, each confirmed in error samples before fixing:
+These are NexusWeave bugs, each confirmed in error samples before fixing:
 
 | bug | effect | fix |
 |---|---|---|
@@ -276,9 +281,9 @@ The benchmark also caught several problems in the scorer and the ground truth, a
 | Low-confidence name fallback for unknown receivers is 18% precise on flask and 74% on gin | Python, Go | drop or demote it for those languages, or only allow it when the receiver name matches the owner type |
 | Object-literal keys matching interface members (`{ mkdir: vi.fn() }`) | TS tests | contextual typing of object literals against a declared interface |
 
-## 5. Review pass with xgraph itself
+## 5. Review pass with NexusWeave itself
 
-xgraph was used to review its own code and the vscode index. These were found and fixed:
+NexusWeave was used to review its own code and the vscode index. These were found and fixed:
 
 | finding | effect | fix |
 |---|---|---|
@@ -292,7 +297,7 @@ xgraph was used to review its own code and the vscode index. These were found an
 | Unresolved value refs never came back incrementally | `app.use(auth)` stayed unlinked after `auth` was defined | `value_names` + targeted re-extraction |
 | Viewer: Graph tab empty until switching tabs | first page drew nothing | default root, ResizeObserver, redesign |
 | Upgrade used a predictable temp path | local archive swap between checksum and extract | private 0700 directory, created exclusively |
-| Long-lived processes kept the replaced database open | after `xgraph index`, a running daemon/viewer served the old file: stale symbols and wrong line ranges until restart | file identity checked per call; graph reopened, resolver cache dropped |
+| Long-lived processes kept the replaced database open | after `nexusweave index`, a running daemon/viewer served the old file: stale symbols and wrong line ranges until restart | file identity checked per call; graph reopened, resolver cache dropped |
 | The daemon outlived binary upgrades | `cargo install` left the old build serving every session | the daemon exits between calls once its executable is replaced; clients respawn the new one |
 
 Recall rose on four repos (codegraph 92.8 → 93.9, express 86.9 → 89.8, flask 73.8 → 75.7,
@@ -301,13 +306,13 @@ httpx 81.1 → 82.5) with precision unchanged or higher.
 ## 6. Agent evaluation (roadmap 3.3)
 
 `bench/agent/run.py`: 20 questions over the 7 corpus repos × {baseline: Read/Grep/Glob,
-xgraph: the same + the MCP server} × 2 repeats = 80 headless Claude Code sessions (default
+NexusWeave: the same + the MCP server} × 2 repeats = 80 headless Claude Code sessions (default
 model, read-only, no user settings). Total spend ≈ $17.
 
 | condition | rubric score | total tokens | uncached input | cost | turns | tool calls | wall |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | baseline | 100% | 138,362 | 15,134 | $0.211 | 8.5 | 7.5 | 37 s |
-| xgraph | 100% | 121,613 | 17,726 | $0.221 | 6.3 | 5.3 | 33 s |
+| NexusWeave | 100% | 121,613 | 17,726 | $0.221 | 6.3 | 5.3 | 33 s |
 | **delta** | 0 | **−12%** | +17% | **+5%** | −26% | **−30%** | −10% |
 
 What this shows, and what it doesn't:
@@ -315,14 +320,14 @@ What this shows, and what it doesn't:
 - **The rubric saturated.** Both conditions named every required fact in all 80 sessions. These
   questions don't tell the conditions apart on correctness. They are well-scoped questions with
   distinctive names that grep finds easily.
-- **Fewer steps, but not cheaper.** xgraph saves 30% of tool calls, 26% of turns, 12% of total
+- **Fewer steps, but not cheaper.** NexusWeave saves 30% of tool calls, 26% of turns, 12% of total
   tokens and 10% of wall time, yet costs 5% more. The savings are in cheap cache reads. Explore
   output arrives as uncached input, and the MCP tools load lazily (33 `ToolSearch` calls, an extra
   round trip per session).
-- **It pays off with repository size.** On codegraph (1.2k files) xgraph is cheaper on every
+- **It pays off with repository size.** On codegraph (1.2k files) NexusWeave is cheaper on every
   task: `cg-index-flow` $0.75 → $0.56 with half the tool calls (22 → 11), `cg-watcher` $0.34 →
   $0.21. On the small repos (express, flask, gin: 80–140 files) baseline is usually cheaper.
-- **The agent doesn't rely on xgraph alone.** In the xgraph sessions: 45 explore calls, 80 `Read`
+- **The agent doesn't rely on NexusWeave alone.** In the NexusWeave sessions: 45 explore calls, 80 `Read`
   and 54 `Grep`. Often it explores, then re-reads the same code anyway.
 
 The token-efficiency claim holds for tool calls and large repos. On small repos it does not hold
@@ -330,6 +335,6 @@ for cost. Next steps, each measurable with the harness:
 
 1. Size explore's budget to the repository: small repos get small answers.
 2. Make the answer self-sufficient enough that the follow-up `Read` isn't needed (or say so).
-3. List `xgraph_explore` eagerly instead of behind `ToolSearch`.
+3. List `nexusweave_explore` eagerly instead of behind `ToolSearch`.
 4. Harder tasks, where grep struggles: cross-file dispatch, callers through interfaces, impact
    on large repos (vscode, django). Grade with an LLM judge as well as the keyword rubric.

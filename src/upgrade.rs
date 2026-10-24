@@ -1,4 +1,4 @@
-//! `xgraph upgrade`: replace this binary with the latest (or a given) GitHub release.
+//! `nexusweave upgrade`: replace this binary with the latest (or a given) GitHub release.
 //!
 //! Uses the system `curl` and `tar` (both ship with Windows 10+) instead of an HTTP stack, and
 //! verifies the archive against the release's `SHA256SUMS` before swapping the executable.
@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const DEFAULT_REPO: &str = "AxiomOperator/xGraph";
-pub const TARGET: &str = env!("XGRAPH_TARGET");
+pub const TARGET: &str = env!("NEXUSWEAVE_TARGET");
 
-fn repo() -> String { std::env::var("XGRAPH_REPO").unwrap_or_else(|_| DEFAULT_REPO.into()) }
+fn repo() -> String { std::env::var("NEXUSWEAVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.into()) }
 
 fn token() -> Option<String> {
     ["GITHUB_TOKEN", "GH_TOKEN"].iter().find_map(|k| std::env::var(k).ok().filter(|t| !t.is_empty()))
@@ -45,9 +45,9 @@ fn curl(url: &str, accept: &str, out: Option<&Path>) -> Result<Vec<u8>> {
     Ok(o.stdout)
 }
 
-/// Archive name for a target: `xgraph-x86_64-unknown-linux-gnu.tar.gz`, `…-windows-msvc.zip`.
+/// Archive name for a target: `nexusweave-x86_64-unknown-linux-gnu.tar.gz`, `…-windows-msvc.zip`.
 pub fn asset_name(target: &str) -> String {
-    format!("xgraph-{target}.{}", if target.contains("windows") { "zip" } else { "tar.gz" })
+    format!("nexusweave-{target}.{}", if target.contains("windows") { "zip" } else { "tar.gz" })
 }
 
 fn parse_ver(v: &str) -> Vec<u64> {
@@ -71,7 +71,7 @@ pub fn run(version: Option<&str>, check: bool, force: bool) -> Result<()> {
     let rel: Value = serde_json::from_slice(&curl(&api, "application/vnd.github+json", None)?).context("parsing release JSON")?;
     let tag = rel["tag_name"].as_str().context("release has no tag")?;
     if !force && version.is_none() && !newer(tag, current) {
-        println!("xgraph {current} is up to date (latest {tag})");
+        println!("nexusweave {current} is up to date (latest {tag})");
         return Ok(());
     }
     if check { println!("update available: {current} → {tag}"); return Ok(()); }
@@ -86,10 +86,10 @@ pub fn run(version: Option<&str>, check: bool, force: bool) -> Result<()> {
     let res = install_from(&tmp, &url, &sums_url, &name);
     let _ = std::fs::remove_dir_all(&tmp);
     let exe = res?;
-    println!("upgraded xgraph {current} → {tag} ({})", exe.display());
+    println!("upgraded nexusweave {current} → {tag} ({})", exe.display());
     #[cfg(unix)]
     if crate::daemon::connect(&std::env::current_dir()?).is_some() {
-        println!("note: a running `xgraph daemon` keeps the old version until it restarts (`xgraph daemon stop`)");
+        println!("note: a running `nexusweave daemon` keeps the old version until it restarts (`nexusweave daemon stop`)");
     }
     Ok(())
 }
@@ -102,7 +102,7 @@ fn private_dir() -> Result<PathBuf> {
         let mut h = std::collections::hash_map::RandomState::new().build_hasher();
         h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
         h.write_u32(std::process::id());
-        let p = std::env::temp_dir().join(format!("xgraph-upgrade-{:016x}", h.finish()));
+        let p = std::env::temp_dir().join(format!("nexusweave-upgrade-{:016x}", h.finish()));
         let b = {
             #[allow(unused_mut)]
             let mut b = std::fs::DirBuilder::new();
@@ -129,7 +129,7 @@ fn install_from(tmp: &Path, url: &str, sums_url: &str, name: &str) -> Result<Pat
 
     let st = Command::new("tar").arg("-xf").arg(&archive).arg("-C").arg(tmp).status().context("running tar")?;
     if !st.success() { bail!("extracting {name} failed"); }
-    let bin = if cfg!(windows) { "xgraph.exe" } else { "xgraph" };
+    let bin = if cfg!(windows) { "nexusweave.exe" } else { "nexusweave" };
     let new = tmp.join(bin);
     if !new.exists() { bail!("{bin} not found in {name}"); }
     replace_exe(&new)
@@ -152,13 +152,13 @@ fn replace_exe(new: &Path) -> Result<PathBuf> {
         // be running (an MCP server), so each gets its own name and stale ones are best-effort deleted
         if let Some(dir) = exe.parent() && let Ok(rd) = std::fs::read_dir(dir) {
             for e in rd.flatten() {
-                if e.file_name().to_string_lossy().starts_with("xgraph.old-") { let _ = std::fs::remove_file(e.path()); }
+                if e.file_name().to_string_lossy().starts_with("nexusweave.old-") { let _ = std::fs::remove_file(e.path()); }
             }
         }
-        let old = exe.with_file_name(format!("xgraph.old-{}.exe", std::process::id()));
+        let old = exe.with_file_name(format!("nexusweave.old-{}.exe", std::process::id()));
         std::fs::rename(&exe, &old)?;
         if let Err(e) = std::fs::rename(&staged, &exe) {
-            let _ = std::fs::rename(&old, &exe); // roll back: never leave the user without xgraph.exe
+            let _ = std::fs::rename(&old, &exe); // roll back: never leave the user without nexusweave.exe
             return Err(e).context("installing the new binary (the previous one was restored)");
         }
         Ok(exe)
@@ -193,9 +193,9 @@ mod tests {
 
     #[test]
     fn sums() {
-        let s = "abc123  xgraph-x86_64-unknown-linux-gnu.tar.gz\nDEF456 *xgraph-x86_64-pc-windows-msvc.zip\n";
-        assert_eq!(expected_sum(s, "xgraph-x86_64-pc-windows-msvc.zip").as_deref(), Some("def456"));
+        let s = "abc123  nexusweave-x86_64-unknown-linux-gnu.tar.gz\nDEF456 *nexusweave-x86_64-pc-windows-msvc.zip\n";
+        assert_eq!(expected_sum(s, "nexusweave-x86_64-pc-windows-msvc.zip").as_deref(), Some("def456"));
         assert_eq!(expected_sum(s, "nope"), None);
-        assert_eq!(asset_name("aarch64-apple-darwin"), "xgraph-aarch64-apple-darwin.tar.gz");
+        assert_eq!(asset_name("aarch64-apple-darwin"), "nexusweave-aarch64-apple-darwin.tar.gz");
     }
 }

@@ -1,5 +1,5 @@
 # Accuracy benchmark corpus. Every entry is pinned to a commit so results are comparable
-# across xgraph versions. `indexer` produces the ground truth (a SCIP index).
+# across nexusweave versions. `indexer` produces the ground truth (a SCIP index).
 #
 #   indexer = "scip-typescript" | "scip-python" | "scip-go" | "rust-analyzer"
 #   args    = extra indexer arguments

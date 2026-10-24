@@ -60,12 +60,12 @@ pub struct Edge {
     pub confidence: u8,
 }
 
-/// Find the project root: nearest ancestor with `.xgraph/graph.db`.
+/// Find the project root: nearest ancestor with `.nexusweave/graph.db`.
 pub fn find_root(start: &Path) -> Option<PathBuf> {
     let start = crate::canonical(start).ok()?;
     let mut cur = Some(start.as_path());
     while let Some(d) = cur {
-        if crate::db::db_path(d).exists() { return Some(d.to_path_buf()); }
+        if crate::db::db_path(d).exists() || crate::db::adopt_legacy(d) { return Some(d.to_path_buf()); }
         cur = d.parent();
     }
     None
@@ -74,7 +74,8 @@ pub fn find_root(start: &Path) -> Option<PathBuf> {
 impl Graph {
     pub fn open(root: &Path) -> Result<Graph> {
         let p = crate::db::db_path(root);
-        if !p.exists() { bail!("no xgraph index at {} — run `xgraph init` there first", root.display()); }
+        crate::db::adopt_legacy(root);
+        if !p.exists() { bail!("no NexusWeave index at {} — run `nexusweave init` there first", root.display()); }
         let db = Db::open(&p)?;
         if !db.compatible() {
             drop(db);
@@ -84,14 +85,14 @@ impl Graph {
         Ok(Graph { db, root: root.to_path_buf() })
     }
 
-    /// Whether `.xgraph/graph.db` has been replaced (rebuilt by `xgraph index`) or removed since
+    /// Whether `.nexusweave/graph.db` has been replaced (rebuilt by `nexusweave index`) or removed since
     /// this graph opened it; long-lived holders reopen instead of serving the old file.
     pub fn is_replaced(&self) -> bool { crate::db::file_id(&crate::db::db_path(&self.root)) != self.db.file }
 
     pub fn discover(start: &Path) -> Result<Graph> {
         match find_root(start) {
             Some(r) => Graph::open(&r),
-            None => bail!("no xgraph index found at or above {} — run `xgraph init`", start.display()),
+            None => bail!("no NexusWeave index found at or above {} — run `nexusweave init`", start.display()),
         }
     }
 

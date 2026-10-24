@@ -56,20 +56,21 @@ jobs:
         run: |
           dir=target/${{ matrix.target }}/release
           if [[ "${{ matrix.target }}" == *windows* ]]; then
-            7z a "xgraph-${{ matrix.target }}.zip" "./$dir/xgraph.exe" README.md
+            # the viewer embeds the brand fonts: their SIL OFL licenses ship alongside
+            7z a "nexusweave-${{ matrix.target }}.zip" "./$dir/nexusweave.exe" README.md ./src/ui/fonts/OFL-*.txt
           else
-            cp README.md "$dir/"
-            tar -czf "xgraph-${{ matrix.target }}.tar.gz" -C "$dir" xgraph README.md
+            cp README.md src/ui/fonts/OFL-*.txt "$dir/"
+            (cd "$dir" && tar -czf "$OLDPWD/nexusweave-${{ matrix.target }}.tar.gz" nexusweave README.md OFL-*.txt)
           fi
       - name: Smoke test
         # binaries for another architecture can't run on the build host
         if: ${{ !matrix.cross && matrix.target != 'x86_64-apple-darwin' }}
         shell: bash
-        run: target/${{ matrix.target }}/release/xgraph --version
+        run: target/${{ matrix.target }}/release/nexusweave --version
       - uses: actions/upload-artifact@v4
         with:
-          name: xgraph-${{ matrix.target }}
-          path: xgraph-${{ matrix.target }}.*
+          name: nexusweave-${{ matrix.target }}
+          path: nexusweave-${{ matrix.target }}.*
 
   publish:
     needs: build
@@ -83,7 +84,7 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Checksums
-        run: cd dist && sha256sum xgraph-* > SHA256SUMS && cat SHA256SUMS
+        run: cd dist && sha256sum nexusweave-* > SHA256SUMS && cat SHA256SUMS
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -92,5 +93,5 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$TAG" dist/* --title "xgraph $TAG" --generate-notes
+            gh release create "$TAG" dist/* --title "NexusWeave $TAG" --generate-notes
           fi

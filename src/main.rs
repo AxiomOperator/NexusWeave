@@ -1,4 +1,4 @@
-use xgraph::*;
+use nexusweave::*;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
@@ -8,7 +8,7 @@ use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(name = "xgraph", version, about = "Fast local code graph for AI coding agents", propagate_version = true)]
+#[command(name = "nexusweave", version, about = "NexusWeave — connected code intelligence for AI agents", propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -16,9 +16,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create .xgraph/ in a project and build its graph
+    /// Create .nexusweave/ in a project and build its graph
     Init { path: Option<PathBuf>, #[arg(short, long)] quiet: bool },
-    /// Remove a project's .xgraph/ directory
+    /// Remove a project's .nexusweave/ directory
     Uninit { path: Option<PathBuf> },
     /// Rebuild the graph from scratch
     Index { path: Option<PathBuf>, #[arg(short, long)] quiet: bool },
@@ -65,7 +65,7 @@ enum Cmd {
     Ui { path: Option<PathBuf>, #[arg(long, default_value_t = 7878)] port: u16, #[arg(long)] no_open: bool },
     /// Register the MCP server with coding agents (Claude Code, Cursor, Codex, ...)
     Install { #[arg(long)] target: Vec<String>, #[arg(long)] print: bool,
-              #[arg(long, help = "also add a Claude Code PreToolUse hook that suggests xgraph_explore for symbol greps")] hooks: bool },
+              #[arg(long, help = "also add a Claude Code PreToolUse hook that suggests nexusweave_explore for symbol greps")] hooks: bool },
     /// Remove the MCP server registration (and the Claude Code hook)
     Uninstall { #[arg(long)] target: Vec<String> },
     /// Replace this binary with the latest GitHub release (checksum-verified)
@@ -94,7 +94,7 @@ fn like_escape(s: &str) -> String { s.replace('\\', "\\\\").replace('%', "\\%").
 
 fn root_arg(p: Option<PathBuf>) -> Result<PathBuf> {
     let p = p.unwrap_or_else(|| PathBuf::from("."));
-    Ok(xgraph::canonical(&p)?)
+    Ok(nexusweave::canonical(&p)?)
 }
 
 fn graph_here() -> Result<Graph> { Graph::discover(Path::new(".")) }
@@ -136,8 +136,10 @@ fn main() -> Result<()> {
         }
         Cmd::Uninit { path } => {
             let root = root_arg(path)?;
-            let d = root.join(".xgraph");
-            if d.exists() { std::fs::remove_dir_all(&d)?; eprintln!("removed {}", d.display()); } else { eprintln!("no .xgraph/ in {}", root.display()); }
+            let d = root.join(".nexusweave");
+            let legacy = root.join(format!(".{}", nexusweave::db::LEGACY_NAME));
+            if legacy.join("graph.db").exists() { std::fs::remove_dir_all(&legacy)?; eprintln!("removed {}", legacy.display()); }
+            if d.exists() { std::fs::remove_dir_all(&d)?; eprintln!("removed {}", d.display()); } else { eprintln!("no .nexusweave/ in {}", root.display()); }
         }
         Cmd::Sync { path, quiet, resolve } => {
             let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).unwrap_or(root_arg(None)?) };
@@ -226,7 +228,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::DiffImpact { base, staged, stdin, depth, json } => {
-            let root = query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `xgraph init`"))?;
+            let root = query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `nexusweave init`"))?;
             index::sync(&root, None)?;  // analyse the working tree as it is now
             let g = Graph::open(&root)?;
             let diff = if stdin { let mut s = String::new(); std::io::stdin().read_to_string(&mut s)?; s } else { impact::git_diff(&root, &base, staged)? };
@@ -234,7 +236,7 @@ fn main() -> Result<()> {
             if json { println!("{}", serde_json::to_string_pretty(&r)?); } else { print!("{}", impact::render(&r)); }
         }
         Cmd::Daemon { action, path } => {
-            let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `xgraph init`"))? };
+            let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `nexusweave init`"))? };
             #[cfg(unix)]
             match action.as_deref().unwrap_or("status") {
                 "run" => daemon::run(&root)?,
@@ -249,7 +251,7 @@ fn main() -> Result<()> {
                 other => bail!("unknown daemon action `{other}` (run | status | stop)"),
             }
             #[cfg(not(unix))]
-            { let _ = (action, root); bail!("the shared daemon needs Unix sockets; `xgraph serve` runs in-process on this platform"); }
+            { let _ = (action, root); bail!("the shared daemon needs Unix sockets; `nexusweave serve` runs in-process on this platform"); }
         }
         Cmd::Watch { path } => {
             let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).unwrap_or(root_arg(None)?) };
@@ -263,7 +265,7 @@ fn main() -> Result<()> {
             mcp::serve(root, !no_watch)?;
         }
         Cmd::Ui { path, port, no_open } => {
-            let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `xgraph init`"))? };
+            let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `nexusweave init`"))? };
             ui::serve(&root, port, !no_open)?;
         }
         Cmd::Install { target, print, hooks } => install::install(&target, print, hooks)?,

@@ -1,6 +1,6 @@
 # Accuracy benchmark
 
-This benchmark measures how well xgraph's resolved edges match what a compiler-grade indexer
+This benchmark measures how well NexusWeave's resolved edges match what a compiler-grade indexer
 says, on a pinned corpus of public repositories. Run it after any change to extraction or
 resolution. Commit an updated `baseline.json` only when the numbers move the way you intended.
 
@@ -13,7 +13,7 @@ bench/accuracy.py --check bench/baseline.json   # exit 1 if precision or recall 
 bench/accuracy.py --update-baseline    # accept the current numbers
 ```
 
-Error samples for each repo (wrong targets, plus truth references xgraph never extracted) are
+Error samples for each repo (wrong targets, plus truth references NexusWeave never extracted) are
 written to `bench/.cache/reports/<repo>.md`. That file is the place to start when a number moves.
 
 ## Ground truth
@@ -37,17 +37,17 @@ languages are covered by the fixture tests in `tests/` only.
 
 ## What is scored
 
-The benchmark aligns each xgraph reference (`calls`, `instantiates`, `extends`, `implements`,
+The benchmark aligns each NexusWeave reference (`calls`, `instantiates`, `extends`, `implements`,
 `references`, `passes`) with the SCIP occurrence of the same identifier in the same file.
-xgraph records a member call at the receiver's line, and SCIP records it at the identifier, so a
+NexusWeave records a member call at the receiver's line, and SCIP records it at the identifier, so a
 match may be up to 8 lines below.
 
 | metric | definition |
 |---|---|
 | **precision** | correct ÷ (correct + wrong), over refs the truth can judge. "Wrong" includes binding a library call to a same-named project symbol. |
 | **recall** | correct ÷ truth refs. Truth refs are in-project references to functions, methods, types and macros. |
-| **extracted** | truth refs xgraph emitted a ref for at all. This is extraction coverage, independent of resolution. |
-| **overrides P / R** | xgraph `overrides` edges against SCIP `is_implementation`, scored only for methods the truth has relationship data for. |
+| **extracted** | truth refs NexusWeave emitted a ref for at all. This is extraction coverage, independent of resolution. |
+| **overrides P / R** | NexusWeave `overrides` edges against SCIP `is_implementation`, scored only for methods the truth has relationship data for. |
 | **precision by confidence** | in `latest.json`. Shows which resolver tiers produce the errors. |
 
 A target is correct when it is in the same file as the truth definition and its span contains
@@ -58,8 +58,8 @@ class node.
 
 The following are left out of scoring, and each is counted in `latest.json`:
 
-- **Import statements:** SCIP counts names on `import` / `from … import` / `use` lines; xgraph models imports separately.
-- **Accessors** (`accessor_refs`): TS getter/setter reads such as `node.type`. xgraph doesn't model property access.
+- **Import statements:** SCIP counts names on `import` / `from … import` / `use` lines; NexusWeave models imports separately.
+- **Accessors** (`accessor_refs`): TS getter/setter reads such as `node.type`. NexusWeave doesn't model property access.
 - **Truth text mismatches** (`truth_dropped`): occurrences whose source text doesn't name their symbol. These are import aliases, Rust operator overloads (`?`, `==`, `[]`), and indexer bugs; scip-python 0.6.8 labels `httpx.Response` as `Request#`.
 - **Incomplete truth** (`unverifiable`): a symbol from the project's own package with no definition in the index. Go tooling skips `testdata/`, for example.
 - **Files the indexer didn't cover** (`outside_truth`): scip-typescript only indexes files in a tsconfig project. For codegraph that is 297 of its 1,306 files.
@@ -90,21 +90,21 @@ hono, httpx and ripgrep, and 100% on flask. The weakest band is ripgrep's 50–6
 2. Run `bench/accuracy.py --repo <name>`.
 3. Read `bench/.cache/reports/<name>.md`.
 
-Before trusting a new repo's numbers, check that the wrong and missed samples are real xgraph
+Before trusting a new repo's numbers, check that the wrong and missed samples are real NexusWeave
 errors and not truth artifacts. Every exclusion above was found this way.
 
 ## Agent evaluation (`bench/agent/`)
 
-`bench/agent/run.py` measures what xgraph does for an agent: the same 20 code questions
+`bench/agent/run.py` measures what NexusWeave does for an agent: the same 20 code questions
 (`bench/agent/tasks.toml`) go through headless Claude Code (`claude -p`) under two conditions:
 
 | condition | tools |
 |---|---|
 | `baseline` | Read, Grep, Glob |
-| `xgraph` | Read, Grep, Glob + the xgraph MCP server (index built beforehand, watcher off) |
+| `nexusweave` | Read, Grep, Glob + the NexusWeave MCP server (index built beforehand, watcher off) |
 
 - Each condition gets its own clean checkout of the corpus repo at the pinned commit
-  (`bench/.cache/agent/<repo>-<condition>`); only the xgraph one contains an index.
+  (`bench/.cache/agent/<repo>-<condition>`); only the NexusWeave one contains an index.
 - Sessions are read-only (Bash, Edit, Write, web tools and subagents are disallowed), load no
   user or project settings (`--setting-sources ""`), and run with `--strict-mcp-config`.
 - The tasks mix three kinds: `flow` (how does X reach Y), `explain` (how does X work) and

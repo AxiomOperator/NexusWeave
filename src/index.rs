@@ -14,7 +14,7 @@ pub const MAX_FILE_SIZE: u64 = 1_500_000;
 const DEFAULT_EXCLUDES: &[&str] = &[
     "node_modules", "vendor", "dist", "build", "target", "out", ".git", "__pycache__", ".venv", "venv",
     "env", ".tox", "coverage", ".next", ".nuxt", ".svelte-kit", ".turbo", ".cache", "bower_components",
-    "Pods", "DerivedData", ".gradle", "bin", "obj", ".xgraph", ".codegraph", "site-packages", ".mypy_cache",
+    "Pods", "DerivedData", ".gradle", "bin", "obj", ".nexusweave", ".codegraph", "site-packages", ".mypy_cache",
     ".pytest_cache",
 ];
 
@@ -76,10 +76,10 @@ pub fn excluded(root: &Path, rel: &str) -> bool {
     if segs.iter().any(|s| DEFAULT_EXCLUDES.contains(s) || s.starts_with('.')) { return true; }
     let mut b = ignore::gitignore::GitignoreBuilder::new(root);
     let mut dir = root.to_path_buf();
-    for f in [".gitignore", ".xgraphignore"] { let _ = b.add(dir.join(f)); }
+    for f in [".gitignore", ".nexusweaveignore", ".xgraphignore"] { let _ = b.add(dir.join(f)); }
     for s in &segs {
         dir = dir.join(s);
-        for f in [".gitignore", ".xgraphignore"] { let p = dir.join(f); if p.exists() { let _ = b.add(p); } }
+        for f in [".gitignore", ".nexusweaveignore", ".xgraphignore"] { let p = dir.join(f); if p.exists() { let _ = b.add(p); } }
     }
     match b.build() {
         Ok(gi) => gi.matched_path_or_any_parents(rel, false).is_ignore(),
@@ -90,7 +90,7 @@ pub fn excluded(root: &Path, rel: &str) -> bool {
 pub fn discover(root: &Path) -> Vec<Candidate> {
     let mut wb = ignore::WalkBuilder::new(root);
     wb.hidden(true).git_ignore(true).git_global(false).git_exclude(true).parents(false)
-        .add_custom_ignore_filename(".xgraphignore").follow_links(false)
+        .add_custom_ignore_filename(".nexusweaveignore").add_custom_ignore_filename(".xgraphignore").follow_links(false)
         .threads(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(12));
     let root_owned = root.to_path_buf();
     wb.filter_entry(move |e| {
@@ -146,7 +146,7 @@ fn parse_bytes(c: &Candidate, src: &[u8], hash: u64) -> Parsed {
 
 fn pool() -> &'static rayon::ThreadPool {
     static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().stack_size(32 << 20).thread_name(|i| format!("xgraph-parse-{i}")).build().unwrap())
+    POOL.get_or_init(|| rayon::ThreadPoolBuilder::new().stack_size(32 << 20).thread_name(|i| format!("nexusweave-parse-{i}")).build().unwrap())
 }
 
 /// Parse candidates in parallel and stream results into `sink` on the calling thread, in
@@ -159,7 +159,7 @@ fn parse_stream(cands: Vec<Candidate>, mut sink: impl FnMut(Parsed) -> Result<()
         // workers claim files in index order, so in-order writing never waits on one thread's backlog
         for w in 0..workers {
             let (tx, cands, next_job) = (tx.clone(), &cands, &next_job);
-            std::thread::Builder::new().name(format!("xgraph-parse-{w}")).stack_size(32 << 20).spawn_scoped(s, move || {
+            std::thread::Builder::new().name(format!("nexusweave-parse-{w}")).stack_size(32 << 20).spawn_scoped(s, move || {
                 loop {
                     let i = next_job.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(c) = cands.get(i) else { break };
@@ -182,7 +182,8 @@ fn parse_stream(cands: Vec<Candidate>, mut sink: impl FnMut(Parsed) -> Result<()
 }
 
 pub fn ensure_dir(root: &Path) -> Result<()> {
-    let d = root.join(".xgraph");
+    crate::db::adopt_legacy(root);
+    let d = root.join(".nexusweave");
     std::fs::create_dir_all(&d)?;
     let gi = d.join(".gitignore");
     if !gi.exists() { std::fs::write(gi, "*\n")?; }
@@ -224,7 +225,7 @@ pub fn full_index(root: &Path, mut progress: impl FnMut(usize, usize)) -> Result
         })?;
         let t = Instant::now();
         w.commit()?;
-        if std::env::var_os("XGRAPH_TRACE").is_some() { eprintln!("[index] writer busy {} ms, commit {} ms", busy.as_millis(), t.elapsed().as_millis()); }
+        if std::env::var_os("NEXUSWEAVE_TRACE").is_some() { eprintln!("[index] writer busy {} ms, commit {} ms", busy.as_millis(), t.elapsed().as_millis()); }
     }
     st.files_indexed = total;
     st.ms_parse = t1.elapsed().as_millis();
@@ -232,7 +233,7 @@ pub fn full_index(root: &Path, mut progress: impl FnMut(usize, usize)) -> Result
     st.resolved = crate::resolve::resolve(&mut db, root, crate::resolve::Scope::Fresh(pending))?;
     let t = Instant::now();
     db.create_indexes()?;
-    if std::env::var_os("XGRAPH_TRACE").is_some() { eprintln!("[index] create indexes {} ms", t.elapsed().as_millis()); }
+    if std::env::var_os("NEXUSWEAVE_TRACE").is_some() { eprintln!("[index] create indexes {} ms", t.elapsed().as_millis()); }
     st.ms_resolve = t2.elapsed().as_millis();
     db.set_meta("indexed_at", &now_ms().to_string())?;
     db.set_meta("version", env!("CARGO_PKG_VERSION"))?;
@@ -242,7 +243,7 @@ pub fn full_index(root: &Path, mut progress: impl FnMut(usize, usize)) -> Result
     let t = Instant::now();
     // sampled statistics: the planner only needs rough row counts per index
     db.conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA analysis_limit=1000; ANALYZE;")?;
-    if std::env::var_os("XGRAPH_TRACE").is_some() { eprintln!("[index] fts optimize {} ms, analyze {} ms", t_opt.as_millis(), t.elapsed().as_millis()); }
+    if std::env::var_os("NEXUSWEAVE_TRACE").is_some() { eprintln!("[index] fts optimize {} ms, analyze {} ms", t_opt.as_millis(), t.elapsed().as_millis()); }
     drop(db);
     for ext in ["-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{ext}", path.display())); }
     std::fs::rename(&tmp, &path)?;
@@ -280,6 +281,7 @@ pub fn sync_with(root: &Path, only: Option<&[String]>, cache: Option<&mut Option
 fn sync_inner(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Option<crate::resolve::Cache>>, force: bool) -> Result<Stats> {
     let t0 = Instant::now();
     let path = db_path(root);
+    crate::db::adopt_legacy(root);
     let rebuild = |cache: &mut Option<&mut Option<crate::resolve::Cache>>| {
         if let Some(c) = cache.as_mut() { **c = None; }
         full_index(root, |_, _| {})
@@ -436,7 +438,7 @@ fn sync_inner(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Optio
         // seconds; past the cap the remaining edges appear at the next full index
         const MAX_REEXTRACT: usize = 400;
         if again.len() > MAX_REEXTRACT {
-            if std::env::var_os("XGRAPH_TRACE").is_some() { eprintln!("[sync] {} files pass a new name as a value; re-extracting the first {MAX_REEXTRACT}", again.len()); }
+            if std::env::var_os("NEXUSWEAVE_TRACE").is_some() { eprintln!("[sync] {} files pass a new name as a value; re-extracting the first {MAX_REEXTRACT}", again.len()); }
             again.truncate(MAX_REEXTRACT);
         }
         if !again.is_empty() {

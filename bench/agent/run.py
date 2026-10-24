@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Agent evaluation (roadmap 3.3): the same code questions through Claude Code, with and without
-the xgraph MCP server.
+the nexusweave MCP server.
 
 Each (task, condition, repeat) is one headless `claude -p` session in its own clean checkout of a
 bench/corpus.toml repo at the pinned commit:
 
   baseline   Read, Grep, Glob only
-  xgraph     the same tools plus the xgraph MCP server (index built beforehand, watcher off)
+  nexusweave     the same tools plus the nexusweave MCP server (index built beforehand, watcher off)
 
 Both conditions are read-only (Bash, Edit, Write, web and subagents are disallowed), use no user or
 project settings, and see the same prompt. Per session we record tokens (input, cache write, cache
@@ -39,7 +39,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BENCH = ROOT / "bench"
 CACHE = BENCH / ".cache"
 WORK = CACHE / "agent"
-CONDITIONS = ("baseline", "xgraph")
+CONDITIONS = ("baseline", "nexusweave")
 SUFFIX = ("\n\nAnswer from the code in this repository. Name the specific functions, methods and types "
           "involved. Do not modify any files.")
 READ_TOOLS = ["Read", "Grep", "Glob"]
@@ -56,8 +56,8 @@ def corpus() -> dict[str, dict]:
     return {r["name"]: r for r in tomllib.loads((BENCH / "corpus.toml").read_text())["repo"]}
 
 
-def workspace(repo: str, cond: str, xgraph: Path) -> Path:
-    """A clean checkout per (repo, condition); only the xgraph one carries an index."""
+def workspace(repo: str, cond: str, nexusweave: Path) -> Path:
+    """A clean checkout per (repo, condition); only the nexusweave one carries an index."""
     ws = WORK / f"{repo}-{cond}"
     src = CACHE / "repos" / repo
     commit = corpus()[repo]["commit"]
@@ -67,15 +67,15 @@ def workspace(repo: str, cond: str, xgraph: Path) -> Path:
     shutil.rmtree(ws, ignore_errors=True)
     subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", str(src), str(ws)], check=True)
     subprocess.run(["git", "-C", str(ws), "checkout", "-q", commit], check=True)
-    if cond == "xgraph":
-        subprocess.run([str(xgraph), "index", "-q", str(ws)], check=True, capture_output=True)
+    if cond == "nexusweave":
+        subprocess.run([str(nexusweave), "index", "-q", str(ws)], check=True, capture_output=True)
     marker.write_text(commit)
     return ws
 
 
-def mcp_config(cond: str, ws: Path, xgraph: Path) -> Path:
+def mcp_config(cond: str, ws: Path, nexusweave: Path) -> Path:
     cfg = WORK / f"mcp-{ws.name}.json"
-    servers = {"xgraph": {"command": str(xgraph), "args": ["serve", "--path", str(ws), "--no-watch"]}} if cond == "xgraph" else {}
+    servers = {"nexusweave": {"command": str(nexusweave), "args": ["serve", "--path", str(ws), "--no-watch"]}} if cond == "nexusweave" else {}
     cfg.write_text(json.dumps({"mcpServers": servers}))
     return cfg
 
@@ -86,11 +86,11 @@ def score(answer: str, rubric: list[list[str]]) -> tuple[float, list[str]]:
     return (len(rubric) - len(missed)) / len(rubric), missed
 
 
-def run_one(task: dict, cond: str, rep: int, args, xgraph: Path) -> dict:
-    ws = workspace(task["repo"], cond, xgraph)
-    allowed = READ_TOOLS + (["mcp__xgraph"] if cond == "xgraph" else [])
+def run_one(task: dict, cond: str, rep: int, args, nexusweave: Path) -> dict:
+    ws = workspace(task["repo"], cond, nexusweave)
+    allowed = READ_TOOLS + (["mcp__nexusweave"] if cond == "nexusweave" else [])
     cmd = ["claude", "-p", task["prompt"] + SUFFIX, "--output-format", "stream-json", "--verbose",
-           "--strict-mcp-config", "--mcp-config", str(mcp_config(cond, ws, xgraph)),
+           "--strict-mcp-config", "--mcp-config", str(mcp_config(cond, ws, nexusweave)),
            "--allowedTools", *allowed, "--disallowedTools", *DENY,
            "--setting-sources", "", "--no-session-persistence", "--max-budget-usd", str(args.budget)]
     if args.model:
@@ -153,9 +153,9 @@ def report(path: Path) -> str:
     for c, a in by.items():
         out.append(f"| {c} | {a['score']:.1%} | {a['full']:.0%} | {a['tokens']:,.0f} | {a['fresh']:,.0f} | {a['output']:,.0f} | ${a['cost']:.3f} | {a['turns']:.1f} | {a['tools']:.1f} | {a['wall']:.0f} s |")
     if len(by) == 2:
-        b, x = by["baseline"], by["xgraph"]
+        b, x = by["baseline"], by["nexusweave"]
         d = lambda k: (x[k] - b[k]) / b[k] if b[k] else 0.0
-        out.append(f"\nxgraph vs baseline: tokens {d('tokens'):+.0%}, cost {d('cost'):+.0%}, tool calls {d('tools'):+.0%}, "
+        out.append(f"\nnexusweave vs baseline: tokens {d('tokens'):+.0%}, cost {d('cost'):+.0%}, tool calls {d('tools'):+.0%}, "
                    f"wall {d('wall'):+.0%}, rubric score {x['score'] - b['score']:+.1%} (points)")
     out.append("\n| kind | condition | n | score | tokens | cost | tool calls |")
     out.append("|---|---|---:|---:|---:|---:|---:|")
@@ -163,7 +163,7 @@ def report(path: Path) -> str:
         for c in by:
             a = agg([r for r in rows if r["kind"] == k and r["condition"] == c])
             out.append(f"| {k} | {c} | {a['n']} | {a['score']:.0%} | {a['tokens']:,.0f} | ${a['cost']:.3f} | {a['tools']:.1f} |")
-    out.append("\n| task | baseline score | xgraph score | baseline cost | xgraph cost | baseline tools | xgraph tools |")
+    out.append("\n| task | baseline score | nexusweave score | baseline cost | nexusweave cost | baseline tools | nexusweave tools |")
     out.append("|---|---:|---:|---:|---:|---:|---:|")
     for t in dict.fromkeys(r["task"] for r in rows):
         cells = []
@@ -174,11 +174,11 @@ def report(path: Path) -> str:
         out.append(f"| {t} | {cells[0]} | {cells[1]} | {cells[2]} | {cells[3]} | {cells[4]} | {cells[5]} |")
     used = {}
     for r in rows:
-        if r["condition"] == "xgraph":
+        if r["condition"] == "nexusweave":
             for k, v in r["tools"].items():
                 used[k] = used.get(k, 0) + v
     if used:
-        out.append("\nxgraph-condition tool use: " + ", ".join(f"{k} {v}" for k, v in sorted(used.items(), key=lambda kv: -kv[1])))
+        out.append("\nnexusweave-condition tool use: " + ", ".join(f"{k} {v}" for k, v in sorted(used.items(), key=lambda kv: -kv[1])))
     return "\n".join(out)
 
 
@@ -191,16 +191,16 @@ def main() -> None:
     ap.add_argument("--budget", type=float, default=3.0, help="max USD per session")
     ap.add_argument("--timeout", type=int, default=900, help="seconds per session")
     ap.add_argument("--parallel", type=int, default=4)
-    ap.add_argument("--xgraph", default=str(ROOT / "target/release/xgraph"))
+    ap.add_argument("--nexusweave", default=str(ROOT / "target/release/nexusweave"))
     ap.add_argument("--out", default=str(BENCH / "results/agent.jsonl"))
     ap.add_argument("--report", metavar="JSONL", help="only print the report for an existing results file")
     args = ap.parse_args()
     if args.report:
         print(report(Path(args.report)))
         return
-    xgraph = Path(args.xgraph).resolve()
-    if not xgraph.exists():
-        sys.exit(f"build xgraph first: {xgraph}")
+    nexusweave = Path(args.nexusweave).resolve()
+    if not nexusweave.exists():
+        sys.exit(f"build nexusweave first: {nexusweave}")
     tasks = load_tasks()
     if args.tasks:
         want = set(args.tasks.split(","))
@@ -220,9 +220,9 @@ def main() -> None:
     print(f"{len(jobs)} sessions to run ({len(done)} already done) → {out}", flush=True)
     for repo in dict.fromkeys(t["repo"] for t, _, _ in jobs):
         for c in conds:
-            workspace(repo, c, xgraph)
+            workspace(repo, c, nexusweave)
     with cf.ThreadPoolExecutor(args.parallel) as pool:
-        futs = {pool.submit(run_one, t, c, rep, args, xgraph): (t["id"], c, rep) for t, c, rep in jobs}
+        futs = {pool.submit(run_one, t, c, rep, args, nexusweave): (t["id"], c, rep) for t, c, rep in jobs}
         for i, f in enumerate(cf.as_completed(futs), 1):
             r = f.result()
             with lock, out.open("a") as fh:

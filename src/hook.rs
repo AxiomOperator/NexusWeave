@@ -1,7 +1,7 @@
-//! Claude Code hook integration (`xgraph install --hooks`, `xgraph hook pretool`).
+//! Claude Code hook integration (`nexusweave install --hooks`, `nexusweave hook pretool`).
 //!
 //! A `PreToolUse` hook on Grep/Glob: when the agent starts a symbol-shaped sweep inside an indexed
-//! repository, add a one-line hint that `xgraph_explore` answers it in one call. The tool always
+//! repository, add a one-line hint that `nexusweave_explore` answers it in one call. The tool always
 //! still runs — the hint goes in `additionalContext` and no permission decision is made — and any
 //! error or doubt means no output at all.
 
@@ -57,8 +57,8 @@ pub fn hint(input: &Value) -> Option<String> {
     };
     if terms.is_empty() { return None; }
     Some(format!(
-        "This repository is indexed by xgraph. To find where `{}` is defined, who calls it and how it flows, \
-         mcp__xgraph__xgraph_explore with query \"{}\" returns the relevant line-numbered source in one call \
+        "This repository is indexed by NexusWeave. To find where `{}` is defined, who calls it and how it flows, \
+         mcp__nexusweave__nexusweave_explore with query \"{}\" returns the relevant line-numbered source in one call \
          (usually fewer tokens than grep + read). Plain text searches are fine with {tool}.",
         terms[0], terms.join(" ")))
 }
@@ -67,13 +67,13 @@ pub fn hint(input: &Value) -> Option<String> {
 fn due(session: &str) -> bool {
     let safe: String = session.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(80).collect();
     if safe.is_empty() { return true; }
-    let f = std::env::temp_dir().join(format!("xgraph-hook-{safe}"));
+    let f = std::env::temp_dir().join(format!("nexusweave-hook-{safe}"));
     let n: u32 = std::fs::read_to_string(&f).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
     let _ = std::fs::write(&f, (n + 1).to_string());
     n.is_multiple_of(EVERY)
 }
 
-/// `xgraph hook pretool`: read the hook payload on stdin, maybe print the hint JSON.
+/// `nexusweave hook pretool`: read the hook payload on stdin, maybe print the hint JSON.
 pub fn pretool() -> Result<()> {
     let mut s = String::new();
     if std::io::stdin().take(1 << 20).read_to_string(&mut s).is_err() { return Ok(()); }
@@ -84,7 +84,10 @@ pub fn pretool() -> Result<()> {
     Ok(())
 }
 
-fn is_our_hook(h: &Value) -> bool { h["command"].as_str().is_some_and(|c| c.contains("xgraph") && c.ends_with("hook pretool")) }
+/// Ours, or the pre-rebrand `xgraph hook pretool` (replaced on install, removed on uninstall).
+fn is_our_hook(h: &Value) -> bool {
+    h["command"].as_str().is_some_and(|c| (c.contains("nexusweave") || c.contains(crate::db::LEGACY_NAME)) && c.ends_with("hook pretool"))
+}
 
 /// Add (or remove) the PreToolUse entry in a Claude Code settings file, leaving other hooks alone.
 pub fn set_claude_hook(settings: &Value, exe: &str, add: bool) -> Value {
@@ -125,15 +128,20 @@ mod tests {
         let other = json!({"matcher": "Bash", "hooks": [{"type": "command", "command": "lint"}]});
         let s = json!({"model": "x", "hooks": {"PreToolUse": [other.clone()]}});
         // a user entry that also holds our hook keeps its own hooks on uninstall
-        let mixed = json!({"hooks": {"PreToolUse": [{"matcher": "Grep|Glob", "hooks": [{"type": "command", "command": "mine"}, {"type": "command", "command": "\"/bin/xgraph\" hook pretool"}]}]}});
-        assert_eq!(set_claude_hook(&mixed, "/bin/xgraph", false)["hooks"]["PreToolUse"][0]["hooks"].as_array().unwrap().len(), 1);
-        assert_eq!(set_claude_hook(&json!({}), r"C:\Users\me\xgraph.exe", true)["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "\"C:/Users/me/xgraph.exe\" hook pretool");
-        let a = set_claude_hook(&s, "/bin/xgraph", true);
-        let a2 = set_claude_hook(&a, "/bin/xgraph", true);
+        let mixed = json!({"hooks": {"PreToolUse": [{"matcher": "Grep|Glob", "hooks": [{"type": "command", "command": "mine"}, {"type": "command", "command": "\"/bin/nexusweave\" hook pretool"}]}]}});
+        assert_eq!(set_claude_hook(&mixed, "/bin/nexusweave", false)["hooks"]["PreToolUse"][0]["hooks"].as_array().unwrap().len(), 1);
+        assert_eq!(set_claude_hook(&json!({}), r"C:\Users\me\nexusweave.exe", true)["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "\"C:/Users/me/nexusweave.exe\" hook pretool");
+        let a = set_claude_hook(&s, "/bin/nexusweave", true);
+        let a2 = set_claude_hook(&a, "/bin/nexusweave", true);
         assert_eq!(a, a2, "install is idempotent");
         assert_eq!(a["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
-        let r = set_claude_hook(&a, "/bin/xgraph", false);
+        let r = set_claude_hook(&a, "/bin/nexusweave", false);
         assert_eq!(r, s, "uninstall restores the original");
-        assert_eq!(set_claude_hook(&json!({}), "/bin/xgraph", false), json!({}));
+        assert_eq!(set_claude_hook(&json!({}), "/bin/nexusweave", false), json!({}));
+        // the pre-rebrand hook is replaced, not duplicated
+        let legacy = json!({"hooks": {"PreToolUse": [{"matcher": "Grep|Glob", "hooks": [{"type": "command", "command": "\"/bin/xgraph\" hook pretool"}]}]}});
+        let up = set_claude_hook(&legacy, "/bin/nexusweave", true);
+        assert_eq!(up["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(up["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "\"/bin/nexusweave\" hook pretool");
     }
 }

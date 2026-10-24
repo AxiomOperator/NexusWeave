@@ -13,48 +13,48 @@ const PROTOCOL: &str = "2025-06-18";
 const MAX_OUT: usize = 30_000;
 
 pub const INSTRUCTIONS: &str = "\
-xgraph is a pre-built semantic graph of this codebase (symbols, calls, imports, inheritance), kept in sync with the files on disk.
+NexusWeave is a pre-built semantic graph of this codebase (symbols, calls, imports, inheritance), kept in sync with the files on disk.
 
-Use `xgraph_explore` FIRST for almost any code question or before editing — instead of grep/glob/read loops and instead of spawning exploration sub-agents. One call returns the relevant symbols' verbatim, line-numbered source grouped by file, the call path between the symbols you name, and a blast-radius list of dependents.
+Use `nexusweave_explore` FIRST for almost any code question or before editing — instead of grep/glob/read loops and instead of spawning exploration sub-agents. One call returns the relevant symbols' verbatim, line-numbered source grouped by file, the call path between the symbols you name, and a blast-radius list of dependents.
 - Name concrete identifiers when you know them (`AuthService.login`, `parse_config`); for a flow question name both ends (\"how does handleRequest reach Db.query\").
 - Include a file path (optionally `path:10-40`) to read that file region in the same call.
 - Results are lexical+graph ranked, not semantic: if a name is reported as not in the index, try a different identifier.
 - Trust the returned source; it is read from disk at call time. Don't re-read the same ranges.
 - Source already sent earlier in this session comes back as a short \"already shown\" pointer (only while the file is unchanged); pass `fresh: true` if you need it again.
-Use `xgraph_node` to read one symbol (source + callers + callees) or a file with line numbers.
-Use `xgraph_diff_impact` after making changes (or when reviewing a branch) to see what they affect and which tests to run. If a project has no index, fall back to your normal tools — don't run `xgraph init` yourself unless asked.";
+Use `nexusweave_node` to read one symbol (source + callers + callees) or a file with line numbers.
+Use `nexusweave_diff_impact` after making changes (or when reviewing a branch) to see what they affect and which tests to run. If a project has no index, fall back to your normal tools — don't run `nexusweave init` yourself unless asked.";
 
 fn tool_defs() -> Vec<Value> {
     let pp = json!({"type": "string", "description": "Absolute path of the project to query (defaults to the server's project)."});
     vec![
-        json!({"name": "xgraph_explore", "description": "Answer a code question in one call: the relevant symbols' verbatim line-numbered source grouped by file, the call path among symbols you name, and a blast-radius summary of dependents. Use for 'how does X work', 'how does X reach Y', surveying an area, or before editing. Name files (optionally path:start-end) or symbols in the query to read them.",
+        json!({"name": "nexusweave_explore", "description": "Answer a code question in one call: the relevant symbols' verbatim line-numbered source grouped by file, the call path among symbols you name, and a blast-radius summary of dependents. Use for 'how does X work', 'how does X reach Y', surveying an area, or before editing. Name files (optionally path:start-end) or symbols in the query to read them.",
             "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "Question or identifiers, e.g. 'how does UserService.login validate the token'"}, "budget": {"type": "integer", "description": "Approximate output size in tokens (default scales with repo size)"}, "fresh": {"type": "boolean", "description": "Re-send source already shown earlier in this session (e.g. after context was compacted)"}, "projectPath": pp}, "required": ["query"]}}),
-        json!({"name": "xgraph_node", "description": "One symbol's source, signature, callers and callees — or, given a file path, the file's line-numbered contents and outline.",
+        json!({"name": "nexusweave_node", "description": "One symbol's source, signature, callers and callees — or, given a file path, the file's line-numbered contents and outline.",
             "inputSchema": {"type": "object", "properties": {"symbol": {"type": "string", "description": "Symbol name (qualified ok: Class.method, mod::fn) or a file path"}, "file": {"type": "string", "description": "Disambiguate by file"}, "includeCode": {"type": "boolean", "default": true}, "offset": {"type": "integer", "description": "File mode: first line (1-based)"}, "limit": {"type": "integer", "description": "File mode: number of lines"}, "projectPath": pp}, "required": ["symbol"]}}),
-        json!({"name": "xgraph_search", "description": "Find symbols by name or keywords. Returns kind, qualified name and location.",
+        json!({"name": "nexusweave_search", "description": "Find symbols by name or keywords. Returns kind, qualified name and location.",
             "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "kind": {"type": "string", "description": "function|method|class|interface|struct|trait|enum|type_alias|variable|constant"}, "limit": {"type": "integer", "default": 15}, "projectPath": pp}, "required": ["query"]}}),
-        json!({"name": "xgraph_callers", "description": "Everything that calls / references a symbol.",
+        json!({"name": "nexusweave_callers", "description": "Everything that calls / references a symbol.",
             "inputSchema": {"type": "object", "properties": {"symbol": {"type": "string"}, "file": {"type": "string"}, "limit": {"type": "integer", "default": 30}, "projectPath": pp}, "required": ["symbol"]}}),
-        json!({"name": "xgraph_callees", "description": "Everything a symbol calls / references.",
+        json!({"name": "nexusweave_callees", "description": "Everything a symbol calls / references.",
             "inputSchema": {"type": "object", "properties": {"symbol": {"type": "string"}, "file": {"type": "string"}, "limit": {"type": "integer", "default": 30}, "projectPath": pp}, "required": ["symbol"]}}),
-        json!({"name": "xgraph_impact", "description": "Transitive dependents of a symbol (what could break if it changes), grouped by file.",
+        json!({"name": "nexusweave_impact", "description": "Transitive dependents of a symbol (what could break if it changes), grouped by file.",
             "inputSchema": {"type": "object", "properties": {"symbol": {"type": "string"}, "file": {"type": "string"}, "depth": {"type": "integer", "default": 2}, "projectPath": pp}, "required": ["symbol"]}}),
-        json!({"name": "xgraph_files", "description": "List indexed files under a directory prefix with symbol counts.",
+        json!({"name": "nexusweave_files", "description": "List indexed files under a directory prefix with symbol counts.",
             "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "projectPath": pp}}}),
-        json!({"name": "xgraph_diff_impact", "description": "Before committing or reviewing: which symbols the current change (git diff against `base`, default HEAD) touches, who calls them, the HTTP routes whose flows reach them, and the tests to run.",
+        json!({"name": "nexusweave_diff_impact", "description": "Before committing or reviewing: which symbols the current change (git diff against `base`, default HEAD) touches, who calls them, the HTTP routes whose flows reach them, and the tests to run.",
             "inputSchema": {"type": "object", "properties": {"base": {"type": "string", "description": "git ref to diff against (default HEAD = all uncommitted changes)"}, "depth": {"type": "integer", "default": 2}, "projectPath": pp}}}),
-        json!({"name": "xgraph_analyze", "description": "Whole-codebase analysis: `dead` (unreferenced code), `cycles` (import cycles), `entry` (routes, listeners, mains, package APIs), `hotspots` (fan-in × size × recent churn).",
+        json!({"name": "nexusweave_analyze", "description": "Whole-codebase analysis: `dead` (unreferenced code), `cycles` (import cycles), `entry` (routes, listeners, mains, package APIs), `hotspots` (fan-in × size × recent churn).",
             "inputSchema": {"type": "object", "properties": {"what": {"type": "string", "enum": ["dead", "cycles", "entry", "hotspots"]}, "limit": {"type": "integer", "default": 50}, "projectPath": pp}, "required": ["what"]}}),
-        json!({"name": "xgraph_status", "description": "Index statistics and freshness.",
+        json!({"name": "nexusweave_status", "description": "Index statistics and freshness.",
             "inputSchema": {"type": "object", "properties": {"projectPath": pp}}}),
     ]
 }
 
 fn enabled_tools() -> Vec<String> {
-    match std::env::var("XGRAPH_MCP_TOOLS") {
+    match std::env::var("NEXUSWEAVE_MCP_TOOLS") {
         Ok(v) if v.trim() == "all" => tool_defs().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect(),
-        Ok(v) => v.split(',').map(|s| { let s = s.trim(); if s.starts_with("xgraph_") { s.to_string() } else { format!("xgraph_{s}") } }).collect(),
-        Err(_) => vec!["xgraph_explore".into(), "xgraph_node".into(), "xgraph_diff_impact".into()],
+        Ok(v) => v.split(',').map(|s| { let s = s.trim(); if s.starts_with("nexusweave_") { s.to_string() } else { format!("nexusweave_{s}") } }).collect(),
+        Err(_) => vec!["nexusweave_explore".into(), "nexusweave_node".into(), "nexusweave_diff_impact".into()],
     }
 }
 
@@ -87,8 +87,8 @@ impl Server {
 
     fn graph(&mut self, project: Option<&str>) -> Result<&Graph> {
         let root = match project {
-            Some(p) => find_root(Path::new(p)).ok_or_else(|| anyhow!("{p} has no xgraph index. Use your built-in tools for that project."))?,
-            None => self.default_root.clone().ok_or_else(|| anyhow!("This workspace has no xgraph index. Pass projectPath for an indexed project, or use your built-in tools."))?,
+            Some(p) => find_root(Path::new(p)).ok_or_else(|| anyhow!("{p} has no NexusWeave index. Use your built-in tools for that project."))?,
+            None => self.default_root.clone().ok_or_else(|| anyhow!("This workspace has no NexusWeave index. Pass projectPath for an indexed project, or use your built-in tools."))?,
         };
         if self.graphs.get(&root).is_none_or(Graph::is_replaced) {
             self.graphs.insert(root.clone(), Graph::open(&root)?);
@@ -100,18 +100,18 @@ impl Server {
     fn call(&mut self, session: u64, name: &str, a: &Value) -> Result<String> {
         let s = |k: &str| a.get(k).and_then(Value::as_str);
         let n = |k: &str| a.get(k).and_then(Value::as_u64);
-        let dedup = std::env::var("XGRAPH_EXPLORE_DEDUP").map(|v| v != "0").unwrap_or(true)
+        let dedup = std::env::var("NEXUSWEAVE_EXPLORE_DEDUP").map(|v| v != "0").unwrap_or(true)
             && !a.get("fresh").and_then(Value::as_bool).unwrap_or(false);
         let root = self.graph(s("projectPath"))?.root.clone();
         let seen = dedup.then(|| self.seen.entry((session, root)).or_default().clone());
         let g = self.graph(s("projectPath"))?;
         let out = match name {
-            "xgraph_explore" => {
+            "nexusweave_explore" => {
                 let q = s("query").ok_or_else(|| anyhow!("query is required"))?;
                 g.explore(q, &Opts { max_chars: n("budget").map(|t| t as usize * 4).unwrap_or(0), seen, ..Default::default() })?
             }
-            "xgraph_node" => node_text(g, s("symbol").or(s("file")).unwrap_or(""), s("file"), a.get("includeCode").and_then(Value::as_bool).unwrap_or(true), n("offset").map(|x| x as u32), n("limit").map(|x| x as u32))?,
-            "xgraph_search" => {
+            "nexusweave_node" => node_text(g, s("symbol").or(s("file")).unwrap_or(""), s("file"), a.get("includeCode").and_then(Value::as_bool).unwrap_or(true), n("offset").map(|x| x as u32), n("limit").map(|x| x as u32))?,
+            "nexusweave_search" => {
                 let kind = s("kind").and_then(crate::model::NodeKind::parse);
                 let v = g.search(s("query").unwrap_or(""), kind, n("limit").unwrap_or(15).min(100) as usize)?;
                 let mut o = format!("{} results\n", v.len());
@@ -120,8 +120,8 @@ impl Server {
                 }
                 o
             }
-            "xgraph_callers" | "xgraph_callees" => {
-                let callers = name == "xgraph_callers";
+            "nexusweave_callers" | "nexusweave_callees" => {
+                let callers = name == "nexusweave_callers";
                 let defs = g.find_symbols(s("symbol").unwrap_or(""), s("file"), 5)?;
                 if defs.is_empty() { return not_found(g, s("symbol").unwrap_or("")); }
                 let mut o = String::new();
@@ -134,7 +134,7 @@ impl Server {
                 }
                 o
             }
-            "xgraph_impact" => {
+            "nexusweave_impact" => {
                 let defs = g.find_symbols(s("symbol").unwrap_or(""), s("file"), 5)?;
                 if defs.is_empty() { return not_found(g, s("symbol").unwrap_or("")); }
                 let ids: Vec<i64> = defs.iter().map(|d| d.id).collect();
@@ -145,19 +145,19 @@ impl Server {
                 for (f, xs) in by_file { let _ = writeln!(o, "- {f}: {}", xs.join(", ")); }
                 o
             }
-            "xgraph_files" => {
+            "nexusweave_files" => {
                 let mut st = g.db.conn.prepare("SELECT path, node_count FROM files WHERE path LIKE ? ORDER BY path LIMIT 2000")?;
                 let pat = format!("{}%", s("path").unwrap_or("").trim_start_matches("./"));
                 let mut o = String::new();
                 for r in st.query_map([pat], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? { let (p, c) = r?; let _ = writeln!(o, "{p} ({})", c - 1); }
                 o
             }
-            "xgraph_diff_impact" => {
+            "nexusweave_diff_impact" => {
                 let diff = crate::impact::git_diff(&g.root, s("base").unwrap_or("HEAD"), false)?;
                 crate::impact::render(&g.diff_impact(&diff, n("depth").unwrap_or(2).clamp(1, 6) as u32)?)
             }
-            "xgraph_analyze" => crate::analyze::render(g, s("what").unwrap_or("hotspots"), n("limit").unwrap_or(50).min(500) as usize, false)?,
-            "xgraph_status" => serde_json::to_string_pretty(&g.status()?)?,
+            "nexusweave_analyze" => crate::analyze::render(g, s("what").unwrap_or("hotspots"), n("limit").unwrap_or(50).min(500) as usize, false)?,
+            "nexusweave_status" => serde_json::to_string_pretty(&g.status()?)?,
             _ => return Err(anyhow!("unknown tool {name}")),
         };
         Ok(out)
@@ -174,7 +174,7 @@ fn not_found(g: &Graph, sym: &str) -> Result<String> {
     Ok(o)
 }
 
-/// Shared by CLI `node` and MCP `xgraph_node`.
+/// Shared by CLI `node` and MCP `nexusweave_node`.
 pub fn node_text(g: &Graph, target: &str, file: Option<&str>, code: bool, offset: Option<u32>, limit: Option<u32>) -> Result<String> {
     let mut o = String::new();
     // file mode
@@ -244,7 +244,7 @@ pub fn serve(root: Option<PathBuf>, watch: bool) -> Result<()> {
     // fall back to answering in-process.
     #[cfg(unix)]
     let mut daemon = match (&root, watch) {
-        (Some(r), true) if std::env::var_os("XGRAPH_NO_DAEMON").is_none() => crate::daemon::connect_or_spawn(r),
+        (Some(r), true) if std::env::var_os("NEXUSWEAVE_NO_DAEMON").is_none() => crate::daemon::connect_or_spawn(r),
         _ => None,
     };
     #[cfg(not(unix))]
@@ -283,7 +283,7 @@ pub fn serve(root: Option<PathBuf>, watch: bool) -> Result<()> {
                     format!("{INSTRUCTIONS}\n\nNOTE: the server's working directory has no index; pass projectPath to query an indexed project.")
                 };
                 Some(Ok(json!({"protocolVersion": v, "capabilities": {"tools": {"listChanged": false}},
-                    "serverInfo": {"name": "xgraph", "version": env!("CARGO_PKG_VERSION")}, "instructions": instr})))
+                    "serverInfo": {"name": "nexusweave", "version": env!("CARGO_PKG_VERSION")}, "instructions": instr})))
             }
             "ping" => Some(Ok(json!({}))),
             "tools/list" => Some(Ok(json!({"tools": tool_defs().into_iter().filter(|t| tools.iter().any(|n| n == t["name"].as_str().unwrap())).collect::<Vec<_>>()}))),

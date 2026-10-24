@@ -1,5 +1,5 @@
 /target
-.xgraph/
+.nexusweave/
 bench/.cache/
 bench/results/
 __pycache__/

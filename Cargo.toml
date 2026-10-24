@@ -1,8 +1,9 @@
 [package]
-name = "xgraph"
+name = "nexusweave"
 version = "0.1.0"
 edition = "2024"
-description = "Fast local code graph for AI coding agents: symbols, calls, imports and inheritance across 15+ languages, served over MCP"
+description = "NexusWeave: connected code intelligence for AI agents. A fast, local-first engine that maps source-code relationships across 15+ languages and delivers precise repository context through MCP"
+repository = "https://github.com/AxiomOperator/xGraph"
 license = "MIT"
 readme = "README.md"
 keywords = ["code-intelligence", "mcp", "tree-sitter", "static-analysis", "knowledge-graph"]

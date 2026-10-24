@@ -1,15 +1,15 @@
 #!/usr/bin/env sh
-# Install the latest xgraph release:
+# Install the latest nexusweave release:
 #   curl -fsSL https://raw.githubusercontent.com/AxiomOperator/xGraph/main/scripts/install.sh | sh
 # Private repository: export GITHUB_TOKEN (a token with read access) first.
-# Options (environment): XGRAPH_VERSION=v0.2.0, XGRAPH_INSTALL_DIR=~/.local/bin, XGRAPH_REPO=owner/name
+# Options (environment): NEXUSWEAVE_VERSION=v0.2.0, NEXUSWEAVE_INSTALL_DIR=~/.local/bin, NEXUSWEAVE_REPO=owner/name
 set -eu
 
-REPO="${XGRAPH_REPO:-AxiomOperator/xGraph}"
-DIR="${XGRAPH_INSTALL_DIR:-$HOME/.local/bin}"
+REPO="${NEXUSWEAVE_REPO:-AxiomOperator/xGraph}"
+DIR="${NEXUSWEAVE_INSTALL_DIR:-$HOME/.local/bin}"
 TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 
-err() { echo "xgraph install: $*" >&2; exit 1; }
+err() { echo "nexusweave install: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || err "needs $1"; }
 need curl; need tar; need uname
 
@@ -24,7 +24,7 @@ case "$(uname -m)" in
   *) err "unsupported architecture $(uname -m)" ;;
 esac
 target="$arch-$os"
-asset="xgraph-$target.tar.gz"
+asset="nexusweave-$target.tar.gz"
 
 api() {
   if [ -n "$TOKEN" ]; then curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: $1" "$2"
@@ -32,7 +32,7 @@ api() {
 }
 
 # accept 0.2.0 as well as v0.2.0
-if [ -n "${XGRAPH_VERSION:-}" ]; then rel="tags/v${XGRAPH_VERSION#v}"; else rel=latest; fi
+if [ -n "${NEXUSWEAVE_VERSION:-}" ]; then rel="tags/v${NEXUSWEAVE_VERSION#v}"; else rel=latest; fi
 hint=""; [ -n "$TOKEN" ] || hint=" (private repository? export GITHUB_TOKEN)"
 json=$(api application/vnd.github+json "https://api.github.com/repos/$REPO/releases/$rel") \
   || err "cannot read release $rel of $REPO$hint"
@@ -58,8 +58,8 @@ else got=$(shasum -a 256 "$tmp/$asset" | cut -d' ' -f1); fi
 
 tar -xzf "$tmp/$asset" -C "$tmp"
 mkdir -p "$DIR"
-mv "$tmp/xgraph" "$DIR/xgraph"
-chmod 755 "$DIR/xgraph"
-echo "installed $("$DIR/xgraph" --version) to $DIR/xgraph"
+mv "$tmp/nexusweave" "$DIR/nexusweave"
+chmod 755 "$DIR/nexusweave"
+echo "installed $("$DIR/nexusweave" --version) to $DIR/nexusweave"
 case ":$PATH:" in *":$DIR:"*) ;; *) echo "note: add $DIR to your PATH" ;; esac
-echo "next: xgraph install   # register with your coding agents (add --hooks for the Claude Code hint)"
+echo "next: nexusweave install   # register with your coding agents (add --hooks for the Claude Code hint)"

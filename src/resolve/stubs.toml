@@ -6,7 +6,7 @@
 # `set_members`. This is what lets `User.objects.filter(...).first().greet()` resolve `greet` on
 # the project's `User`, although every step in between is library code.
 #
-# Projects can add families in `xgraph.stubs.toml` at the project root (or `.xgraph/stubs.toml`
+# Projects can add families in `nexusweave.stubs.toml` at the project root (or `.nexusweave/stubs.toml`
 # for local-only stubs) using the same format.
 
 [[family]]

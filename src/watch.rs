@@ -22,7 +22,7 @@ struct State {
 /// Files whose change alters module resolution: drop the warm resolver state.
 fn is_config(rel: &str) -> bool {
     let f = rel.rsplit('/').next().unwrap_or(rel);
-    matches!(f, "package.json" | "go.mod" | "Cargo.toml" | "compile_commands.json" | "jsconfig.json" | "pnpm-workspace.yaml" | "xgraph.stubs.toml" | "stubs.toml" | "index.scip")
+    matches!(f, "package.json" | "go.mod" | "Cargo.toml" | "compile_commands.json" | "jsconfig.json" | "pnpm-workspace.yaml" | "nexusweave.stubs.toml" | "xgraph.stubs.toml" | "stubs.toml" | "index.scip")
         || f.starts_with("tsconfig") && f.ends_with(".json")
 }
 
@@ -46,7 +46,7 @@ impl State {
             // imports may now resolve differently everywhere: sync files, then re-resolve all refs
             *cache = None;
             let r = index::sync_with(&self.root, None, None).and_then(|_| index::reresolve(&self.root));
-            return match r { Ok(st) => Some(st), Err(e) => { eprintln!("xgraph: re-resolve failed: {e:#}"); None } };
+            return match r { Ok(st) => Some(st), Err(e) => { eprintln!("nexusweave: re-resolve failed: {e:#}"); None } };
         }
         let r = if full { index::sync_with(&self.root, None, Some(&mut cache)) } else {
             let v: Vec<String> = paths.into_iter().collect();
@@ -55,7 +55,7 @@ impl State {
         if r.is_err() { *cache = None; }
         match r {
             Ok(st) => Some(st),
-            Err(e) => { eprintln!("xgraph: sync failed: {e:#}"); None }
+            Err(e) => { eprintln!("nexusweave: sync failed: {e:#}"); None }
         }
     }
 }

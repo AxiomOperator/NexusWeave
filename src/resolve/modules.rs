@@ -33,9 +33,9 @@ pub struct Modules {
     py: HashMap<String, Vec<u32>>,
     /// C/C++ include directories from compile_commands.json (project-relative).
     include_dirs: Vec<String>,
-    /// Library return-type stub families (built-in + `xgraph.stubs.toml` / `.xgraph/stubs.toml`).
+    /// Library return-type stub families (built-in + `nexusweave.stubs.toml` / `.nexusweave/stubs.toml`).
     pub stubs: Vec<StubFamily>,
-    /// Compiler-accurate references (`index.scip` / `.xgraph/index.scip`), when present.
+    /// Compiler-accurate references (`index.scip` / `.nexusweave/index.scip`), when present.
     pub scip: Option<crate::scip::Index>,
 }
 
@@ -58,12 +58,12 @@ pub struct StubFamily {
 
 fn load_stubs(root: &Path) -> Vec<StubFamily> {
     let mut v: Vec<StubFamily> = toml::from_str::<StubFile>(include_str!("stubs.toml")).map(|f| f.family).unwrap_or_default();
-    // `xgraph.stubs.toml` (committed with the project) and `.xgraph/stubs.toml` (local only)
-    for rel in ["xgraph.stubs.toml", ".xgraph/stubs.toml"] {
+    // `nexusweave.stubs.toml` (committed with the project) and `.nexusweave/stubs.toml` (local only)
+    for rel in ["nexusweave.stubs.toml", ".nexusweave/stubs.toml", "xgraph.stubs.toml"] {  // last: pre-rebrand name
         if let Ok(s) = std::fs::read_to_string(root.join(rel)) {
             match toml::from_str::<StubFile>(&s) {
                 Ok(f) => v.extend(f.family),
-                Err(e) => eprintln!("xgraph: ignoring {rel}: {e}"),
+                Err(e) => eprintln!("nexusweave: ignoring {rel}: {e}"),
             }
         }
     }
@@ -128,7 +128,7 @@ fn config_files(root: &Path) -> Vec<String> {
     wb.hidden(true).git_ignore(true).parents(false).max_depth(Some(8));
     wb.filter_entry(|e| {
         let n = e.file_name().to_string_lossy();
-        !(e.file_type().is_some_and(|t| t.is_dir()) && matches!(n.as_ref(), "node_modules" | "vendor" | "target" | "dist" | "build" | ".git" | ".xgraph"))
+        !(e.file_type().is_some_and(|t| t.is_dir()) && matches!(n.as_ref(), "node_modules" | "vendor" | "target" | "dist" | "build" | ".git" | ".nexusweave"))
     });
     let mut out = Vec::new();
     for e in wb.build().flatten() {

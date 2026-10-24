@@ -1,10 +1,10 @@
 {
-  "xgraph": "xgraph 0.1.0",
+  "nexusweave": "nexusweave 0.1.0",
   "repos": {
     "hono": {
       "lang": "typescript",
       "commit": "5ca49b0720755c585c9a9835f0a479ceea36fb52",
-      "xgraph_index_s": 0.17,
+      "nexusweave_index_s": 0.17,
       "truth_index_s": 0.0,
       "truth_refs": 9427,
       "extracted": 8946,
@@ -92,7 +92,7 @@
     "codegraph": {
       "lang": "typescript",
       "commit": "3a93f57ae1796b47cf6f27e8685e58de957392c3",
-      "xgraph_index_s": 0.85,
+      "nexusweave_index_s": 0.85,
       "truth_index_s": 0.0,
       "truth_refs": 19925,
       "extracted": 19105,
@@ -180,7 +180,7 @@
     "express": {
       "lang": "javascript",
       "commit": "1c6f1b0fe4000977b9a7b4f34097e4d527dd9824",
-      "xgraph_index_s": 0.05,
+      "nexusweave_index_s": 0.05,
       "truth_index_s": 0.0,
       "truth_refs": 343,
       "extracted": 314,
@@ -238,7 +238,7 @@
     "flask": {
       "lang": "python",
       "commit": "d086db856be187255b8ec61ef409357393020f32",
-      "xgraph_index_s": 0.06,
+      "nexusweave_index_s": 0.06,
       "truth_index_s": 0.0,
       "truth_refs": 1143,
       "extracted": 895,
@@ -326,7 +326,7 @@
     "httpx": {
       "lang": "python",
       "commit": "b5addb64f0161ff6bfe94c124ef76f6a1fba5254",
-      "xgraph_index_s": 0.04,
+      "nexusweave_index_s": 0.04,
       "truth_index_s": 0.0,
       "truth_refs": 2833,
       "extracted": 2528,
@@ -414,7 +414,7 @@
     "gin": {
       "lang": "go",
       "commit": "0f09c3a9b4626d9fe9979cf4d0521d6ae32ab646",
-      "xgraph_index_s": 0.07,
+      "nexusweave_index_s": 0.07,
       "truth_index_s": 0.0,
       "truth_refs": 5564,
       "extracted": 5495,
@@ -497,7 +497,7 @@
     "ripgrep": {
       "lang": "rust",
       "commit": "6892bc2b7efe5909cbbeec8f757ed2c4c76b1d30",
-      "xgraph_index_s": 0.13,
+      "nexusweave_index_s": 0.13,
       "truth_index_s": 0.0,
       "truth_refs": 19393,
       "extracted": 17890,

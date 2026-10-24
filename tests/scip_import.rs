@@ -41,7 +41,7 @@ fn document(path: &str, occs: &[Vec<u8>]) -> Vec<u8> {
 }
 
 fn edges(dir: &Path) -> Vec<(String, String, i64)> {
-    let db = xgraph::db::Db::open(&xgraph::db::db_path(dir)).unwrap();
+    let db = nexusweave::db::Db::open(&nexusweave::db::db_path(dir)).unwrap();
     let mut st = db.conn.prepare(
         "SELECT s.qname, t.qname, r.confidence FROM refs r JOIN nodes s ON s.id = r.src_id JOIN nodes t ON t.id = r.target_id ORDER BY 1, 2").unwrap();
     st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().map(Result::unwrap).collect()
@@ -49,7 +49,7 @@ fn edges(dir: &Path) -> Vec<(String, String, i64)> {
 
 #[test]
 fn scip_index_overrides_heuristics() {
-    let d = std::env::temp_dir().join(format!("xgraph-scip-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("nexusweave-scip-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(d.join("src")).unwrap();
     std::fs::write(d.join("src/a.ts"), "export function hidden() {}\nexport class Store { save() {} }\nimport \"./c\";\n").unwrap();
@@ -57,7 +57,7 @@ fn scip_index_overrides_heuristics() {
     // and the name fallback would bind it to Store.save — the compiler knows it's a library call.
     std::fs::write(d.join("src/b.ts"), "declare const db: any;\nexport function main() {\n  hidden();\n  db.save();\n}\n").unwrap();
 
-    xgraph::index::full_index(&d, |_, _| {}).unwrap();
+    nexusweave::index::full_index(&d, |_, _| {}).unwrap();
     let before = edges(&d);
     assert!(!before.iter().any(|e| e.1 == "hidden"), "{before:?}");
 
@@ -69,7 +69,7 @@ fn scip_index_overrides_heuristics() {
     field_bytes(2, &document("src/b.ts", &[occurrence(2, 2, 8, &hidden, 0), occurrence(3, 5, 9, save_lib, 0)]), &mut index);
     std::fs::write(d.join("index.scip"), index).unwrap();
 
-    xgraph::index::full_index(&d, |_, _| {}).unwrap();
+    nexusweave::index::full_index(&d, |_, _| {}).unwrap();
     let after = edges(&d);
     assert!(after.contains(&("main".into(), "hidden".into(), 100)), "{after:?}");
     assert!(!after.iter().any(|e| e.0 == "main" && e.1 == "Store.save"), "{after:?}");

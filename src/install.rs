@@ -3,6 +3,8 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+// a pre-rebrand registration is replaced on install and removed on uninstall
+use crate::db::LEGACY_NAME;
 
 struct Agent {
     key: &'static str,
@@ -24,7 +26,7 @@ fn home() -> Result<PathBuf> {
 }
 
 fn exe() -> String {
-    std::env::current_exe().ok().and_then(|p| crate::canonical(p).ok()).map(|p| p.display().to_string()).unwrap_or_else(|| "xgraph".into())
+    std::env::current_exe().ok().and_then(|p| crate::canonical(p).ok()).map(|p| p.display().to_string()).unwrap_or_else(|| "nexusweave".into())
 }
 
 fn read_json(p: &Path) -> Result<Value> {
@@ -36,7 +38,7 @@ fn read_json(p: &Path) -> Result<Value> {
 
 fn write_json(p: &Path, v: &Value) -> Result<()> {
     if let Some(d) = p.parent() { std::fs::create_dir_all(d)?; }
-    if p.exists() { std::fs::copy(p, p.with_extension("json.xgraph-bak"))?; }
+    if p.exists() { std::fs::copy(p, p.with_extension("json.nexusweave-bak"))?; }
     std::fs::write(p, serde_json::to_string_pretty(v)? + "\n")?;
     Ok(())
 }
@@ -47,7 +49,8 @@ fn set_json_server(p: &Path, outer: &str, entry: Option<Value>) -> Result<()> {
     let obj = v.as_object_mut().unwrap();
     let servers = obj.entry(outer).or_insert_with(|| json!({}));
     if let Some(m) = servers.as_object_mut() {
-        match entry { Some(e) => { m.insert("xgraph".into(), e); } None => { m.remove("xgraph"); } }
+        m.remove(LEGACY_NAME);
+        match entry { Some(e) => { m.insert("nexusweave".into(), e); } None => { m.remove("nexusweave"); } }
     }
     write_json(p, &v)
 }
@@ -59,12 +62,12 @@ fn codex_toml(p: &Path, add: bool) -> Result<()> {
     let mut skip = false;
     for line in s.lines() {
         let t = line.trim();
-        if t.starts_with('[') { skip = t == "[mcp_servers.xgraph]"; }
+        if t.starts_with('[') { skip = t == "[mcp_servers.nexusweave]" || t == format!("[mcp_servers.{LEGACY_NAME}]"); }
         if !skip { out.push_str(line); out.push('\n'); }
     }
     if add {
         if !out.ends_with("\n\n") && !out.is_empty() { out.push('\n'); }
-        out.push_str(&format!("[mcp_servers.xgraph]\ncommand = {:?}\nargs = [\"serve\"]\n", exe()));
+        out.push_str(&format!("[mcp_servers.nexusweave]\ncommand = {:?}\nargs = [\"serve\"]\n", exe()));
     }
     if let Some(d) = p.parent() { std::fs::create_dir_all(d)?; }
     std::fs::write(p, out)?;
@@ -77,9 +80,11 @@ fn apply(agent: &Agent, h: &Path, add: bool) -> Result<String> {
         "claude" => {
             let has_cli = std::process::Command::new("claude").arg("--version").output().is_ok_and(|o| o.status.success());
             if has_cli {
-                let _ = std::process::Command::new("claude").args(["mcp", "remove", "--scope", "user", "xgraph"]).output();
+                for name in ["nexusweave", LEGACY_NAME] {
+                    let _ = std::process::Command::new("claude").args(["mcp", "remove", "--scope", "user", name]).output();
+                }
                 if add {
-                    let o = std::process::Command::new("claude").args(["mcp", "add", "--scope", "user", "xgraph", "--", &exe(), "serve"]).output()?;
+                    let o = std::process::Command::new("claude").args(["mcp", "add", "--scope", "user", "nexusweave", "--", &exe(), "serve"]).output()?;
                     if !o.status.success() { anyhow::bail!("{}", String::from_utf8_lossy(&o.stderr)); }
                 }
                 Ok("via `claude mcp` (user scope)".into())
@@ -107,7 +112,7 @@ fn selected(targets: &[String], h: &Path) -> Vec<&'static Agent> {
 
 pub fn install(targets: &[String], print: bool, hooks: bool) -> Result<()> {
     if print {
-        println!("{}", serde_json::to_string_pretty(&json!({"mcpServers": {"xgraph": {"command": exe(), "args": ["serve"]}}}))?);
+        println!("{}", serde_json::to_string_pretty(&json!({"mcpServers": {"nexusweave": {"command": exe(), "args": ["serve"]}}}))?);
         return Ok(());
     }
     let h = home()?;
@@ -124,11 +129,11 @@ pub fn install(targets: &[String], print: bool, hooks: bool) -> Result<()> {
     }
     if hooks {
         match claude_hook(&h, true) {
-            Ok(p) => eprintln!("✓ Claude Code hook — {p} (PreToolUse on Grep/Glob suggests xgraph_explore)"),
+            Ok(p) => eprintln!("✓ Claude Code hook — {p} (PreToolUse on Grep/Glob suggests nexusweave_explore)"),
             Err(e) => eprintln!("✗ Claude Code hook — {e:#}"),
         }
     }
-    eprintln!("\nNext: run `xgraph init` in each project. The server keeps the graph in sync while your agent works.");
+    eprintln!("\nNext: run `nexusweave init` in each project. The server keeps the graph in sync while your agent works.");
     Ok(())
 }
 

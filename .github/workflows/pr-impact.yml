@@ -20,13 +20,13 @@ jobs:
       - run: cargo build --release
       - name: Impact report
         run: |
-          ./target/release/xgraph init -q
-          ./target/release/xgraph diff-impact --base "origin/${{ github.base_ref }}" > impact.md
+          ./target/release/nexusweave init -q
+          ./target/release/nexusweave diff-impact --base "origin/${{ github.base_ref }}" > impact.md
           cat impact.md >> "$GITHUB_STEP_SUMMARY"
       - name: Comment
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "<!-- xgraph-impact -->"; cat impact.md; } > body.md
+          { echo "<!-- nexusweave-impact -->"; cat impact.md; } > body.md
           gh pr comment "${{ github.event.pull_request.number }}" --edit-last --body-file body.md \
             || gh pr comment "${{ github.event.pull_request.number }}" --body-file body.md

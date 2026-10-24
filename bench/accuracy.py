@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Resolution accuracy benchmark: xgraph edges vs compiler-grade SCIP indexes.
+"""Resolution accuracy benchmark: nexusweave edges vs compiler-grade SCIP indexes.
 
 For every repo in corpus.toml (pinned commits):
   1. check out the commit                       (bench/.cache/repos/<name>)
   2. build the ground truth with a SCIP indexer (bench/.cache/scip/<name>-<commit>.scip, cached)
-  3. index with xgraph
-  4. align every xgraph reference with the SCIP occurrence for the same identifier, and score:
+  3. index with nexusweave
+  4. align every nexusweave reference with the SCIP occurrence for the same identifier, and score:
 
-     precision = correct / (correct + wrong)       over xgraph refs the truth can judge
+     precision = correct / (correct + wrong)       over nexusweave refs the truth can judge
      recall    = correct / truth refs              over in-project references to functions,
                                                    methods, types and macros
-     extracted = truth refs xgraph saw at all      (extraction coverage, independent of resolution)
+     extracted = truth refs nexusweave saw at all      (extraction coverage, independent of resolution)
 
   "wrong" includes resolving to a project symbol when the truth says the call goes to a library.
   Overrides (method -> interface/base method) are scored against SCIP `is_implementation`.
@@ -121,26 +121,26 @@ def build_truth(r: dict, repo: Path, refresh: bool) -> tuple[Path, float]:
     return out, secs
 
 
-def xgraph_index(xg: Path, repo: Path) -> float:
+def nexusweave_index(xg: Path, repo: Path) -> float:
     return run([str(xg), "index", "-q"], repo)
 
 
 @dataclass
 class Score:
     truth: int = 0          # in-project truth refs (functions/methods/types/macros)
-    extracted: int = 0      # truth refs xgraph emitted a ref for
+    extracted: int = 0      # truth refs nexusweave emitted a ref for
     correct: int = 0
     wrong: int = 0          # resolved, but to the wrong symbol (incl. library calls bound to project code)
     unresolved: int = 0     # aligned with an in-project truth ref but left unresolved
     unverifiable: int = 0   # resolved, but the truth has no occurrence to judge it by
-    by_kind: dict = field(default_factory=lambda: defaultdict(lambda: [0, 0]))   # xgraph kind -> [correct, wrong]
+    by_kind: dict = field(default_factory=lambda: defaultdict(lambda: [0, 0]))   # nexusweave kind -> [correct, wrong]
     recall_kind: dict = field(default_factory=lambda: defaultdict(lambda: [0, 0]))  # truth kind -> [hit, total]
     by_conf: dict = field(default_factory=lambda: defaultdict(lambda: [0, 0]))      # confidence band -> [correct, wrong]
     ov_truth: int = 0
     ov_pred: int = 0
     ov_correct: int = 0
     aligned_unscored: int = 0  # resolved refs aligned with property/local occurrences (not judged)
-    outside_truth: int = 0  # xgraph refs in files the truth indexer didn't cover
+    outside_truth: int = 0  # nexusweave refs in files the truth indexer didn't cover
     accessor_refs: int = 0  # getter/setter reads in the truth (not modeled, not scored)
     truth_dropped: int = 0  # truth occurrences whose text doesn't match their symbol (aliases, indexer bugs)
 
@@ -171,7 +171,7 @@ _JS_IMPORT = re.compile(r"^\s*(import\b|export\s+(\*|\{[^}]*\}?)\s*.*\bfrom\b|ex
 
 def import_lines(path: str, lines: list[str]) -> set[int]:
     """1-based lines belonging to import statements. SCIP counts names there as references;
-    xgraph models imports separately, so they are excluded from the truth."""
+    nexusweave models imports separately, so they are excluded from the truth."""
     ext = os.path.splitext(path)[1]
     out: set[int] = set()
     js = ext in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts")
@@ -257,7 +257,7 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
             local = "|local " in o.symbol
             kind = "local" if local else scip.descriptor_kind(o.symbol)
             if kind == "accessor":
-                accessor_refs += 1  # getter/setter reads: xgraph doesn't model plain property access
+                accessor_refs += 1  # getter/setter reads: nexusweave doesn't model plain property access
             name = ident(d.path, o)
             if not name:
                 continue
@@ -271,7 +271,7 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
     for v in truth.values():
         v.sort(key=lambda x: (x[0], x[3]))
 
-    con = sqlite3.connect(repo / ".xgraph" / "graph.db")
+    con = sqlite3.connect(repo / ".nexusweave" / "graph.db")
     nodes = {nid: (path, s, e, name, kind) for nid, path, s, e, name, kind in con.execute(
         "SELECT n.id, f.path, n.start_line, n.end_line, n.name, n.kind FROM nodes n JOIN files f ON f.id = n.file_id")}
 
@@ -338,7 +338,7 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
             sc.by_conf[band(conf)][1] += 1
             if len(wrong_samples) < samples:
                 t = nodes.get(target)
-                wrong_samples.append(f"{path}:{line} {kname} {(qual + '.') if qual else ''}{name} -> xgraph {t[3]} @{t[0]}:{t[1]} | truth {sym if not in_project else defs[sym][0]}")
+                wrong_samples.append(f"{path}:{line} {kname} {(qual + '.') if qual else ''}{name} -> nexusweave {t[3]} @{t[0]}:{t[1]} | truth {sym if not in_project else defs[sym][0]}")
 
     # recall accounting over in-project truth refs
     correct_left = sc.correct
@@ -366,7 +366,7 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
         sc.recall_kind[k][0] = min(v, sc.recall_kind[k][1])
     del correct_left
 
-    # overrides: SCIP is_implementation vs xgraph `overrides` edges, both mapped to def locations
+    # overrides: SCIP is_implementation vs nexusweave `overrides` edges, both mapped to def locations
     def_index: dict[tuple[str, str], list[tuple[int, str]]] = defaultdict(list)
     for sym, locs in defs.items():
         for p, l in locs:
@@ -404,7 +404,7 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", action="append", help="only these repos (repeatable)")
-    ap.add_argument("--xgraph", default=str(ROOT / "target" / "release" / "xgraph"))
+    ap.add_argument("--nexusweave", default=str(ROOT / "target" / "release" / "nexusweave"))
     ap.add_argument("--refresh", action="store_true", help="rebuild cached SCIP ground truth")
     ap.add_argument("--samples", type=int, default=25, help="error samples per repo written to bench/.cache/reports/")
     ap.add_argument("--check", metavar="BASELINE", help="fail if precision/recall regress beyond --tolerance")
@@ -415,9 +415,9 @@ def main() -> int:
     corpus = tomllib.loads((BENCH / "corpus.toml").read_text())["repo"]
     if a.repo:
         corpus = [r for r in corpus if r["name"] in a.repo]
-    xg = Path(a.xgraph)
+    xg = Path(a.nexusweave)
     if not xg.exists():
-        print(f"xgraph binary not found at {xg} (cargo build --release)", file=sys.stderr)
+        print(f"nexusweave binary not found at {xg} (cargo build --release)", file=sys.stderr)
         return 2
 
     results: dict[str, dict] = {}
@@ -428,13 +428,13 @@ def main() -> int:
         try:
             repo = checkout(r)
             scip_path, isecs = build_truth(r, repo, a.refresh)
-            xsecs = xgraph_index(xg, repo)
+            xsecs = nexusweave_index(xg, repo)
             sc, smp = compare(repo, scip_path, a.samples)
         except Exception as e:  # keep going: one broken indexer shouldn't hide the rest
             print(f"  ! {r['name']}: {e}", file=sys.stderr)
             results[r["name"]] = {"lang": r["lang"], "error": str(e)[:500]}
             continue
-        results[r["name"]] = {"lang": r["lang"], "commit": r["commit"], "xgraph_index_s": round(xsecs, 2),
+        results[r["name"]] = {"lang": r["lang"], "commit": r["commit"], "nexusweave_index_s": round(xsecs, 2),
                               "truth_index_s": round(isecs, 1), **sc.to_json()}
         rep = CACHE / "reports" / f"{r['name']}.md"
         rep.write_text("# wrong\n" + "\n".join(smp["wrong"]) + "\n\n# missed (not extracted)\n" + "\n".join(smp["missed"]) + "\n")
@@ -443,7 +443,7 @@ def main() -> int:
             setattr(g, f, getattr(g, f) + getattr(sc, f))
 
     # report
-    print("\n| repo | lang | truth refs | extracted | precision | recall | overrides P / R | xgraph index |")
+    print("\n| repo | lang | truth refs | extracted | precision | recall | overrides P / R | nexusweave index |")
     print("|---|---|---:|---:|---:|---:|---:|---:|")
     for name, v in results.items():
         if "error" in v:
@@ -451,14 +451,14 @@ def main() -> int:
             continue
         o = v["overrides"]
         ov = f"{o['precision']:.1%} / {o['recall']:.1%}" if o["truth"] else "n/a"
-        print(f"| {name} | {v['lang']} | {v['truth_refs']:,} | {v['extraction']:.1%} | {v['precision']:.1%} | {v['recall']:.1%} | {ov} | {v['xgraph_index_s']} s |")
+        print(f"| {name} | {v['lang']} | {v['truth_refs']:,} | {v['extraction']:.1%} | {v['precision']:.1%} | {v['recall']:.1%} | {ov} | {v['nexusweave_index_s']} s |")
     print("\n| language | precision | recall | extracted |")
     print("|---|---:|---:|---:|")
     for lang, g in sorted(agg.items()):
         print(f"| {lang} | {g.p():.1%} | {g.r():.1%} | {g.ext():.1%} |")
 
     RESULTS.mkdir(exist_ok=True)
-    payload = {"xgraph": subprocess.run([str(xg), "--version"], capture_output=True, text=True).stdout.strip(),
+    payload = {"nexusweave": subprocess.run([str(xg), "--version"], capture_output=True, text=True).stdout.strip(),
                "repos": results, "languages": {k: {"precision": round(v.p(), 4), "recall": round(v.r(), 4), "extraction": round(v.ext(), 4)} for k, v in agg.items()}}
     (RESULTS / "latest.json").write_text(json.dumps(payload, indent=2) + "\n")
 

@@ -129,7 +129,20 @@ pub struct Db {
     pub file: Option<FileId>,
 }
 
-pub fn db_path(root: &Path) -> std::path::PathBuf { root.join(".xgraph").join("graph.db") }
+pub fn db_path(root: &Path) -> std::path::PathBuf { root.join(".nexusweave").join("graph.db") }
+
+/// Name this project had before the NexusWeave rebrand; its index directory, ignore file, stub
+/// file, MCP registrations and hook are adopted or replaced so upgrading keeps working.
+pub const LEGACY_NAME: &str = "xgraph";
+
+/// Move a pre-rebrand `.xgraph/` index to `.nexusweave/` (no rebuild needed). Returns whether it moved.
+pub fn adopt_legacy(root: &Path) -> bool {
+    let (old, new) = (root.join(format!(".{LEGACY_NAME}")), root.join(".nexusweave"));
+    if new.exists() || !old.join("graph.db").exists() || std::fs::rename(&old, &new).is_err() { return false; }
+    // the old daemon's election files: a daemon of this build starts under the new name
+    for f in ["daemon.json", "daemon.lock"] { let _ = std::fs::remove_file(new.join(f)); }
+    true
+}
 
 /// Which file a path currently names. A full index builds a new database and renames it over the
 /// old one, so a long-running process (daemon, viewer, watcher) compares this with [`Db::file`] to
@@ -191,7 +204,7 @@ impl Db {
     }
 
     fn run_indexes(&self, sql: &str) -> Result<()> {
-        let trace = std::env::var_os("XGRAPH_TRACE").is_some();
+        let trace = std::env::var_os("NEXUSWEAVE_TRACE").is_some();
         for stmt in sql.lines().filter(|l| !l.trim().is_empty()) {
             let t = std::time::Instant::now();
             self.conn.execute_batch(stmt)?;

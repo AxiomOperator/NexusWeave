@@ -15,7 +15,7 @@ fn copy_dir(from: &Path, to: &Path) {
 }
 
 fn workdir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("xgraph-test-{name}-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("nexusweave-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     d
 }
@@ -24,8 +24,8 @@ fn check(lang: &str) {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(lang);
     let dir = workdir(lang);
     copy_dir(&src, &dir);
-    xgraph::index::full_index(&dir, |_, _| {}).unwrap();
-    let db = xgraph::db::Db::open(&xgraph::db::db_path(&dir)).unwrap();
+    nexusweave::index::full_index(&dir, |_, _| {}).unwrap();
+    let db = nexusweave::db::Db::open(&nexusweave::db::db_path(&dir)).unwrap();
     let mut st = db.conn.prepare(
         "SELECT s.qname, t.qname, t.name FROM refs r JOIN nodes s ON s.id = COALESCE(r.src_owner_id, r.src_id)
          JOIN nodes t ON t.id = r.target_id").unwrap();

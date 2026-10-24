@@ -1,10 +1,10 @@
 //! One background process per repository that owns the watcher, the warm resolver cache and
 //! all writes; MCP servers (one per agent session) forward tool calls to it over a Unix socket.
 //!
-//! Election is an exclusive `flock` on `.xgraph/daemon.lock`; the socket lives in the temp dir
-//! (short path) and is recorded in `.xgraph/daemon.json`. The daemon exits after
-//! `XGRAPH_DAEMON_IDLE` seconds (default 900) without connected clients, or once its executable
-//! has been replaced (`cargo install`, `xgraph upgrade`): clients then respawn the new build.
+//! Election is an exclusive `flock` on `.nexusweave/daemon.lock`; the socket lives in the temp dir
+//! (short path) and is recorded in `.nexusweave/daemon.json`. The daemon exits after
+//! `NEXUSWEAVE_DAEMON_IDLE` seconds (default 900) without connected clients, or once its executable
+//! has been replaced (`cargo install`, `nexusweave upgrade`): clients then respawn the new build.
 
 #![cfg(unix)]
 
@@ -19,10 +19,10 @@ use std::time::{Duration, Instant};
 
 pub fn socket_path(root: &Path) -> PathBuf {
     let h = xxhash_rust::xxh3::xxh3_64(root.to_string_lossy().as_bytes());
-    std::env::temp_dir().join(format!("xgraph-{h:016x}.sock"))
+    std::env::temp_dir().join(format!("nexusweave-{h:016x}.sock"))
 }
 
-fn lock_path(root: &Path) -> PathBuf { root.join(".xgraph").join("daemon.lock") }
+fn lock_path(root: &Path) -> PathBuf { root.join(".nexusweave").join("daemon.lock") }
 
 /// Connected client (one per MCP server / agent session).
 pub struct Client {
@@ -94,14 +94,14 @@ pub fn run(root: &Path) -> Result<()> {
     {
         use std::os::fd::AsRawFd;
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            eprintln!("xgraph daemon already running for {}", root.display());
+            eprintln!("nexusweave daemon already running for {}", root.display());
             return Ok(());
         }
     }
     let sock = socket_path(root);
     let _ = std::fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock).with_context(|| format!("binding {}", sock.display()))?;
-    std::fs::write(root.join(".xgraph").join("daemon.json"),
+    std::fs::write(root.join(".nexusweave").join("daemon.json"),
         json!({"pid": std::process::id(), "socket": sock.display().to_string(), "version": env!("CARGO_PKG_VERSION")}).to_string())?;
 
     // catch up on changes made while nothing was watching, then watch
@@ -138,7 +138,7 @@ pub fn run(root: &Path) -> Result<()> {
 
     // idle shutdown, and handing over to a replaced executable between calls (clients reconnect
     // on a closed connection and spawn the new build)
-    let idle = Duration::from_secs(std::env::var("XGRAPH_DAEMON_IDLE").ok().and_then(|v| v.parse().ok()).unwrap_or(900));
+    let idle = Duration::from_secs(std::env::var("NEXUSWEAVE_DAEMON_IDLE").ok().and_then(|v| v.parse().ok()).unwrap_or(900));
     let clients_i = clients.clone();
     let sock_i = sock.clone();
     std::thread::spawn(move || {

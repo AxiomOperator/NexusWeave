@@ -8,6 +8,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 const INDEX_HTML: &str = include_str!("index.html");
+/// Brand typefaces (SIL OFL 1.1, licenses beside them), embedded so the viewer works offline.
+const FONTS: &[(&str, &[u8])] = &[
+    ("/fonts/inter.woff2", include_bytes!("fonts/inter.woff2")),
+    ("/fonts/sora.woff2", include_bytes!("fonts/sora.woff2")),
+    ("/fonts/jetbrains-mono.woff2", include_bytes!("fonts/jetbrains-mono.woff2")),
+];
 
 fn qs(url: &str) -> HashMap<String, String> {
     let mut m = HashMap::new();
@@ -245,7 +251,7 @@ pub fn serve(root: &Path, port: u16, open: bool) -> Result<()> {
     let mut g = Graph::open(root)?;
     let server = tiny_http::Server::http(("127.0.0.1", port)).map_err(|e| anyhow::anyhow!("cannot bind 127.0.0.1:{port}: {e}"))?;
     let url = format!("http://127.0.0.1:{port}/");
-    eprintln!("xgraph viewer for {} at {url}", root.display());
+    eprintln!("NexusWeave viewer for {} at {url}", root.display());
     if open { open_browser(&url); }
     let allowed = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
     for req in server.incoming_requests() {
@@ -259,6 +265,8 @@ pub fn serve(root: &Path, port: u16, open: bool) -> Result<()> {
         let path = url.split('?').next().unwrap_or("/").to_string();
         let resp = if path == "/" || path == "/index.html" {
             tiny_http::Response::from_string(INDEX_HTML).with_header(hdr("Content-Type", "text/html; charset=utf-8"))
+        } else if let Some((_, font)) = FONTS.iter().find(|(p, _)| *p == path) {
+            tiny_http::Response::from_data(font.to_vec()).with_header(hdr("Content-Type", "font/woff2"))
         } else if path.starts_with("/api/") {
             if g.is_replaced() && let Ok(n) = Graph::open(root) { g = n; } // re-indexed meanwhile
             let body = match api(&g, &path, &qs(&url)) { Ok(v) => v.to_string(), Err(e) => json!({"error": format!("{e:#}")}).to_string() };
@@ -284,7 +292,7 @@ mod tests {
 
     fn fixture() -> (std::path::PathBuf, Graph) {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ts");
-        let dir = std::env::temp_dir().join(format!("xgraph-ui-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("nexusweave-ui-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         fn copy(a: &Path, b: &Path) {
             std::fs::create_dir_all(b).unwrap();

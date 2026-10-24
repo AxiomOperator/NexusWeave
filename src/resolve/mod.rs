@@ -807,7 +807,7 @@ struct Resolved {
 enum Container { Node(u32), Files(Vec<u32>) }
 
 fn trace(t: &std::time::Instant, what: &str) {
-    if std::env::var_os("XGRAPH_TRACE").is_some() { eprintln!("[resolve] {what}: {} ms", t.elapsed().as_millis()); }
+    if std::env::var_os("NEXUSWEAVE_TRACE").is_some() { eprintln!("[resolve] {what}: {} ms", t.elapsed().as_millis()); }
 }
 
 pub fn resolve(db: &mut Db, root: &Path, scope: Scope) -> Result<usize> { resolve_with(db, root, scope, None) }
@@ -1023,7 +1023,7 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
                     RefKind::Extends as i64, RefKind::Implements as i64)
             }
         };
-        if std::env::var_os("XGRAPH_TRACE").is_some() {
+        if std::env::var_os("NEXUSWEAVE_TRACE").is_some() {
             let plan: Vec<String> = tx.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?.query_map([], |r| r.get::<_, String>(3))?.collect::<rusqlite::Result<_>>()?;
             eprintln!("[resolve] plan:\n  {}", plan.join("\n  "));
         }

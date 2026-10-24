@@ -12,15 +12,15 @@ fn copy_dir(from: &Path, to: &Path) {
 }
 
 fn setup(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("xgraph-sync-{name}-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("nexusweave-sync-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ts"), &d);
-    xgraph::index::full_index(&d, |_, _| {}).unwrap();
+    nexusweave::index::full_index(&d, |_, _| {}).unwrap();
     d
 }
 
 fn edges(dir: &Path) -> Vec<String> {
-    let db = xgraph::db::Db::open(&xgraph::db::db_path(dir)).unwrap();
+    let db = nexusweave::db::Db::open(&nexusweave::db::db_path(dir)).unwrap();
     let mut st = db.conn.prepare(
         "SELECT s.qname || ' -> ' || t.qname FROM refs r JOIN nodes s ON s.id = COALESCE(r.src_owner_id, r.src_id)
          JOIN nodes t ON t.id = r.target_id ORDER BY 1").unwrap();
@@ -42,11 +42,11 @@ fn delete_and_restore_dependency() {
     assert!(has(&d, "UserService.getUser -> BaseService.log"));
     let base = std::fs::read_to_string(d.join("src/base.ts")).unwrap();
     std::fs::remove_file(d.join("src/base.ts")).unwrap();
-    xgraph::index::sync(&d, None).unwrap();
+    nexusweave::index::sync(&d, None).unwrap();
     assert!(!has(&d, "UserService.getUser -> BaseService.log"));
     assert!(!has(&d, "UserService -> BaseService"));
     write(&d, "src/base.ts", &base);
-    xgraph::index::sync(&d, None).unwrap();
+    nexusweave::index::sync(&d, None).unwrap();
     assert!(has(&d, "UserService.getUser -> BaseService.log"));
     assert!(has(&d, "UserService -> BaseService"));
     let _ = std::fs::remove_dir_all(&d);
@@ -57,15 +57,15 @@ fn new_definition_resolves_existing_reference() {
     let d = setup("newdef");
     let svc = std::fs::read_to_string(d.join("src/service.ts")).unwrap();
     write(&d, "src/service.ts", &svc.replace("u.greet();", "u.greet();\n    u.wave();"));
-    xgraph::index::sync(&d, Some(&["src/service.ts".to_string()])).unwrap();
+    nexusweave::index::sync(&d, Some(&["src/service.ts".to_string()])).unwrap();
     assert!(!edges(&d).iter().any(|e| e.ends_with(".wave")));
     let user = std::fs::read_to_string(d.join("src/models/user.ts")).unwrap();
     write(&d, "src/models/user.ts", &user.replace("greet(): string", "wave() { return 1; }\n  greet(): string"));
-    xgraph::index::sync(&d, Some(&["src/models/user.ts".to_string()])).unwrap();
+    nexusweave::index::sync(&d, Some(&["src/models/user.ts".to_string()])).unwrap();
     assert!(has(&d, "UserService.getUser -> User.wave"), "{:#?}", edges(&d));
     // incremental result equals a fresh full index
     let inc = edges(&d);
-    xgraph::index::full_index(&d, |_, _| {}).unwrap();
+    nexusweave::index::full_index(&d, |_, _| {}).unwrap();
     assert_eq!(inc, edges(&d));
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -76,12 +76,12 @@ fn edit_preserves_incoming_edges() {
     let user = std::fs::read_to_string(d.join("src/models/user.ts")).unwrap();
     // shift lines and change body: ids change, edges from other files must be re-established
     write(&d, "src/models/user.ts", &format!("// header\n// more\n{}", user.replace("\"hi \"", "\"hello \"")));
-    let st = xgraph::index::sync(&d, None).unwrap();
+    let st = nexusweave::index::sync(&d, None).unwrap();
     assert_eq!(st.files_indexed, 1);
     assert!(has(&d, "UserService.getUser -> User.greet"));
     assert!(has(&d, "MemRepo.find -> User"));
     let inc = edges(&d);
-    xgraph::index::full_index(&d, |_, _| {}).unwrap();
+    nexusweave::index::full_index(&d, |_, _| {}).unwrap();
     assert_eq!(inc, edges(&d));
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -92,11 +92,11 @@ fn return_type_change_reresolves_typed_receivers() {
     assert!(has(&d, "UserService.getUser -> User.greet"));
     write(&d, "src/models/user.ts", "export class User {\n  constructor(public name: string) {}\n  greet(): string { return \"hi\"; }\n}\nexport class Guest {\n  greet() { return 1; }\n}\nexport interface Repo { find(id: string): Guest; }\n");
     write(&d, "src/repo.ts", "import { Guest, Repo } from \"@/models\";\nexport class MemRepo implements Repo {\n  find(id: string): Guest { return new Guest(); }\n}\n");
-    xgraph::index::sync(&d, Some(&["src/repo.ts".to_string(), "src/models/user.ts".to_string()])).unwrap();
+    nexusweave::index::sync(&d, Some(&["src/repo.ts".to_string(), "src/models/user.ts".to_string()])).unwrap();
     assert!(has(&d, "UserService.getUser -> Guest.greet"), "{:#?}", edges(&d));
     assert!(!has(&d, "UserService.getUser -> User.greet"));
     let inc = edges(&d);
-    xgraph::index::full_index(&d, |_, _| {}).unwrap();
+    nexusweave::index::full_index(&d, |_, _| {}).unwrap();
     assert_eq!(inc, edges(&d));
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -104,7 +104,7 @@ fn return_type_change_reresolves_typed_receivers() {
 #[test]
 fn unchanged_sync_is_noop() {
     let d = setup("noop");
-    let st = xgraph::index::sync(&d, None).unwrap();
+    let st = nexusweave::index::sync(&d, None).unwrap();
     assert_eq!(st.files_indexed, 0);
     assert_eq!(st.files_removed, 0);
     let _ = std::fs::remove_dir_all(&d);
@@ -118,7 +118,7 @@ fn cached_resolver_matches_full_index() {
     let mut cache = None;
     // warm up: first incremental sync builds the cache
     write(&d, "src/base.ts", "export class BaseService {\n  log(msg: string) { return msg; }\n}\n");
-    xgraph::index::sync_with(&d, None, Some(&mut cache)).unwrap();
+    nexusweave::index::sync_with(&d, None, Some(&mut cache)).unwrap();
     assert!(cache.is_some());
     type Step = Box<dyn Fn(&Path)>;
     let steps: Vec<Step> = vec![
@@ -133,13 +133,13 @@ fn cached_resolver_matches_full_index() {
     ];
     for (i, step) in steps.iter().enumerate() {
         step(&d);
-        xgraph::index::sync_with(&d, None, Some(&mut cache)).unwrap();
+        nexusweave::index::sync_with(&d, None, Some(&mut cache)).unwrap();
         let inc = edges(&d);
-        let fresh = std::env::temp_dir().join(format!("xgraph-sync-cache-fresh-{}-{i}", std::process::id()));
+        let fresh = std::env::temp_dir().join(format!("nexusweave-sync-cache-fresh-{}-{i}", std::process::id()));
         let _ = std::fs::remove_dir_all(&fresh);
         copy_dir(&d, &fresh);
-        let _ = std::fs::remove_dir_all(fresh.join(".xgraph"));
-        xgraph::index::full_index(&fresh, |_, _| {}).unwrap();
+        let _ = std::fs::remove_dir_all(fresh.join(".nexusweave"));
+        nexusweave::index::full_index(&fresh, |_, _| {}).unwrap();
         assert_eq!(inc, edges(&fresh), "step {i} diverged from a full index");
         let _ = std::fs::remove_dir_all(&fresh);
     }
@@ -150,8 +150,8 @@ fn cached_resolver_matches_full_index() {
 fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in std::fs::read_dir(dir).unwrap() {
         let p = e.unwrap().path();
-        if p.is_dir() { if !p.ends_with(".xgraph") { source_files(&p, out); } }
-        else if xgraph::model::Lang::from_path(&p.to_string_lossy()).is_some() { out.push(p); }
+        if p.is_dir() { if !p.ends_with(".nexusweave") { source_files(&p, out); } }
+        else if nexusweave::model::Lang::from_path(&p.to_string_lossy()).is_some() { out.push(p); }
     }
 }
 
@@ -160,10 +160,10 @@ fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
 #[test]
 fn cached_resolver_all_languages() {
     for lang in ["ts", "py", "go", "rust", "java", "csharp", "cpp", "ruby", "php", "kotlin", "swift", "dart", "scala", "lua", "vue", "svelte"] {
-        let d = std::env::temp_dir().join(format!("xgraph-cache-{lang}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("nexusweave-cache-{lang}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(lang), &d);
-        xgraph::index::full_index(&d, |_, _| {}).unwrap();
+        nexusweave::index::full_index(&d, |_, _| {}).unwrap();
         let mut files = Vec::new();
         source_files(&d, &mut files);
         files.sort();
@@ -182,12 +182,12 @@ fn cached_resolver_all_languages() {
                 "delete" => std::fs::remove_file(&files[*i]).unwrap(),
                 _ => write(&d, &rel, &saved[*i]),
             }
-            xgraph::index::sync_with(&d, Some(std::slice::from_ref(&rel)), Some(&mut cache)).unwrap();
-            let fresh = std::env::temp_dir().join(format!("xgraph-cache-fresh-{lang}-{}-{step}", std::process::id()));
+            nexusweave::index::sync_with(&d, Some(std::slice::from_ref(&rel)), Some(&mut cache)).unwrap();
+            let fresh = std::env::temp_dir().join(format!("nexusweave-cache-fresh-{lang}-{}-{step}", std::process::id()));
             let _ = std::fs::remove_dir_all(&fresh);
             copy_dir(&d, &fresh);
-            let _ = std::fs::remove_dir_all(fresh.join(".xgraph"));
-            xgraph::index::full_index(&fresh, |_, _| {}).unwrap();
+            let _ = std::fs::remove_dir_all(fresh.join(".nexusweave"));
+            nexusweave::index::full_index(&fresh, |_, _| {}).unwrap();
             assert_eq!(edges(&d), edges(&fresh), "{lang}: {op} {rel} diverged from a full index");
             let _ = std::fs::remove_dir_all(&fresh);
         }
@@ -199,7 +199,7 @@ fn cached_resolver_all_languages() {
 /// a field typed with it): edits to the class behind the alias must re-resolve them.
 #[test]
 fn aliased_field_types_follow_their_class() {
-    let d = std::env::temp_dir().join(format!("xgraph-sync-alias-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("nexusweave-sync-alias-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(d.join("lib")).unwrap();
     std::fs::create_dir_all(d.join("app")).unwrap();
@@ -207,9 +207,9 @@ fn aliased_field_types_follow_their_class() {
     write(&d, "lib/index.ts", "export { Store } from './store';\n");
     write(&d, "app/view.ts", "import { Store as S } from '../lib/index';\nexport class View {\n  s: S;\n  constructor(s: S) { this.s = s; }\n  run() { return this.s.put(); }\n  read() { return this.s.get(); }\n}\n");
     write(&d, "app/other.ts", "import { Store } from '../lib/store';\nexport function f(x: Store) { const y = x; return y.put(); }\n");
-    xgraph::index::full_index(&d, |_, _| {}).unwrap();
+    nexusweave::index::full_index(&d, |_, _| {}).unwrap();
     let mut cache = None;
-    xgraph::index::sync_with(&d, None, Some(&mut cache)).unwrap();
+    nexusweave::index::sync_with(&d, None, Some(&mut cache)).unwrap();
     type Step = Box<dyn Fn(&Path)>;
     let steps: Vec<Step> = vec![
         // the missing member appears
@@ -229,13 +229,13 @@ fn aliased_field_types_follow_their_class() {
     ];
     for (i, step) in steps.iter().enumerate() {
         step(&d);
-        xgraph::index::sync_with(&d, None, Some(&mut cache)).unwrap();
+        nexusweave::index::sync_with(&d, None, Some(&mut cache)).unwrap();
         let inc = edges(&d);
-        let fresh = std::env::temp_dir().join(format!("xgraph-sync-alias-fresh-{}-{i}", std::process::id()));
+        let fresh = std::env::temp_dir().join(format!("nexusweave-sync-alias-fresh-{}-{i}", std::process::id()));
         let _ = std::fs::remove_dir_all(&fresh);
         copy_dir(&d, &fresh);
-        let _ = std::fs::remove_dir_all(fresh.join(".xgraph"));
-        xgraph::index::full_index(&fresh, |_, _| {}).unwrap();
+        let _ = std::fs::remove_dir_all(fresh.join(".nexusweave"));
+        nexusweave::index::full_index(&fresh, |_, _| {}).unwrap();
         assert_eq!(inc, edges(&fresh), "step {i} diverged from a full index");
         let _ = std::fs::remove_dir_all(&fresh);
         if i == 0 { assert!(has(&d, "View.run -> Store.put"), "{:?}", edges(&d)); }
@@ -248,22 +248,22 @@ fn aliased_field_types_follow_their_class() {
 /// `passes` edge appears without touching the passing file, as in a full index.
 #[test]
 fn value_ref_resolves_when_target_appears() {
-    let d = std::env::temp_dir().join(format!("xgraph-sync-value-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("nexusweave-sync-value-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(d.join("src")).unwrap();
     write(&d, "src/app.ts", "import { auth } from './auth';\nexport function setup(use: (f: unknown) => void) { use(auth); }\n");
     write(&d, "src/auth.ts", "export const placeholder = 1;\n");
-    xgraph::index::full_index(&d, |_, _| {}).unwrap();
+    nexusweave::index::full_index(&d, |_, _| {}).unwrap();
     assert!(!has(&d, "setup -> auth"));
     let mut cache = None;
     for (i, body) in ["export function auth() { return true; }\n", "export const placeholder = 1;\n", "export function auth() { return true; }\n"].iter().enumerate() {
         write(&d, "src/auth.ts", body);
-        xgraph::index::sync_with(&d, None, Some(&mut cache)).unwrap();
-        let fresh = std::env::temp_dir().join(format!("xgraph-sync-value-fresh-{}-{i}", std::process::id()));
+        nexusweave::index::sync_with(&d, None, Some(&mut cache)).unwrap();
+        let fresh = std::env::temp_dir().join(format!("nexusweave-sync-value-fresh-{}-{i}", std::process::id()));
         let _ = std::fs::remove_dir_all(&fresh);
         copy_dir(&d, &fresh);
-        let _ = std::fs::remove_dir_all(fresh.join(".xgraph"));
-        xgraph::index::full_index(&fresh, |_, _| {}).unwrap();
+        let _ = std::fs::remove_dir_all(fresh.join(".nexusweave"));
+        nexusweave::index::full_index(&fresh, |_, _| {}).unwrap();
         assert_eq!(edges(&d), edges(&fresh), "step {i} diverged from a full index");
         let _ = std::fs::remove_dir_all(&fresh);
     }
@@ -271,29 +271,44 @@ fn value_ref_resolves_when_target_appears() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// `xgraph index` renames a fresh database over the old one while a daemon may hold the old
+/// `nexusweave index` renames a fresh database over the old one while a daemon may hold the old
 /// file open: its graph must reopen and its warm resolver cache must not be reused.
 #[test]
 fn reindex_under_a_long_lived_holder() {
     let d = setup("reindex");
-    let g = xgraph::query::Graph::open(&d).unwrap();
+    let g = nexusweave::query::Graph::open(&d).unwrap();
     let mut cache = None;
     let svc = std::fs::read_to_string(d.join("src/service.ts")).unwrap();
     write(&d, "src/service.ts", &format!("{svc}\n"));
-    xgraph::index::sync_with(&d, Some(&["src/service.ts".to_string()]), Some(&mut cache)).unwrap();
+    nexusweave::index::sync_with(&d, Some(&["src/service.ts".to_string()]), Some(&mut cache)).unwrap();
     assert!(cache.is_some() && !g.is_replaced());
 
     // a file sorting first shifts every row id in the rebuilt database
     write(&d, "src/aaa.ts", "export function early() { return 1; }\nexport class Early { run() { early(); } }\n");
-    xgraph::index::full_index(&d, |_, _| {}).unwrap();
+    nexusweave::index::full_index(&d, |_, _| {}).unwrap();
     assert!(g.is_replaced(), "a rebuilt database must be noticed");
-    assert!(!xgraph::query::Graph::open(&d).unwrap().is_replaced());
+    assert!(!nexusweave::query::Graph::open(&d).unwrap().is_replaced());
 
     // a sync with the cache from before the rebuild converges to a full index
     write(&d, "src/service.ts", &format!("\n\n{svc}"));
-    xgraph::index::sync_with(&d, Some(&["src/service.ts".to_string()]), Some(&mut cache)).unwrap();
+    nexusweave::index::sync_with(&d, Some(&["src/service.ts".to_string()]), Some(&mut cache)).unwrap();
     let synced = edges(&d);
-    xgraph::index::full_index(&d, |_, _| {}).unwrap();
+    nexusweave::index::full_index(&d, |_, _| {}).unwrap();
     assert_eq!(synced, edges(&d));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// An index built before the rebrand (`.xgraph/`) is adopted, not rebuilt.
+#[test]
+fn legacy_index_directory_is_adopted() {
+    let d = setup("legacy");
+    let before = edges(&d);
+    std::fs::rename(d.join(".nexusweave"), d.join(".xgraph")).unwrap();
+    std::fs::write(d.join(".xgraph/daemon.json"), "{}").unwrap();
+    let root = nexusweave::query::find_root(&d.join("src")).expect("found through the legacy directory");
+    assert_eq!(root, nexusweave::canonical(&d).unwrap());
+    assert!(!d.join(".xgraph").exists() && d.join(".nexusweave/graph.db").exists());
+    assert!(!d.join(".nexusweave/daemon.json").exists(), "old daemon files are dropped");
+    assert_eq!(edges(&d), before);
     let _ = std::fs::remove_dir_all(&d);
 }
