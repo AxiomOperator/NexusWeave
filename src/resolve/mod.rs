@@ -98,6 +98,30 @@ struct Rx<'a> {
     imports: HashMap<u32, Vec<(&'a mem::ImportInfo, Target)>>,
 }
 
+/// URL path segments, without query, hash or empty segments: `/users/42?tab=1` → `users`, `42`.
+fn path_segments(p: &str) -> Vec<&str> {
+    let p = p.split(['?', '#']).next().unwrap_or(p);
+    p.split('/').filter(|s| !s.is_empty()).collect()
+}
+
+/// How well a navigation path matches a page route pattern: `Some(literal segments matched)`, or
+/// `None`. Pattern params (`:id`, `[id]`, `{id}`) and the path's own placeholders (`${id}` → `:p`)
+/// match any one segment; catch-alls (`*`, `[...slug]`, `:rest*`) match the rest.
+fn route_match(pattern: &[&str], path: &[&str]) -> Option<usize> {
+    let param = |s: &str| s.starts_with(':') || s.starts_with('[') && s.ends_with(']') || s.starts_with('{') && s.ends_with('}');
+    let rest = |s: &str| s == "*" || s == "**" || s.starts_with("[...") || s.starts_with("[[...") || s.starts_with(':') && (s.ends_with('*') || s.ends_with('+'));
+    let optional = |s: &str| s.starts_with("[[") || s.starts_with(':') && s.ends_with('?');
+    let mut score = 0;
+    for (i, p) in pattern.iter().enumerate() {
+        if rest(p) { return Some(score); }
+        let Some(s) = path.get(i) else { return pattern[i..].iter().all(|p| optional(p) || rest(p)).then_some(score) };
+        if param(p) || s.starts_with(':') { continue; }
+        if p != s { return None; }
+        score += 1;
+    }
+    (path.len() == pattern.len()).then_some(score)
+}
+
 /// `HTTPServer` → `http_server`, `App` → `app` (Ruby's file-naming convention).
 fn snake_case(name: &str) -> String {
     let cs: Vec<char> = name.chars().collect();
@@ -143,6 +167,8 @@ fn want_for(kind: RefKind) -> fn(NodeKind) -> bool {
         RefKind::Overrides | RefKind::Dispatch | RefKind::Handles => |k| k.is_callable(),
         // raw emit sites are wired to listeners by the `triggers` synthesis, not by name resolution
         RefKind::Emit | RefKind::Triggers => |_| false,
+        // navigation sites are matched to page routes by path in a synthesis pass
+        RefKind::Navigate | RefKind::NavigatesTo => |_| false,
     }
 }
 
@@ -1139,7 +1165,7 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
                 format!("{base} AND r.id IN (SELECT id FROM refs WHERE file_id IN (SELECT id FROM scope_files)
                          UNION SELECT id FROM scope_refs
                          -- the partial heritage index only applies when its own predicate is repeated
-                         UNION SELECT id FROM refs WHERE kind IN (2, 3, 8, 11, 12) AND kind IN ({}, {})
+                         UNION SELECT id FROM refs WHERE kind IN (2, 3, 8, 11, 12, 14, 15) AND kind IN ({}, {})
                          -- CROSS JOIN pins the order: temp tables have no statistics
                          UNION {call_paths}))",
                     RefKind::Extends as i64, RefKind::Implements as i64)
@@ -1338,14 +1364,14 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
             let mut want: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
             let mut emit_rows: Vec<(i64, i64, String, i64)> = Vec::new();
             {
-                let mut q = tx.prepare("SELECT file_id, src_id, name, line FROM refs WHERE kind IN (2, 3, 8, 11, 12) AND kind = 11")?;
+                let mut q = tx.prepare("SELECT file_id, src_id, name, line FROM refs WHERE kind IN (2, 3, 8, 11, 12, 14, 15) AND kind = 11")?;
                 let mut rows = q.query([])?;
                 while let Some(r) = rows.next()? { emit_rows.push((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)); }
             }
             let mut have: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
             let mut stale = Vec::new();
             {
-                let mut q = tx.prepare("SELECT id, src_id, target_id FROM refs WHERE kind IN (2, 3, 8, 11, 12) AND kind = 12")?;
+                let mut q = tx.prepare("SELECT id, src_id, target_id FROM refs WHERE kind IN (2, 3, 8, 11, 12, 14, 15) AND kind = 12")?;
                 let mut rows = q.query([])?;
                 while let Some(r) = rows.next()? { have.insert((r.get(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0))); stale.push((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0))); }
             }
@@ -1361,12 +1387,45 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
             for (id, s, t) in stale { if !want.contains(&(s, t)) { del.execute([id])?; } }
         }
         {
+            // navigates: every navigation site → the page route(s) its path matches best
+            let pages: Vec<(Vec<&str>, i64)> = mem.nodes.iter()
+                .filter(|n| n.alive && n.kind == NodeKind::Route && n.name.starts_with("PAGE "))
+                .map(|n| (path_segments(&n.name[5..]), n.id)).collect();
+            let mut want: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+            let mut sites: Vec<(i64, i64, String, i64)> = Vec::new();
+            {
+                let mut q = tx.prepare("SELECT file_id, src_id, name, line FROM refs WHERE kind IN (2, 3, 8, 11, 12, 14, 15) AND kind = 14")?;
+                let mut rows = q.query([])?;
+                while let Some(r) = rows.next()? { sites.push((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)); }
+            }
+            let mut have: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+            let mut stale = Vec::new();
+            {
+                let mut q = tx.prepare("SELECT id, src_id, target_id FROM refs WHERE kind IN (2, 3, 8, 11, 12, 14, 15) AND kind = 15")?;
+                let mut rows = q.query([])?;
+                while let Some(r) = rows.next()? { have.insert((r.get(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0))); stale.push((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0))); }
+            }
+            let mut ins = tx.prepare("INSERT INTO refs(file_id,src_id,kind,name,name_h,line,col,target_id,confidence) VALUES(?,?,15,?,?,?,0,?,75)")?;
+            for (f, src, path, line) in &sites {
+                let segs = path_segments(path);
+                let scored: Vec<(usize, i64)> = pages.iter().filter_map(|(p, id)| route_match(p, &segs).map(|s| (s, *id))).collect();
+                let Some(best) = scored.iter().map(|(s, _)| *s).max() else { continue };
+                for &(_, id) in scored.iter().filter(|(s, _)| *s == best) {
+                    if want.insert((*src, id)) && !have.contains(&(*src, id)) {
+                        ins.execute(rusqlite::params![f, src, path, crate::db::name_hash(path), line, id])?;
+                    }
+                }
+            }
+            let mut del = tx.prepare("DELETE FROM refs WHERE id = ?")?;
+            for (id, s, t) in stale { if !want.contains(&(s, t)) { del.execute([id])?; } }
+        }
+        {
             // diff against what's stored (indexed by the partial heritage index) — write only changes
             let want: std::collections::HashSet<(i64, i64)> = overrides.iter().map(|&(m, x)| (mem.node(m).id, mem.node(x).id)).collect();
             let mut have: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
             let mut stale: Vec<i64> = Vec::new();
             {
-                let mut q = tx.prepare("SELECT id, src_id, target_id FROM refs WHERE kind IN (2, 3, 8, 11, 12) AND kind = 8")?;
+                let mut q = tx.prepare("SELECT id, src_id, target_id FROM refs WHERE kind IN (2, 3, 8, 11, 12, 14, 15) AND kind = 8")?;
                 let mut rows = q.query([])?;
                 while let Some(r) = rows.next()? {
                     let (id, s, t) = (r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?);

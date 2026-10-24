@@ -99,7 +99,7 @@ impl Graph {
     fn routes_reaching(&self, id: i64, max_depth: u32) -> Result<Vec<String>> {
         let mut st = self.db.conn.prepare_cached(
             "SELECT DISTINCT COALESCE(r.src_owner_id, r.src_id), n.kind FROM refs r JOIN nodes n ON n.id = COALESCE(r.src_owner_id, r.src_id)
-             WHERE r.target_id = ?1 AND r.kind IN (0, 1, 7, 10, 12)
+             WHERE r.target_id = ?1 AND r.kind IN (0, 1, 7, 10, 12, 15)
              UNION SELECT t.target_id, n.kind FROM refs t JOIN nodes n ON n.id = t.target_id WHERE t.src_id = ?1 AND t.kind = 8")?;
         let mut seen: HashSet<i64> = HashSet::from([id]);
         let mut q = VecDeque::from([(id, 0u32)]);

@@ -18,6 +18,100 @@ fn is_exported(n: Node<'_>) -> bool {
 
 fn unquote(s: &str) -> &str { s.trim_matches(|c| c == '"' || c == '\'' || c == '`') }
 
+/// An in-app navigation target: a path literal, or a template whose `${…}` parts become `:p`
+/// (`/users/${id}` → `/users/:p`), or a Vue `{ path: '/x' }` location. Must start with one `/`.
+fn nav_path(cx: &Cx<'_>, n: Node<'_>) -> Option<String> {
+    let t = match n.kind() {
+        "string" => unquote(cx.text(n)).to_string(),
+        "template_string" => {
+            let raw = cx.text(n).trim_matches('`');
+            let mut out = String::new();
+            let mut it = raw.chars().peekable();
+            while let Some(c) = it.next() {
+                if c == '$' && it.peek() == Some(&'{') {
+                    let mut depth = 0;
+                    for d in it.by_ref() { if d == '{' { depth += 1; } else if d == '}' { depth -= 1; if depth == 0 { break; } } }
+                    out.push_str(":p");
+                } else { out.push(c); }
+            }
+            out
+        }
+        "object" => {
+            let mut c = n.walk();
+            let pair = n.named_children(&mut c).find(|p| p.kind() == "pair" && p.child_by_field_name("key").is_some_and(|k| matches!(unquote(cx.text(k)), "path" | "pathname")))?;
+            return nav_path(cx, pair.child_by_field_name("value")?);
+        }
+        _ => return None,
+    };
+    (t.starts_with('/') && !t.starts_with("//")).then_some(t)
+}
+
+/// `navigate(…)`, `router.push(…)`, `this.$router.replace(…)`, `history.push(…)`, `goto(…)`,
+/// `redirect(…)`: calls whose first argument is where the app goes next.
+fn is_nav_call(q: Option<&str>, name: &str) -> bool {
+    let recv = q.map(|q| q.rsplit('.').next().unwrap_or(q).trim_start_matches('$').to_ascii_lowercase());
+    match name {
+        "navigate" | "goto" | "redirect" | "permanentRedirect" | "navigateTo" | "navigateByUrl" => true,
+        "push" | "replace" => recv.is_some_and(|r| r.ends_with("router") || r == "history" || r == "navigation" || r == "navigator"),
+        _ => false,
+    }
+}
+
+/// The value of JSX attribute `name` on an opening/self-closing element: a string node, or the
+/// expression inside `{…}`.
+fn jsx_attr<'t>(cx: &Cx<'_>, el: Node<'t>, name: &str) -> Option<Node<'t>> {
+    let mut c = el.walk();
+    let attr = el.named_children(&mut c).find(|a| a.kind() == "jsx_attribute" && a.named_child(0).is_some_and(|k| cx.text(k) == name))?;
+    let v = attr.named_child(1)?;
+    if v.kind() == "jsx_expression" { v.named_child(0) } else { Some(v) }
+}
+
+/// The component a route renders: `element={<UserPage />}`, `component={UserPage}`, `Component={UserPage}`.
+fn route_component<'a>(cx: &'a Cx<'_>, v: Node<'_>) -> Option<&'a str> {
+    match v.kind() {
+        "identifier" => Some(cx.text(v)),
+        "jsx_self_closing_element" => v.child_by_field_name("name").map(|x| cx.text(x)),
+        "jsx_element" => v.child_by_field_name("open_tag").and_then(|o| o.child_by_field_name("name")).map(|x| cx.text(x)),
+        _ => None,
+    }
+}
+
+/// `<Route path="users/:id">` nested in `<Route path="/app">`: the full path.
+fn jsx_route_path(cx: &Cx<'_>, el: Node<'_>) -> Option<String> {
+    let own = jsx_attr(cx, el, "path").filter(|v| v.kind() == "string").map(|v| unquote(cx.text(v)).to_string())?;
+    if own.starts_with('/') { return Some(own); }
+    // walk out through enclosing <Route> elements
+    let mut cur = el.parent();
+    while let Some(p) = cur {
+        if p.kind() == "jsx_element" && let Some(open) = p.child_by_field_name("open_tag").filter(|o| o.id() != el.id())
+            && open.child_by_field_name("name").is_some_and(|x| cx.text(x) == "Route") {
+            return Some(match jsx_route_path(cx, open) { Some(parent) => join_route(&parent, &own), None => own });
+        }
+        cur = p.parent();
+    }
+    Some(own)
+}
+
+/// A route-config object (`{ path: "users/:id", element: <User/> }`, Vue/Angular `component: User`)
+/// and its full path, joining the paths of the objects whose `children` it sits in.
+fn object_route<'a>(cx: &'a Cx<'_>, obj: Node<'_>) -> Option<(String, Option<&'a str>)> {
+    let mut c = obj.walk();
+    let pairs: Vec<Node<'_>> = obj.named_children(&mut c).filter(|p| p.kind() == "pair").collect();
+    let get = |k: &str| pairs.iter().find(|p| p.child_by_field_name("key").is_some_and(|x| unquote(cx.text(x)) == k)).and_then(|p| p.child_by_field_name("value"));
+    let path = get("path").filter(|v| v.kind() == "string").map(|v| unquote(cx.text(v)).to_string())?;
+    let shows = ["component", "element", "Component", "lazy", "loadComponent", "loadChildren", "children"].iter().any(|k| get(k).is_some());
+    if !shows { return None; }
+    let comp = get("component").or_else(|| get("Component")).or_else(|| get("element")).and_then(|v| route_component(cx, v));
+    // children: [ … ] of a parent route object
+    let parent = obj.parent().filter(|a| a.kind() == "array").and_then(|a| a.parent()).filter(|p| p.kind() == "pair"
+        && p.child_by_field_name("key").is_some_and(|k| unquote(cx.text(k)) == "children")).and_then(|p| p.parent()).filter(|o| o.kind() == "object");
+    let full = match parent.and_then(|p| object_route(cx, p)) {
+        Some((pp, _)) if !path.starts_with('/') => join_route(&pp, &path),
+        _ => path,
+    };
+    Some((full, comp))
+}
+
 fn is_fn_value(k: &str) -> bool {
     matches!(k, "arrow_function" | "function_expression" | "function" | "generator_function")
 }
@@ -389,6 +483,12 @@ impl LangHooks for Js {
                 Visit::Continue
             }
             "call_expression" => {
+                if let Some(f) = n.child_by_field_name("function") && let Some((q, name)) = callee_parts(cx, f)
+                    && is_nav_call(q, name)
+                    && let Some(a) = n.child_by_field_name("arguments").and_then(|a| a.named_child(0))
+                    && let Some(p) = nav_path(cx, a) {
+                    cx.add_ref(RefKind::Navigate, &p, None, a);
+                }
                 if let Some(d) = self.event_call(n, cx) { return d; }
                 if let Some(d) = self.call_route(n, cx) { return d; }
                 if let Some(f) = n.child_by_field_name("function") {
@@ -422,6 +522,13 @@ impl LangHooks for Js {
                 }
                 Visit::Continue
             }
+            "object" => {
+                if let Some((p, comp)) = object_route(cx, n) {
+                    let comp = comp.map(str::to_string);
+                    cx.add_route("PAGE", &p, n, comp.as_deref().map(|c| (None, c)));
+                }
+                Visit::Continue
+            }
             "jsx_expression" => {
                 // onClick={handleClick} / onSubmit={this.save}
                 if let Some(e) = n.named_child(0) && n.named_child_count() == 1 && matches!(e.kind(), "identifier" | "member_expression")
@@ -434,6 +541,18 @@ impl LangHooks for Js {
             }
             "jsx_opening_element" | "jsx_self_closing_element" => {
                 if let Some(nm) = n.child_by_field_name("name") {
+                    let tag = cx.text(nm);
+                    // <Link to="/settings">, <NavLink to>, <RouterLink to>, <NuxtLink to>, Next <Link href>
+                    if matches!(tag, "Link" | "NavLink" | "RouterLink" | "NuxtLink" | "router-link")
+                        && let Some(v) = jsx_attr(cx, n, "to").or_else(|| jsx_attr(cx, n, "href"))
+                        && let Some(p) = nav_path(cx, v) {
+                        cx.add_ref(RefKind::Navigate, &p, None, v);
+                    }
+                    // <Route path="/users/:id" element={<UserPage />} />
+                    if tag == "Route" && let Some(p) = jsx_route_path(cx, n) {
+                        let comp = ["element", "component", "Component"].iter().find_map(|a| jsx_attr(cx, n, a)).and_then(|v| route_component(cx, v)).map(str::to_string);
+                        cx.add_route("PAGE", &p, n, comp.as_deref().map(|c| (None, c)));
+                    }
                     let t = cx.text(nm);
                     let (q, name) = split_qual(t);
                     if name.chars().next().is_some_and(|c| c.is_uppercase()) { cx.add_ref(RefKind::Call, name, q, nm); }

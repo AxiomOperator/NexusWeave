@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
 /// Bump whenever the schema or extraction output changes; older indexes are rebuilt.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -119,7 +119,7 @@ CREATE INDEX IF NOT EXISTS idx_imports_target ON imports(target_file);
 const SYNC_INDEXES: &str = r#"
 CREATE INDEX IF NOT EXISTS idx_refs_via ON refs(via_id) WHERE via_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_refs_miss ON refs(miss_h) WHERE miss_h IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_refs_heritage ON refs(kind) WHERE kind IN (2, 3, 8, 11, 12);
+CREATE INDEX IF NOT EXISTS idx_refs_heritage ON refs(kind) WHERE kind IN (2, 3, 8, 11, 12, 14, 15);
 CREATE INDEX IF NOT EXISTS idx_refs_recv ON refs(recv_id) WHERE recv_id IS NOT NULL;
 "#;
 

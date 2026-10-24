@@ -102,6 +102,14 @@ Each language gets:
   - Go gin, echo, chi and `net/http`
   - Laravel `Route::get`
   - Rails `routes.rb` and Sinatra
+- frontend page routes (`PAGE /users/:id` nodes linked to the component they render): React
+  Router `<Route path element>` (nested paths joined) and route-config objects (React Router,
+  Vue Router, Angular `{ path, component }`); Next.js `app/**/page.tsx` and `pages/**` (also
+  Nuxt), SvelteKit `src/routes/**/+page.svelte`
+- navigation: `navigate()`, `router.push()`, `history.push()`, `goto()`, `redirect()`,
+  `<Link to|href>` / `<NavLink>` / `<RouterLink>` / `<NuxtLink>` get `navigates` edges to the page
+  routes their path matches (`/users/${id}` matches `/users/:id` and `/users/[id]`), so flows run
+  from a click handler through the page to its component
 - C/C++ include paths are read from `compile_commands.json` when present
 
 ## CLI

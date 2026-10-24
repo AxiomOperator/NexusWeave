@@ -505,8 +505,47 @@ fn extract_src(lang: Lang, path: &str, src: &[u8]) -> FileExtraction {
     cx.scopes.push(Scope { node: 0, kind: NodeKind::File, name: String::new(), vars: HashMap::new(), ret: None, locals: HashSet::new() });
     if root.has_error() { cx.out.parse_errors = count_errors(root); }
     walk_children(h, root, &mut cx, 0);
+    if let Some(p) = page_route(lang, path) {
+        let comp = default_export(&cx, root).map(str::to_string);
+        cx.add_route("PAGE", &p, root, comp.as_deref().map(|c| (None, c)));
+    }
     drop_shadowed_reads(&mut cx.out.refs);
     cx.out
+}
+
+/// File-system routing: the page a file renders, by framework convention. Next.js `app/**/page.tsx`
+/// and `pages/**` (also Nuxt), SvelteKit `src/routes/**/+page.svelte`. Route groups `(auth)` and
+/// parallel slots `@modal` don't appear in the URL; `index` is the directory itself.
+fn page_route(lang: Lang, path: &str) -> Option<String> {
+    if !matches!(lang, Lang::TypeScript | Lang::Tsx | Lang::JavaScript | Lang::Vue | Lang::Svelte) { return None; }
+    let segs: Vec<&str> = path.split('/').collect();
+    let (file, dirs) = segs.split_last()?;
+    let stem = file.split('.').next().unwrap_or(file);
+    let base = |marker: &[&str]| dirs.windows(marker.len()).rposition(|w| w == marker).map(|i| i + marker.len());
+    let rest: Vec<&str> = if stem == "+page" && let Some(i) = base(&["src", "routes"]) {
+        dirs[i..].to_vec()
+    } else if stem == "page" && !matches!(lang, Lang::Vue | Lang::Svelte) && let Some(i) = base(&["app"]) {
+        dirs[i..].to_vec()
+    } else {
+        let i = base(&["pages"])?;
+        // `_app`, `_document`: framework plumbing; `pages/api/**`: server endpoints, not pages
+        if stem.starts_with('_') || dirs.get(i) == Some(&"api") { return None; }
+        let mut r = dirs[i..].to_vec();
+        if stem != "index" { r.push(stem); }
+        r
+    };
+    let kept: Vec<&str> = rest.into_iter().filter(|s| !(s.starts_with('(') && s.ends_with(')')) && !s.starts_with('@')).collect();
+    Some(format!("/{}", kept.join("/")))
+}
+
+/// The name a file's `export default` binds (`export default function UsersPage`, `export default Users`).
+fn default_export<'a>(cx: &'a Cx<'_>, root: Node<'_>) -> Option<&'a str> {
+    let mut c = root.walk();
+    let e = root.named_children(&mut c).find(|e| e.kind() == "export_statement" && cx.text(*e).starts_with("export default"))?;
+    match e.child_by_field_name("declaration") {
+        Some(d) => d.child_by_field_name("name").map(|x| cx.text(x)),
+        None => e.child_by_field_name("value").filter(|v| v.kind() == "identifier").map(|v| cx.text(v)),
+    }
 }
 
 /// A member read in a value position (`sorted(xs, key=self.by_name)`) is also noted as a passed

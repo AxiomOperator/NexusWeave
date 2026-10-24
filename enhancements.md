@@ -380,3 +380,14 @@ for cost. Next steps, each measurable with the harness:
 conditions again; NexusWeave vs baseline: tool calls −25%, turns −21%, tokens −5%, wall −5%,
 cost +4% (first run: −30% / −26% / −12% / −10% / +5%). Cheaper than baseline on the largest repo
 (codegraph: `cg-index-flow` $0.85 → $0.68, `cg-watcher` $0.35 → $0.21), dearer on most small ones.
+
+## 7. Parity pass vs codegraph (2026-10-24)
+
+Done: `nexusweave.json` (extensions, exclude, include, deprioritize); `install --instructions`
+(managed section in CLAUDE.md / AGENTS.md / GEMINI.md) and `--allow` (Claude Code permission
+rule); Kiro and VS Code install targets; frontend page routes and `navigates` edges (React Router,
+Vue Router, Angular route objects, Next.js / Nuxt / SvelteKit file routes), fixture `react`.
+
+Still behind codegraph: language count (16 vs ~40), backend routes for Drupal / Play /
+Axum-actix-Rocket / Vapor / Astro, mobile bridging (Swift↔Objective-C, React Native), an npm-style
+library API, signed release provenance, and its published agent-efficiency numbers.

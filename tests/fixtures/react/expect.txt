@@ -1,0 +1,16 @@
+# page routes link to the component they render (JSX routes, nested paths joined)
+PAGE /users -> UsersList
+PAGE /users/:id -> UserPage
+PAGE /settings -> Settings
+# route-config objects (children joined to the parent path)
+PAGE /admin -> Settings
+PAGE /admin/audit -> Settings
+# Next.js file routes: the default export; route groups don't appear in the URL
+PAGE /users/[id] -> UserProfilePage
+PAGE /about -> AboutPage
+# navigation sites link to the page routes their path matches
+Header -> PAGE /settings
+useOpenUser -> PAGE /users/:id
+useOpenUser -> PAGE /users/[id]
+toAudit -> PAGE /admin/audit
+!goHome -> PAGE /users

@@ -64,3 +64,4 @@ fn check(lang: &str) {
 #[test] fn lua() { check("lua"); }
 #[test] fn vue() { check("vue"); }
 #[test] fn svelte() { check("svelte"); }
+#[test] fn react() { check("react"); }
