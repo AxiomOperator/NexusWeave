@@ -6,22 +6,52 @@
 
 use super::*;
 
-/// Byte ranges of `<tag ...>` … `</tag>` bodies.
+/// Byte ranges of `<tag ...>` … `</tag>` bodies. Attribute values may contain `>`
+/// (`generic="T extends Record<string, any>"`), `<tag … />` has no body, and tags inside
+/// `<!-- … -->` don't count.
 fn blocks(src: &[u8], tag: &str) -> Vec<(usize, usize)> {
     let lower = src.to_ascii_lowercase();
     let (open, close) = (format!("<{tag}"), format!("</{tag}>"));
+    let comments = comment_ranges(&lower);
+    let in_comment = |i: usize| comments.iter().any(|&(a, b)| i >= a && i < b);
     let mut out = Vec::new();
     let mut i = 0;
     while let Some(o) = find(&lower, open.as_bytes(), i) {
         let after = o + open.len();
         // `<scripts>` / `<script-x>` aren't script tags
-        if lower.get(after).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-') { i = after; continue; }
-        let Some(gt) = find(&lower, b">", after) else { break };
+        if lower.get(after).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-') || in_comment(o) { i = after; continue; }
+        let Some(gt) = tag_end(&lower, after) else { break };
+        if gt > 0 && lower[gt - 1] == b'/' { i = gt + 1; continue; }
         let Some(c) = find(&lower, close.as_bytes(), gt + 1) else { break };
         out.push((gt + 1, c));
         i = c + close.len();
     }
     out
+}
+
+/// The `>` closing an opening tag, skipping quoted attribute values.
+fn tag_end(src: &[u8], from: usize) -> Option<usize> {
+    let mut quote = 0u8;
+    for (i, &b) in src.iter().enumerate().skip(from) {
+        match (quote, b) {
+            (0, b'"' | b'\'') => quote = b,
+            (0, b'>') => return Some(i),
+            (q, c) if q != 0 && c == q => quote = 0,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn comment_ranges(src: &[u8]) -> Vec<(usize, usize)> {
+    let mut v = Vec::new();
+    let mut i = 0;
+    while let Some(a) = find(src, b"<!--", i) {
+        let b = find(src, b"-->", a + 4).map_or(src.len(), |b| b + 3);
+        v.push((a, b));
+        i = b;
+    }
+    v
 }
 
 fn find(h: &[u8], n: &[u8], from: usize) -> Option<usize> {
@@ -62,7 +92,8 @@ pub fn extract(lang: Lang, path: &str, src: &[u8]) -> FileExtraction {
     });
 
     // template: everything that's neither script nor style
-    let skip = |i: usize| scripts.iter().chain(&styles).any(|&(a, b)| i >= a && i < b);
+    let comments = comment_ranges(src);
+    let skip = |i: usize| scripts.iter().chain(&styles).chain(&comments).any(|&(a, b)| i >= a && i < b);
     let mut i = 0;
     while i < src.len() {
         if src[i] != b'<' || skip(i) { i += 1; continue; }
@@ -70,7 +101,7 @@ pub fn extract(lang: Lang, path: &str, src: &[u8]) -> FileExtraction {
         let mut e = s;
         while e < src.len() && (src[e].is_ascii_alphanumeric() || matches!(src[e], b'-' | b'_' | b':' | b'.')) { e += 1; }
         let tag = std::str::from_utf8(&src[s..e]).unwrap_or("");
-        let gt = find(src, b">", e).unwrap_or(src.len());
+        let gt = tag_end(src, e).unwrap_or(src.len());
         let is_comp = !tag.is_empty() && !HTML_TAGS.contains(&tag) && !tag.starts_with("svelte:")
             && (tag.starts_with(|c: char| c.is_ascii_uppercase()) || (lang == Lang::Vue && tag.contains('-')));
         if is_comp {
@@ -110,5 +141,33 @@ fn handlers(src: &[u8], from: usize, to: usize, comp: u32, out: &mut FileExtract
             i = j;
         }
         i += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn script_blocks() {
+        let src = br#"<!-- <script>bad()</script> -->
+<script src="./x.js" />
+<script setup lang="ts" generic="T extends Record<string, any>">
+const a = 1;
+</script>
+<template><p>{{ a }}</p></template>"#;
+        let b = blocks(src, "script");
+        assert_eq!(b.len(), 1, "{b:?}");
+        assert_eq!(std::str::from_utf8(&src[b[0].0..b[0].1]).unwrap().trim(), "const a = 1;");
+    }
+
+    #[test]
+    fn component_and_handler_refs() {
+        let src = b"<template>\n  <!-- <Hidden/> -->\n  <UserCard :title=\"a > b\" @save=\"onSave\" />\n</template>\n<script setup lang=\"ts\">\nfunction onSave() {}\n</script>\n";
+        let ex = extract(Lang::Vue, "src/App.vue", src);
+        let names: Vec<(&str, RefKind)> = ex.refs.iter().map(|r| (r.name.as_str(), r.kind)).collect();
+        assert!(names.contains(&("UserCard", RefKind::Instantiate)), "{names:?}");
+        assert!(names.contains(&("onSave", RefKind::Callback)), "{names:?}");
+        assert!(!names.iter().any(|(n, _)| *n == "Hidden"), "{names:?}");
     }
 }

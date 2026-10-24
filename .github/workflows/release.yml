@@ -23,7 +23,8 @@ jobs:
       matrix:
         include:
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          # cross-compiled: hosted arm64 Linux runners aren't available to every private repo
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04, cross: true }
           - { target: x86_64-apple-darwin, os: macos-latest }
           - { target: aarch64-apple-darwin, os: macos-latest }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
@@ -43,6 +44,12 @@ jobs:
         run: |
           v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           [ "v$v" = "$TAG" ] || { echo "tag $TAG != Cargo.toml version v$v"; exit 1; }
+      - name: Cross toolchain
+        if: matrix.cross
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq gcc-aarch64-linux-gnu
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
         shell: bash
@@ -55,7 +62,8 @@ jobs:
             tar -czf "xgraph-${{ matrix.target }}.tar.gz" -C "$dir" xgraph README.md
           fi
       - name: Smoke test
-        if: matrix.target != 'x86_64-apple-darwin'
+        # binaries for another architecture can't run on the build host
+        if: ${{ !matrix.cross && matrix.target != 'x86_64-apple-darwin' }}
         shell: bash
         run: target/${{ matrix.target }}/release/xgraph --version
       - uses: actions/upload-artifact@v4

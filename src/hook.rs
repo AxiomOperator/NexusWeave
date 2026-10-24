@@ -84,9 +84,7 @@ pub fn pretool() -> Result<()> {
     Ok(())
 }
 
-fn is_ours(entry: &Value) -> bool {
-    entry["hooks"].as_array().is_some_and(|hs| hs.iter().any(|h| h["command"].as_str().is_some_and(|c| c.contains("xgraph") && c.ends_with("hook pretool"))))
-}
+fn is_our_hook(h: &Value) -> bool { h["command"].as_str().is_some_and(|c| c.contains("xgraph") && c.ends_with("hook pretool")) }
 
 /// Add (or remove) the PreToolUse entry in a Claude Code settings file, leaving other hooks alone.
 pub fn set_claude_hook(settings: &Value, exe: &str, add: bool) -> Value {
@@ -96,9 +94,12 @@ pub fn set_claude_hook(settings: &Value, exe: &str, add: bool) -> Value {
     let pre = hooks.as_object_mut().unwrap().entry("PreToolUse").or_insert_with(|| json!([]));
     if !pre.is_array() { *pre = json!([]); }
     let list = pre.as_array_mut().unwrap();
-    list.retain(|e| !is_ours(e));
+    // remove only our hook; an entry the user shares with other hooks keeps them
+    for e in list.iter_mut() { if let Some(hs) = e["hooks"].as_array_mut() { hs.retain(|h| !is_our_hook(h)); } }
+    list.retain(|e| e["hooks"].as_array().is_none_or(|hs| !hs.is_empty()));
     if add {
-        let cmd = if exe.contains(' ') { format!("\"{exe}\" hook pretool") } else { format!("{exe} hook pretool") };
+        // quoted, forward slashes: hooks may run through a POSIX shell (Git Bash on Windows)
+        let cmd = format!("\"{}\" hook pretool", exe.replace('\\', "/"));
         list.push(json!({"matcher": "Grep|Glob", "hooks": [{"type": "command", "command": cmd, "timeout": 5}]}));
     }
     if list.is_empty() { hooks.as_object_mut().unwrap().remove("PreToolUse"); }
@@ -123,6 +124,10 @@ mod tests {
     fn settings_round_trip() {
         let other = json!({"matcher": "Bash", "hooks": [{"type": "command", "command": "lint"}]});
         let s = json!({"model": "x", "hooks": {"PreToolUse": [other.clone()]}});
+        // a user entry that also holds our hook keeps its own hooks on uninstall
+        let mixed = json!({"hooks": {"PreToolUse": [{"matcher": "Grep|Glob", "hooks": [{"type": "command", "command": "mine"}, {"type": "command", "command": "\"/bin/xgraph\" hook pretool"}]}]}});
+        assert_eq!(set_claude_hook(&mixed, "/bin/xgraph", false)["hooks"]["PreToolUse"][0]["hooks"].as_array().unwrap().len(), 1);
+        assert_eq!(set_claude_hook(&json!({}), r"C:\Users\me\xgraph.exe", true)["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "\"C:/Users/me/xgraph.exe\" hook pretool");
         let a = set_claude_hook(&s, "/bin/xgraph", true);
         let a2 = set_claude_hook(&a, "/bin/xgraph", true);
         assert_eq!(a, a2, "install is idempotent");

@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
 /// Bump whenever the schema or extraction output changes; older indexes are rebuilt.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS nodes (
 -- Every relationship except containment. `target_id` is filled by resolution;
 -- a ref whose target is deleted falls back to NULL and is re-resolved on sync.
 CREATE TABLE IF NOT EXISTS strs (id INTEGER PRIMARY KEY, s TEXT NOT NULL UNIQUE);
+-- Names passed or read as bare values that resolved to nothing (`app.use(auth)` before `auth`
+-- exists). Their ref rows aren't kept; when a sync defines one of these names, the file is
+-- re-extracted so the edge appears exactly as a full index would create it.
+CREATE TABLE IF NOT EXISTS value_names (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    name_h INTEGER NOT NULL,
+    PRIMARY KEY (file_id, name_h)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS refs (
     id INTEGER PRIMARY KEY,
     file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -102,6 +110,7 @@ CREATE INDEX IF NOT EXISTS idx_refs_target ON refs(target_id) WHERE target_id IS
 CREATE INDEX IF NOT EXISTS idx_refs_file ON refs(file_id);
 CREATE INDEX IF NOT EXISTS idx_refs_owner ON refs(src_owner_id) WHERE src_owner_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_id);
+CREATE INDEX IF NOT EXISTS idx_value_names_h ON value_names(name_h);
 CREATE INDEX IF NOT EXISTS idx_imports_target ON imports(target_file);
 "#;
 

@@ -31,7 +31,8 @@ api() {
   else curl -fsSL -H "Accept: $1" "$2"; fi
 }
 
-if [ -n "${XGRAPH_VERSION:-}" ]; then rel="tags/$XGRAPH_VERSION"; else rel=latest; fi
+# accept 0.2.0 as well as v0.2.0
+if [ -n "${XGRAPH_VERSION:-}" ]; then rel="tags/v${XGRAPH_VERSION#v}"; else rel=latest; fi
 hint=""; [ -n "$TOKEN" ] || hint=" (private repository? export GITHUB_TOKEN)"
 json=$(api application/vnd.github+json "https://api.github.com/repos/$REPO/releases/$rel") \
   || err "cannot read release $rel of $REPO$hint"
@@ -47,8 +48,8 @@ url=$(asset_url "$asset"); [ -n "$url" ] || err "no build for $target in this re
 sums=$(asset_url SHA256SUMS); [ -n "$sums" ] || err "release has no SHA256SUMS"
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-api application/octet-stream "$url" > "$tmp/$asset"
-api application/octet-stream "$sums" > "$tmp/SHA256SUMS"
+api application/octet-stream "$url" > "$tmp/$asset" || err "downloading $asset failed"
+api application/octet-stream "$sums" > "$tmp/SHA256SUMS" || err "downloading SHA256SUMS failed"
 
 want=$(grep " \*\{0,1\}$asset\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)
 if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$tmp/$asset" | cut -d' ' -f1)

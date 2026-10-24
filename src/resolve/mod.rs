@@ -17,6 +17,7 @@ pub use mem::{Mem, dir_of};
 
 /// Hash key used for symbol names (shared with the SCIP importer).
 pub fn name_key(name: &str) -> u64 { mem::key(name) }
+use rusqlite::OptionalExtension;
 use modules::{Modules, Target, common_prefix};
 
 use crate::db::Db;
@@ -44,6 +45,10 @@ pub struct Cache {
     mods: Modules,
     /// name hash / receiver-path segment hash → ids of refs mentioning it (may hold stale ids).
     refidx: Option<HashMap<i64, Vec<i64>>>,
+    /// Entries in `refidx` when it was built, and entries appended since: it only grows (stale ids
+    /// are harmless), so it is dropped and rebuilt once appends reach half its built size.
+    idx_built: usize,
+    idx_added: usize,
     /// Resolved import targets per file; reused while the set of file paths is unchanged.
     targets: HashMap<u32, Vec<Target>>,
 }
@@ -51,17 +56,22 @@ pub struct Cache {
 impl Cache {
     /// Name hashes a ref is reachable by during sync scoping: its own name, each receiver-type
     /// segment, and the head of its qualifier (`alias` in `alias.x.f()`).
-    fn ref_keys<'s>(name_h: i64, recv: Option<&'s str>, qual: Option<&'s str>) -> impl Iterator<Item = i64> + 's {
-        let segs = recv.into_iter().flat_map(|rt| rt.split('.')).map(|s| crate::db::name_hash(crate::extract::seg_name(s)));
-        let head = qual.and_then(|q| q.split('.').next()).map(|s| crate::db::name_hash(crate::extract::seg_name(s)));
+    /// Paths are split on every separator the resolver accepts (`.`, `::`, `->`, `\`), as
+    /// `qualified` normalizes them, so `db::schema::find` is reachable by `db`.
+    pub(crate) fn ref_keys<'s>(name_h: i64, recv: Option<&'s str>, qual: Option<&'s str>) -> impl Iterator<Item = i64> + 's {
+        fn parts(s: &str) -> impl Iterator<Item = &str> { s.split(['.', ':', '\\', '>', '-']).filter(|p| !p.is_empty()) }
+        let segs = recv.into_iter().flat_map(parts).map(|s| crate::db::name_hash(crate::extract::seg_name(s)));
+        let head = qual.and_then(|q| parts(q).next()).map(|s| crate::db::name_hash(crate::extract::seg_name(s)));
         std::iter::once(name_h).chain(segs).chain(head)
     }
 
-    fn index_ref(idx: &mut HashMap<i64, Vec<i64>>, id: i64, name_h: i64, recv: Option<&str>, qual: Option<&str>) {
+    /// Returns the number of entries added.
+    fn index_ref(idx: &mut HashMap<i64, Vec<i64>>, id: i64, name_h: i64, recv: Option<&str>, qual: Option<&str>) -> usize {
         let mut ks: Vec<i64> = Cache::ref_keys(name_h, recv, qual).collect();
         ks.sort_unstable();
         ks.dedup();
-        for k in ks { idx.entry(k).or_default().push(id); }
+        for &k in &ks { idx.entry(k).or_default().push(id); }
+        ks.len()
     }
 }
 
@@ -804,6 +814,8 @@ pub fn resolve(db: &mut Db, root: &Path, scope: Scope) -> Result<usize> { resolv
 pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&mut Option<Cache>>) -> Result<usize> {
     let t = std::time::Instant::now();
     let prev = cache.as_mut().and_then(|c| c.take());
+    let mut idx_sizes = (0usize, 0usize);
+    let mut idx_built_now = false;
     let (mut mem, mods, mut refidx, mut old_targets) = match (prev, &scope) {
         (Some(mut c), Scope::Incremental { files, removed, .. }) => {
             let py = |m: &Mem, ids: &[i64]| ids.iter().any(|id| m.file_by_id.get(id).is_some_and(|&f| m.files[f as usize].lang == Lang::Python));
@@ -839,6 +851,7 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
                 }
                 Some(t)
             } else { None };
+            idx_sizes = (c.idx_built, c.idx_added);
             (c.mem, mods, c.refidx, targets)
         }
         _ => {
@@ -961,15 +974,17 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
                     None => {
                         // build the index while scanning when a long-running caller will keep it
                         let mut built: Option<HashMap<i64, Vec<i64>>> = want_cache.then(HashMap::new);
+                        idx_sizes = (0, 0);
                         let mut q = tx.prepare(&format!("SELECT r.id, r.name_h, sr.s, sq.s FROM refs r {} WHERE r.kind != 8", crate::db::REF_STRS))?;
                         let mut rows = q.query([])?;
                         while let Some(r) = rows.next()? {
                             let (id, h) = (r.get::<_, i64>(0)?, r.get::<_, i64>(1)?);
                             let (rt, qual) = (r.get_ref(2)?.as_str_or_null()?, r.get_ref(3)?.as_str_or_null()?);
                             if Cache::ref_keys(h, rt, qual).any(|k| keys.contains(&k)) { ins.execute([id])?; }
-                            if let Some(b) = built.as_mut() { Cache::index_ref(b, id, h, rt, qual); }
+                            if let Some(b) = built.as_mut() { idx_sizes.0 += Cache::index_ref(b, id, h, rt, qual); }
                         }
                         drop(rows);
+                        if built.is_some() { idx_sizes.1 = 0; idx_built_now = true; } else { idx_sizes = (0, 0); }
                         refidx = built;
                     }
                 }
@@ -1155,18 +1170,38 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
                 strs.insert(s.to_string(), i);
                 Ok(Some(i))
             };
+            let mut vn = tx.prepare("INSERT OR IGNORE INTO value_names(file_id, name_h) VALUES(?, ?)")?;
             for (i, r) in pending_rows.iter().enumerate() {
                 let (t, c, o, v, m) = by_id[i + 1];
                 // most bare-name arguments are plain values; keep only the ones that are functions
-                if matches!(r.kind, RefKind::Callback | RefKind::Read) && t.is_none() { continue; }
+                // (and remember the name, in case a later sync defines it)
+                if matches!(r.kind, RefKind::Callback | RefKind::Read) && t.is_none() {
+                    // every name it depends on: its own, its receiver path, its qualifier
+                    for k in Cache::ref_keys(crate::db::name_hash(&r.name), r.recv_type.as_deref(), r.qualifier.as_deref()) {
+                        vn.execute(rusqlite::params![r.file_id, k])?;
+                    }
+                    continue;
+                }
                 let (q, rt) = (id_of(r.qualifier.as_deref())?, id_of(r.recv_type.as_deref())?);
                 ins.execute(rusqlite::params![i as i64 + 1, r.file_id, r.src_id, r.kind as i64, r.name, crate::db::name_hash(&r.name), q, rt, r.line, r.col, t, c, o, v, m])?;
             }
         }
         let mut up = tx.prepare("UPDATE refs SET target_id=?, confidence=?, src_owner_id=?, via_id=?, miss_h=? WHERE id=?")?;
+        // value refs (passes/reads) that resolve to nothing aren't kept, same as a full index
+        let mut vrow = tx.prepare(&format!("SELECT r.file_id, r.name_h, sr.s, sq.s FROM refs r {} WHERE r.id = ?1 AND r.kind IN (6, 7)", crate::db::REF_STRS))?;
+        let mut vn = tx.prepare("INSERT OR IGNORE INTO value_names(file_id, name_h) VALUES(?, ?)")?;
+        let mut vdel = tx.prepare("DELETE FROM refs WHERE id = ?1")?;
         for x in h_res.iter().chain(r_res.iter()).filter(|_| !fresh) {
             let target = x.res.map(|(t, _)| mem.node(t).id);
             let via = x.via.map(|v| mem.node(v).id);
+            if target.is_none() {
+                let row = vrow.query_row([x.id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?))).optional()?;
+                if let Some((f, h, rt, q)) = row {
+                    for k in Cache::ref_keys(h, rt.as_deref(), q.as_deref()) { vn.execute([f, k])?; }
+                    vdel.execute([x.id])?;
+                    continue;
+                }
+            }
             if target.is_some() { resolved += 1; }
             if target != x.db_target || via != x.db_via || x.owner.is_some() || x.miss.is_some() || target.is_some() && all {
                 up.execute(rusqlite::params![target, x.res.map(|(_, c)| c as i64).unwrap_or(0), x.owner.map(|o| mem.node(o).id), via, x.miss, x.id])?;
@@ -1253,16 +1288,14 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
             }
         }
     }
-    if !new_files.is_empty() {
-        let list = new_files.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-        tx.execute_batch(&format!("DELETE FROM refs WHERE kind IN (6, 7) AND target_id IS NULL AND file_id IN ({list})"))?;
-    }
-    if want_cache && let Some(idx) = refidx.as_mut() && !new_files.is_empty() {
+    // (a refidx built by this call's scan already holds the new files' refs)
+    if want_cache && !idx_built_now && let Some(idx) = refidx.as_mut() && !new_files.is_empty() {
         let list = new_files.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
         let mut q = tx.prepare(&format!("SELECT r.id, r.name_h, sr.s, sq.s FROM refs r {} WHERE r.kind != 8 AND r.file_id IN ({list})", crate::db::REF_STRS))?;
         let mut rows = q.query([])?;
-        while let Some(r) = rows.next()? { Cache::index_ref(idx, r.get(0)?, r.get(1)?, r.get_ref(2)?.as_str_or_null()?, r.get_ref(3)?.as_str_or_null()?); }
+        while let Some(r) = rows.next()? { idx_sizes.1 += Cache::index_ref(idx, r.get(0)?, r.get(1)?, r.get_ref(2)?.as_str_or_null()?, r.get_ref(3)?.as_str_or_null()?); }
     }
+    if idx_sizes.1 > idx_sizes.0 / 2 + 1000 { refidx = None; idx_sizes = (0, 0); }
     tx.commit()?;
     trace(&t, "persisted");
     drop(rx);
@@ -1271,7 +1304,7 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
         for (i, name) in route_renames { mem.nodes[i as usize].name = name; }
         for (f, j, tf) in import_updates { if let Some(v) = mem.imports.get_mut(&f) { v[j].db_target = tf; } }
         let targets: HashMap<u32, Vec<Target>> = cached_targets.into_iter().collect();
-        *c = Some(Cache { mem, mods, refidx, targets });
+        *c = Some(Cache { mem, mods, refidx, targets, idx_built: idx_sizes.0, idx_added: idx_sizes.1 });
     }
     Ok(resolved)
 }

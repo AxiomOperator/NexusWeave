@@ -487,7 +487,7 @@ fn walk_children<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, depth: u32
 /// `${foo()}` (JS, Dart, Kotlin), f"{foo()}" (Python), "#{foo}" (Ruby), $"{Foo()}" (C#),
 /// "\(foo())" (Swift), "{$o->foo()}" (PHP).
 fn is_string_node(k: &str) -> bool {
-    (k.contains("string") && !k.contains("type") && !k.ends_with("_content") && !k.ends_with("_fragment")) || k == "heredoc_body"
+    (k.contains("string") && !k.contains("type") && !k.ends_with("_content") && !k.ends_with("_fragment")) || k == "heredoc_body" || k == "heredoc"
 }
 
 fn walk_interpolations<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, depth: u32) {
@@ -496,7 +496,7 @@ fn walk_interpolations<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, dept
     let kids: Vec<Node<'t>> = n.named_children(&mut c).collect();
     for ch in kids {
         match ch.kind() {
-            "interpolation" | "template_substitution" | "interpolated_expression" => walk_children(h, ch, cx, depth + 1),
+            "interpolation" | "template_substitution" | "interpolated_expression" | "raw_str_interpolation" => walk_children(h, ch, cx, depth + 1),
             k if is_string_node(k) => walk_interpolations(h, ch, cx, depth + 1),
             "member_call_expression" | "function_call_expression" | "scoped_call_expression" if cx.lang == Lang::Php => walk(h, ch, cx, depth + 1),
             _ => {}

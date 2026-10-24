@@ -20,16 +20,24 @@ fn token() -> Option<String> {
 }
 
 fn curl(url: &str, accept: &str, out: Option<&Path>) -> Result<Vec<u8>> {
+    use std::io::Write;
     let mut c = Command::new("curl");
     c.args(["-fsSL", "--retry", "2", "-H", &format!("Accept: {accept}"), "-H", "X-GitHub-Api-Version: 2022-11-28"]);
-    if let Some(t) = token() { c.args(["-H", &format!("Authorization: Bearer {t}")]); }
     if let Some(o) = out { c.arg("-o").arg(o); }
-    let o = c.arg(url).output().context("running curl (is it installed?)")?;
+    // the token goes through a config on stdin, not argv (visible to other users via `ps`)
+    c.args(["--config", "-"]).arg(url).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = c.spawn().context("running curl (is it installed?)")?;
+    {
+        let mut stdin = child.stdin.take().context("curl stdin")?;
+        if let Some(t) = token() { writeln!(stdin, "header = \"Authorization: Bearer {}\"", t.replace(['"', '\\', '\n'], ""))?; }
+    }
+    let o = child.wait_with_output()?;
     if !o.status.success() {
         let hint = match (token().is_some(), String::from_utf8_lossy(&o.stderr).contains("404")) {
             (false, true) => " (no release published yet, or a private repository: set GITHUB_TOKEN)",
             (true, true) => " (no release published yet, or the token can't read this repository)",
             (false, false) => " (private repository? set GITHUB_TOKEN)",
+            (true, false) if String::from_utf8_lossy(&o.stderr).contains("401") => " (the token was rejected)",
             (true, false) => "",
         };
         bail!("download failed: {url}{hint}\n{}", String::from_utf8_lossy(&o.stderr).trim());
@@ -74,9 +82,7 @@ pub fn run(version: Option<&str>, check: bool, force: bool) -> Result<()> {
     let url = find(&name).with_context(|| format!("release {tag} has no build for {TARGET}"))?;
     let sums_url = find("SHA256SUMS").context("release has no SHA256SUMS")?;
 
-    let tmp = std::env::temp_dir().join(format!("xgraph-upgrade-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp)?;
+    let tmp = private_dir()?;
     let res = install_from(&tmp, &url, &sums_url, &name);
     let _ = std::fs::remove_dir_all(&tmp);
     let exe = res?;
@@ -86,6 +92,31 @@ pub fn run(version: Option<&str>, check: bool, force: bool) -> Result<()> {
         println!("note: a running `xgraph daemon` keeps the old version until it restarts (`xgraph daemon stop`)");
     }
     Ok(())
+}
+
+/// A fresh directory only this user can enter: created exclusively (fails if the name exists, so a
+/// pre-planted directory or symlink can't be reused) with a random name and mode 0700.
+fn private_dir() -> Result<PathBuf> {
+    use std::hash::{BuildHasher, Hasher};
+    for _ in 0..16 {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        h.write_u32(std::process::id());
+        let p = std::env::temp_dir().join(format!("xgraph-upgrade-{:016x}", h.finish()));
+        let b = {
+            #[allow(unused_mut)]
+            let mut b = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            { use std::os::unix::fs::DirBuilderExt; b.mode(0o700); }
+            b
+        };
+        match b.create(&p) {
+            Ok(()) => return Ok(p),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).with_context(|| format!("creating {}", p.display())),
+        }
+    }
+    bail!("could not create a private temporary directory")
 }
 
 fn install_from(tmp: &Path, url: &str, sums_url: &str, name: &str) -> Result<PathBuf> {
@@ -117,12 +148,26 @@ fn replace_exe(new: &Path) -> Result<PathBuf> {
     }
     #[cfg(windows)]
     {
-        let old = exe.with_extension("old.exe");
-        let _ = std::fs::remove_file(&old);
+        // a running .exe can be renamed but not replaced; leftovers from earlier upgrades may still
+        // be running (an MCP server), so each gets its own name and stale ones are best-effort deleted
+        if let Some(dir) = exe.parent() && let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                if e.file_name().to_string_lossy().starts_with("xgraph.old-") { let _ = std::fs::remove_file(e.path()); }
+            }
+        }
+        let old = exe.with_file_name(format!("xgraph.old-{}.exe", std::process::id()));
         std::fs::rename(&exe, &old)?;
+        if let Err(e) = std::fs::rename(&staged, &exe) {
+            let _ = std::fs::rename(&old, &exe); // roll back: never leave the user without xgraph.exe
+            return Err(e).context("installing the new binary (the previous one was restored)");
+        }
+        Ok(exe)
     }
-    std::fs::rename(&staged, &exe)?;
-    Ok(exe)
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(&staged, &exe)?;
+        Ok(exe)
+    }
 }
 
 #[cfg(test)]
@@ -135,6 +180,15 @@ mod tests {
         assert!(newer("v1.0.0", "0.9.9"));
         assert!(!newer("v0.1.0", "0.1.0"));
         assert!(!newer("0.1.0", "0.2.0"));
+    }
+
+    #[test]
+    fn private_dirs_are_fresh_and_owner_only() {
+        let (a, b) = (private_dir().unwrap(), private_dir().unwrap());
+        assert_ne!(a, b);
+        #[cfg(unix)]
+        { use std::os::unix::fs::PermissionsExt; assert_eq!(std::fs::metadata(&a).unwrap().permissions().mode() & 0o777, 0o700); }
+        std::fs::remove_dir(&a).unwrap(); std::fs::remove_dir(&b).unwrap();
     }
 
     #[test]

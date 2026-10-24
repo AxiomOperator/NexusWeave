@@ -243,3 +243,30 @@ fn aliased_field_types_follow_their_class() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A function passed by name (`use(auth)`) before it exists: when a later edit defines it, the
+/// `passes` edge appears without touching the passing file, as in a full index.
+#[test]
+fn value_ref_resolves_when_target_appears() {
+    let d = std::env::temp_dir().join(format!("xgraph-sync-value-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(d.join("src")).unwrap();
+    write(&d, "src/app.ts", "import { auth } from './auth';\nexport function setup(use: (f: unknown) => void) { use(auth); }\n");
+    write(&d, "src/auth.ts", "export const placeholder = 1;\n");
+    xgraph::index::full_index(&d, |_, _| {}).unwrap();
+    assert!(!has(&d, "setup -> auth"));
+    let mut cache = None;
+    for (i, body) in ["export function auth() { return true; }\n", "export const placeholder = 1;\n", "export function auth() { return true; }\n"].iter().enumerate() {
+        write(&d, "src/auth.ts", body);
+        xgraph::index::sync_with(&d, None, Some(&mut cache)).unwrap();
+        let fresh = std::env::temp_dir().join(format!("xgraph-sync-value-fresh-{}-{i}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&fresh);
+        copy_dir(&d, &fresh);
+        let _ = std::fs::remove_dir_all(fresh.join(".xgraph"));
+        xgraph::index::full_index(&fresh, |_, _| {}).unwrap();
+        assert_eq!(edges(&d), edges(&fresh), "step {i} diverged from a full index");
+        let _ = std::fs::remove_dir_all(&fresh);
+    }
+    assert!(has(&d, "setup -> auth"), "{:?}", edges(&d));
+    let _ = std::fs::remove_dir_all(&d);
+}
