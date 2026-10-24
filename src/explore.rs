@@ -295,7 +295,7 @@ impl Graph {
                 let v = if c.sym.is_test { &mut tests } else { &mut files };
                 if !v.contains(&c.sym.path.as_str()) { v.push(&c.sym.path); }
             }
-            let _ = write!(br, "- `{}` ({}:{}) — {} refs from {} files", display_name(&s.sym), s.sym.path, s.sym.start_line, callers.len(), files.len() + tests.len());
+            let _ = write!(br, "- `{}` ({}:{}) — {} callers in {} files", display_name(&s.sym), s.sym.path, s.sym.start_line, callers.len(), files.len() + tests.len());
             if !files.is_empty() {
                 let more = files.len().saturating_sub(3);
                 let _ = write!(br, ": {}", files.iter().take(3).map(|f| short_path(f)).collect::<Vec<_>>().join(", "));
