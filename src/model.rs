@@ -104,6 +104,14 @@ int_enum!(Lang {
     Cpp = 9 => "cpp",
     Ruby = 10 => "ruby",
     Php = 11 => "php",
+    Kotlin = 12 => "kotlin",
+    Swift = 13 => "swift",
+    Dart = 14 => "dart",
+    Scala = 15 => "scala",
+    Lua = 16 => "lua",
+    // single-file components: the <script> block is TS/JS
+    Vue = 17 => "vue",
+    Svelte = 18 => "svelte",
 });
 
 impl Lang {
@@ -123,6 +131,13 @@ impl Lang {
             "cc" | "cpp" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "ipp" | "inl" => Lang::Cpp,
             "rb" | "rake" => Lang::Ruby,
             "php" | "phtml" => Lang::Php,
+            "kt" | "kts" => Lang::Kotlin,
+            "swift" => Lang::Swift,
+            "dart" => Lang::Dart,
+            "scala" | "sc" => Lang::Scala,
+            "lua" => Lang::Lua,
+            "vue" => Lang::Vue,
+            "svelte" => Lang::Svelte,
             _ => return None,
         })
     }
@@ -132,7 +147,7 @@ impl Lang {
     /// Languages that share one symbol/import namespace for resolution purposes.
     pub fn family(self) -> u8 {
         match self {
-            Lang::TypeScript | Lang::Tsx | Lang::JavaScript => 0,
+            Lang::TypeScript | Lang::Tsx | Lang::JavaScript | Lang::Vue | Lang::Svelte => 0,
             Lang::C | Lang::Cpp => 1,
             other => other as u8 + 10,
         }

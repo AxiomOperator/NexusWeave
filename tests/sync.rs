@@ -159,7 +159,7 @@ fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// step must equal a fresh full index.
 #[test]
 fn cached_resolver_all_languages() {
-    for lang in ["ts", "py", "go", "rust", "java", "csharp", "cpp", "ruby", "php"] {
+    for lang in ["ts", "py", "go", "rust", "java", "csharp", "cpp", "ruby", "php", "kotlin", "swift", "dart", "scala", "lua", "vue", "svelte"] {
         let d = std::env::temp_dir().join(format!("xgraph-cache-{lang}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(lang), &d);
@@ -167,7 +167,7 @@ fn cached_resolver_all_languages() {
         let mut files = Vec::new();
         source_files(&d, &mut files);
         files.sort();
-        let comment = if matches!(lang, "py" | "ruby") { "#" } else { "//" };
+        let comment = match lang { "py" | "ruby" => "#", "lua" => "--", _ => "//" };
         let mut cache = None;
         let n = files.len();
         let saved: Vec<String> = files.iter().map(|f| std::fs::read_to_string(f).unwrap()).collect();

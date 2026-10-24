@@ -399,7 +399,9 @@ impl Graph {
         match Lang::from_path(path) {
             Some(Lang::TypeScript) => "ts", Some(Lang::Tsx) => "tsx", Some(Lang::JavaScript) => "js", Some(Lang::Python) => "python",
             Some(Lang::Go) => "go", Some(Lang::Rust) => "rust", Some(Lang::Java) => "java", Some(Lang::CSharp) => "csharp",
-            Some(Lang::C) => "c", Some(Lang::Cpp) => "cpp", Some(Lang::Ruby) => "ruby", Some(Lang::Php) => "php", None => "",
+            Some(Lang::C) => "c", Some(Lang::Cpp) => "cpp", Some(Lang::Ruby) => "ruby", Some(Lang::Php) => "php",
+            Some(Lang::Kotlin) => "kotlin", Some(Lang::Swift) => "swift", Some(Lang::Dart) => "dart", Some(Lang::Scala) => "scala",
+            Some(Lang::Lua) => "lua", Some(Lang::Vue) => "vue", Some(Lang::Svelte) => "svelte", None => "",
         }
     }
 

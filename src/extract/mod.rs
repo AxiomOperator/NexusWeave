@@ -3,13 +3,19 @@
 
 mod c;
 mod csharp;
+mod dart;
 mod go;
 mod java;
 mod js;
+mod kotlin;
+mod lua;
 mod php;
 mod python;
 mod ruby;
 mod rust;
+mod scala;
+mod sfc;
+mod swift;
 
 use crate::model::*;
 use std::collections::HashMap;
@@ -403,10 +409,21 @@ pub fn hooks(lang: Lang) -> &'static dyn LangHooks {
         Lang::C | Lang::Cpp => &c::C,
         Lang::Ruby => &ruby::Ruby,
         Lang::Php => &php::Php,
+        Lang::Vue | Lang::Svelte => &js::Js,
+        Lang::Kotlin => &kotlin::Kotlin,
+        Lang::Swift => &swift::Swift,
+        Lang::Dart => &dart::Dart,
+        Lang::Scala => &scala::Scala,
+        Lang::Lua => &lua::Lua,
     }
 }
 
 pub fn extract(lang: Lang, path: &str, src: &[u8]) -> FileExtraction {
+    if matches!(lang, Lang::Vue | Lang::Svelte) { return sfc::extract(lang, path, src); }
+    extract_src(lang, path, src)
+}
+
+fn extract_src(lang: Lang, path: &str, src: &[u8]) -> FileExtraction {
     let Some(tree) = crate::lang::parse(lang, src) else { return FileExtraction::default() };
     let h = hooks(lang);
     let root = tree.root_node();

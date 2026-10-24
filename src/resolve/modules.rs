@@ -401,11 +401,30 @@ impl Modules {
         let f = &mem.files[file as usize];
         if spec.is_empty() { return Target::None; }
         match f.lang {
-            Lang::TypeScript | Lang::Tsx | Lang::JavaScript => self.resolve_js(mem, &f.path, spec),
+            Lang::TypeScript | Lang::Tsx | Lang::JavaScript | Lang::Vue | Lang::Svelte => self.resolve_js(mem, &f.path, spec),
+            // Swift imports whole modules; files of one module see each other (resolved by name)
+            Lang::Swift => Target::None,
+            Lang::Dart => {
+                if spec.starts_with("dart:") { return Target::None; }
+                if let Some(rest) = spec.strip_prefix("package:") {
+                    // package:<name>/<path> → lib/<path> of that package
+                    let path = rest.split_once('/').map(|(_, p)| p).unwrap_or(rest);
+                    return self.by_suffix(mem, &f.path, &format!("lib/{path}"));
+                }
+                mem.file_by_path.get(&join(&f.dir, spec)).map_or(Target::None, |&x| Target::File(x))
+            }
+            Lang::Lua => {
+                let rel = spec.replace('.', "/");
+                for cand in [format!("{rel}.lua"), format!("{rel}/init.lua")] {
+                    if let Some(&x) = mem.file_by_path.get(&cand) { return Target::File(x); }
+                    if let t @ Target::File(_) = self.by_suffix(mem, &f.path, &cand) { return t; }
+                }
+                Target::None
+            }
             Lang::Python => self.resolve_py(mem, &f.path, spec),
             Lang::Go => self.resolve_go(mem, spec),
             Lang::Rust => self.resolve_rust(mem, &f.path, spec),
-            Lang::Java | Lang::CSharp | Lang::Php => {
+            Lang::Java | Lang::CSharp | Lang::Php | Lang::Kotlin | Lang::Scala => {
                 let sep = if f.lang == Lang::Php { '\\' } else { '.' };
                 match mem.by_package.get(spec) {
                     Some(v) => Target::Files(v.clone()),

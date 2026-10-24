@@ -78,7 +78,7 @@ struct Rx<'a> {
     imports: HashMap<u32, Vec<(&'a mem::ImportInfo, Target)>>,
 }
 
-fn implicit_this(l: Lang) -> bool { matches!(l, Lang::Java | Lang::CSharp | Lang::Cpp | Lang::C | Lang::Ruby) }
+fn implicit_this(l: Lang) -> bool { matches!(l, Lang::Java | Lang::CSharp | Lang::Cpp | Lang::C | Lang::Ruby | Lang::Kotlin | Lang::Swift | Lang::Dart | Lang::Scala) }
 
 fn want_for(kind: RefKind) -> fn(NodeKind) -> bool {
     match kind {
@@ -192,6 +192,11 @@ impl<'a> Rx<'a> {
         if depth > 6 { return None; }
         if let Some(n) = self.top_level(file, name, want) { return Some(n); }
         let lang = self.lang(file);
+        // Lua modules are the table a file returns: `function M.find` is what `require(...).find` reaches
+        if lang == Lang::Lua {
+            let fnode = self.mem.files[file as usize].node;
+            if fnode != u32::MAX && let Some(&k) = self.mem.kids(fnode).iter().find(|&&k| { let n = self.mem.node(k); n.owner.is_some() && n.name == name && want(n.kind) }) { return Some(k); }
+        }
         let imports = self.imports.get(&file)?;
         for (im, t) in imports {
             match im.kind {
@@ -445,7 +450,7 @@ impl<'a> Rx<'a> {
         match f.lang {
             Lang::Go => self.mem.by_dir.get(&f.dir).cloned().unwrap_or_default().into_iter()
                 .filter(|&x| self.mem.files[x as usize].lang == Lang::Go && self.mem.files[x as usize].package == f.package).collect(),
-            Lang::Java | Lang::Php => f.package.as_ref().and_then(|p| self.mem.by_package.get(p)).cloned().unwrap_or_default(),
+            Lang::Java | Lang::Php | Lang::Kotlin | Lang::Scala => f.package.as_ref().and_then(|p| self.mem.by_package.get(p)).cloned().unwrap_or_default(),
             Lang::CSharp => {
                 let mut out = Vec::new();
                 let mut p = f.package.clone();

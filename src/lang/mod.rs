@@ -19,6 +19,13 @@ pub fn grammar(lang: Lang) -> Language {
         Lang::Cpp => tree_sitter_cpp::LANGUAGE.into(),
         Lang::Ruby => tree_sitter_ruby::LANGUAGE.into(),
         Lang::Php => tree_sitter_php::LANGUAGE_PHP.into(),
+        Lang::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
+        Lang::Swift => tree_sitter_swift::LANGUAGE.into(),
+        Lang::Dart => tree_sitter_dart::LANGUAGE.into(),
+        Lang::Scala => tree_sitter_scala::LANGUAGE.into(),
+        Lang::Lua => tree_sitter_lua::LANGUAGE.into(),
+        // the component's <script> block is extracted and parsed as TypeScript
+        Lang::Vue | Lang::Svelte => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
     }
 }
 
