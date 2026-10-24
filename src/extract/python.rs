@@ -270,10 +270,12 @@ impl LangHooks for Py {
                 let parent = n.parent();
                 let is_callee = parent.is_some_and(|p| p.kind() == "call" && p.child_by_field_name("function").is_some_and(|f| f.id() == n.id()));
                 let is_target = parent.is_some_and(|p| matches!(p.kind(), "assignment" | "augmented_assignment") && p.child_by_field_name("left").is_some_and(|l| l.id() == n.id()));
-                if !is_callee && !is_target
+                if !is_callee
                     && let (Some(o), Some(a)) = (n.child_by_field_name("object"), n.child_by_field_name("attribute")) {
                     let (o, a) = (cx.text(o), cx.text(a));
-                    cx.add_ref(RefKind::Read, a, Some(short_qual(o)), n.child_by_field_name("attribute").unwrap());
+                    // an assignment target writes through a property setter (`self.debug = x`)
+                    let kind = if is_target { RefKind::Write } else { RefKind::Read };
+                    cx.add_ref(kind, a, Some(short_qual(o)), n.child_by_field_name("attribute").unwrap());
                 }
                 Visit::Continue
             }

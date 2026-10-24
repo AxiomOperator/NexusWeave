@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
 /// Bump whenever the schema or extraction output changes; older indexes are rebuilt.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

@@ -132,6 +132,9 @@ fn want_for(kind: RefKind) -> fn(NodeKind) -> bool {
         // `Cls.make()`); never to plain fields (that would explode the graph). Reads never fall
         // back to name guessing, so only names in scope, imports and known receivers resolve.
         RefKind::Read => |k| k == NodeKind::Property || k.is_callable() || k.is_type() && k != NodeKind::TypeAlias,
+        // `obj.prop = x` only means something for a declared property (its setter); a field write
+        // stays unrecorded
+        RefKind::Write => |k| k == NodeKind::Property,
         RefKind::Import => |k| k != NodeKind::File,
         // a name passed as a value: a function, or a class (`isinstance(x, Foo)`, `register(Foo)`),
         // or a property whose getter runs right there (`decode(self.encoding)`); member reads in
@@ -708,7 +711,7 @@ impl<'a> Rx<'a> {
             return None; // external Go package
         }
         if segs.len() == 1 && self.is_external_binding(r.file, segs[0]) { return None; }
-        if matches!(r.kind, RefKind::Callback | RefKind::Read) { return None; }
+        if matches!(r.kind, RefKind::Callback | RefKind::Read | RefKind::Write) { return None; }
         // `Array.isArray`, `HashMap::with_capacity`, `os.path.join`: the qualifier is the language's
         // own library (it didn't resolve to a project symbol above), so a same-named project member
         // is never the target
@@ -883,7 +886,7 @@ fn apply_scip(mem: &Mem, ix: &crate::scip::Index, refs: &[&RefRow], res: &mut [R
     };
     for i in order {
         let r = refs[i];
-        if !matches!(r.kind, RefKind::Call | RefKind::Instantiate | RefKind::TypeRef | RefKind::Extends | RefKind::Implements | RefKind::Read | RefKind::Callback) { continue; }
+        if !matches!(r.kind, RefKind::Call | RefKind::Instantiate | RefKind::TypeRef | RefKind::Extends | RefKind::Implements | RefKind::Read | RefKind::Write | RefKind::Callback) { continue; }
         let f = &mem.files[r.file as usize];
         if f.mtime > ix.mtime_ms { continue; }  // edited after the index was built: positions may be off
         let u = used.entry(r.file).or_default();
@@ -1296,7 +1299,7 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
                 let (t, c, o, v, m) = by_id[i + 1];
                 // most bare-name arguments are plain values; keep only the ones that are functions
                 // (and remember the name, in case a later sync defines it)
-                if matches!(r.kind, RefKind::Callback | RefKind::Read) && t.is_none() {
+                if matches!(r.kind, RefKind::Callback | RefKind::Read | RefKind::Write) && t.is_none() {
                     // every name it depends on: its own, its receiver path, its qualifier
                     for k in Cache::ref_keys(crate::db::name_hash(&r.name), r.recv_type.as_deref(), r.qualifier.as_deref()) {
                         vn.execute(rusqlite::params![r.file_id, k])?;

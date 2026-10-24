@@ -26,6 +26,7 @@ import argparse
 import concurrent.futures as cf
 import json
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -104,6 +105,7 @@ def run_one(task: dict, cond: str, rep: int, args, nexusweave: Path) -> dict:
     wall = time.time() - t0
     tools: dict[str, int] = {}
     final: dict = {}
+    calls: dict[str, dict] = {}  # tool_use id -> call, in order
     for line in out.splitlines():
         try:
             ev = json.loads(line)
@@ -113,6 +115,14 @@ def run_one(task: dict, cond: str, rep: int, args, nexusweave: Path) -> dict:
             for c in ev.get("message", {}).get("content", []):
                 if c.get("type") == "tool_use":
                     tools[c["name"]] = tools.get(c["name"], 0) + 1
+                    calls[c.get("id", str(len(calls)))] = {"tool": c["name"], "input": c.get("input", {})}
+        elif ev.get("type") == "user":
+            for c in (ev.get("message", {}).get("content") or []):
+                if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                    body = c.get("content")
+                    if isinstance(body, list):
+                        body = "\n".join(x.get("text", "") for x in body if isinstance(x, dict))
+                    calls[c["tool_use_id"]]["output"] = body or ""
         elif ev.get("type") == "result":
             final = ev
     answer = final.get("result") or ""
@@ -126,7 +136,46 @@ def run_one(task: dict, cond: str, rep: int, args, nexusweave: Path) -> dict:
         "cost_usd": final.get("total_cost_usd", 0.0), "turns": final.get("num_turns", 0),
         "tool_calls": sum(tools.values()), "tools": tools, "wall_s": round(wall, 1),
         "model": args.model or "default", "answer": answer, "stderr": err[-2000:] if code else "",
+        "reads": classify_reads(list(calls.values()), ws),
     }
+
+
+HEADER = re.compile(r"^### (\S+)(?: — [^(\n]*)?\((entire file|lines ([\d, -]+) of (\d+)(?: — partly shown: (.*))?)\)", re.M)
+
+
+def classify_reads(calls: list[dict], ws: Path) -> list[dict]:
+    """For each Read after an explore/node call: was that range already shown in full
+    (`redundant`), in a file shown only in part (`cut_off`), or a file never shown (`new_file`)?"""
+    shown: dict[str, list[tuple[int, int]] | None] = {}  # path -> ranges, None = entire file
+    out = []
+    for c in calls:
+        if c["tool"].startswith("mcp__nexusweave__"):
+            for m in HEADER.finditer(c.get("output", "")):
+                path = m.group(1)
+                if m.group(2) == "entire file":
+                    shown[path] = None
+                elif shown.get(path, []) is not None:
+                    spans = []
+                    for part in m.group(3).split(","):
+                        a, _, b = part.strip().partition("-")
+                        if a.strip().isdigit():
+                            spans.append((int(a), int(b or a)))
+                    shown.setdefault(path, []).extend(spans)
+        elif c["tool"] == "Read" and shown:
+            fp = str(c["input"].get("file_path", ""))
+            rel = os.path.relpath(fp, ws) if os.path.isabs(fp) else fp
+            off = int(c["input"].get("offset") or 1)
+            lim = c["input"].get("limit")
+            end = off + int(lim) - 1 if lim else None
+            if rel not in shown:
+                kind = "new_file"
+            elif shown[rel] is None:
+                kind = "redundant"
+            else:
+                covered = end is not None and any(a <= off and end <= b for a, b in shown[rel])
+                kind = "redundant" if covered else "cut_off"
+            out.append({"path": rel, "offset": off, "limit": lim, "kind": kind})
+    return out
 
 
 def total_tokens(r: dict) -> int:
@@ -179,6 +228,11 @@ def report(path: Path) -> str:
                 used[k] = used.get(k, 0) + v
     if used:
         out.append("\nnexusweave-condition tool use: " + ", ".join(f"{k} {v}" for k, v in sorted(used.items(), key=lambda kv: -kv[1])))
+    reads = [x for r in rows if r["condition"] == "nexusweave" for x in r.get("reads", [])]
+    if reads:
+        kinds = {k: sum(1 for x in reads if x["kind"] == k) for k in ("redundant", "cut_off", "new_file")}
+        out.append("Reads after an explore/node answer: " + ", ".join(f"{k} {v}" for k, v in kinds.items())
+                   + " (redundant = already shown in full; cut_off = in a file shown only in part; new_file = never shown)")
     return "\n".join(out)
 
 

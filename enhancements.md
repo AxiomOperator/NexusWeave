@@ -277,7 +277,7 @@ The benchmark also caught several problems in the scorer and the ground truth, a
 | gap | where | idea |
 |---|---|---|
 | ~~Names read as values~~ ✅ | Python: `cls.handler` / `tasks.add` reads, `except E:` / `raise E`, class qualifiers (`Cls.make()`), returned closures, tuples/sets and assignment right sides as value positions, properties passed as arguments | done: `reads` edges may target methods, functions and classes (never by name guessing); flask recall **75.7 → 83.3%**, httpx **82.5 → 84.8%**, hono 79.1 → 79.9%, precision unchanged or higher (fixture `py/app/values.py`) |
-| Property writes (`self.debug = x` through a setter) | Python | a `writes` ref from assignment targets that only resolves to properties |
+| ~~Property writes~~ ✅ | Python `self.debug = x` through a setter | new `writes` edge kind: assignment targets that resolve only to declared properties (a plain field write records nothing); flask 83.3 → 83.7%, httpx 84.8 → 85.5% |
 | Unknown receivers in tests (`response.url`, `client.timeout`, `c.req.param()`) | httpx, hono | return-type stubs for test clients (enhancement 6), and inferring the types of untyped parameters from call sites |
 | ~~Low-confidence name fallback for unknown receivers~~ re-measured | Python, Go | the 18% / 74% figures predate later fixes: the `<50` band is now 4/4 correct on flask and 14/17 on gin, so dropping it would lose more correct edges than wrong ones; kept |
 | Object-literal keys matching interface members (`{ mkdir: vi.fn() }`) | TS tests | contextual typing of object literals against a declared interface |
@@ -357,7 +357,10 @@ for cost. Next steps, each measurable with the harness:
 2. Say when the answer is self-sufficient: each file section's header now states "entire
    file", or the exact line ranges shown and which symbols are only partly shown (to which line),
    and the server instructions tell agents to read further only for those. **Measured, no effect:**
-   `Read` calls per NexusWeave session went from 2.0 to 2.2 (second run below). Still open.
+   `Read` calls per NexusWeave session went from 2.0 to 2.2 (second run below). Still open; the
+   harness now records each session's tool trace and classifies every Read after an explore
+   answer as `redundant` (already shown in full), `cut_off` (file shown in part) or `new_file`,
+   so the next run says which of these to fix.
 3. List `nexusweave_explore` eagerly instead of behind `ToolSearch` (client behavior; nothing to
    change server-side).
 4. ✅ Harder tasks authored (`gin-render-impls`, `httpx-transport-dispatch`,

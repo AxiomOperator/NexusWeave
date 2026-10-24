@@ -19,6 +19,14 @@ class Registry:
     def size(self):
         return 0
 
+    @size.setter
+    def size(self, value):
+        pass
+
+    def resize(self):
+        self.size = 3
+        self.count = 0
+
     def on_add(self):
         pass
 
