@@ -49,11 +49,19 @@ pub struct Cache {
 }
 
 impl Cache {
-    fn index_ref(idx: &mut HashMap<i64, Vec<i64>>, id: i64, name_h: i64, recv: Option<&str>) {
-        idx.entry(name_h).or_default().push(id);
-        if let Some(rt) = recv {
-            for seg in rt.split('.') { idx.entry(crate::db::name_hash(crate::extract::seg_name(seg))).or_default().push(id); }
-        }
+    /// Name hashes a ref is reachable by during sync scoping: its own name, each receiver-type
+    /// segment, and the head of its qualifier (`alias` in `alias.x.f()`).
+    fn ref_keys<'s>(name_h: i64, recv: Option<&'s str>, qual: Option<&'s str>) -> impl Iterator<Item = i64> + 's {
+        let segs = recv.into_iter().flat_map(|rt| rt.split('.')).map(|s| crate::db::name_hash(crate::extract::seg_name(s)));
+        let head = qual.and_then(|q| q.split('.').next()).map(|s| crate::db::name_hash(crate::extract::seg_name(s)));
+        std::iter::once(name_h).chain(segs).chain(head)
+    }
+
+    fn index_ref(idx: &mut HashMap<i64, Vec<i64>>, id: i64, name_h: i64, recv: Option<&str>, qual: Option<&str>) {
+        let mut ks: Vec<i64> = Cache::ref_keys(name_h, recv, qual).collect();
+        ks.sort_unstable();
+        ks.dedup();
+        for k in ks { idx.entry(k).or_default().push(id); }
     }
 }
 
@@ -267,10 +275,10 @@ impl<'a> Rx<'a> {
                 ImportKind::Named => {
                     if let Some(n) = self.in_target(t, &im.imported, want, depth + 1) { return Some(n); }
                     // `from pkg import submodule` / `use crate::a::module;` — the name is itself a module file.
-                    if want(NodeKind::Module) && let Some(f) = self.submodule(file, im) { return Some(self.mem.files[f as usize].node); }
+                    if want(NodeKind::Module) && let Some(f) = self.submodule(file, im) && self.mem.files[f as usize].node != u32::MAX { return Some(self.mem.files[f as usize].node); }
                 }
                 ImportKind::Namespace | ImportKind::SideEffect => {
-                    if let Target::File(f) = t && want(NodeKind::Module) { return Some(self.mem.files[*f as usize].node); }
+                    if let Target::File(f) = t && want(NodeKind::Module) && self.mem.files[*f as usize].node != u32::MAX { return Some(self.mem.files[*f as usize].node); }
                 }
                 _ => {}
             }
@@ -625,7 +633,7 @@ impl<'a> Rx<'a> {
                     for (im, t) in ims {
                         if im.local != key { continue; }
                         let c = match (im.kind, t) {
-                            (ImportKind::Namespace | ImportKind::SideEffect, Target::File(f)) => Some(Container::Node(self.mem.files[*f as usize].node)),
+                            (ImportKind::Namespace | ImportKind::SideEffect, Target::File(f)) => Some(self.mem.files[*f as usize].node).filter(|&n| n != u32::MAX).map(Container::Node),
                             (ImportKind::Namespace, Target::Files(fs)) => Some(Container::Files(fs.clone())),
                             _ => None,
                         };
@@ -638,7 +646,7 @@ impl<'a> Rx<'a> {
                 for take in (1..=segs.len()).rev() {
                     let spec = segs[..take].join("::");
                     match self.mods.resolve_spec(self.mem, file, ImportKind::Named, &spec) {
-                        Target::File(f) => { used = take; break 'found Container::Node(self.mem.files[f as usize].node); }
+                        Target::File(f) if self.mem.files[f as usize].node != u32::MAX => { used = take; break 'found Container::Node(self.mem.files[f as usize].node); }
                         Target::FileItem(f, path) => {
                             if let Some(n) = self.in_target(&Target::FileItem(f, path), "", &any, 0) { used = take; break 'found Container::Node(n); }
                         }
@@ -891,16 +899,20 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
         pending_rows = p;
         v
     } else {
-        let base = "SELECT id, file_id, src_id, kind, name, qualifier, recv_type, target_id, via_id, line, col FROM refs WHERE kind NOT IN (8, 11, 12) AND (1=1";
+        let base = format!("SELECT r.id, r.file_id, r.src_id, r.kind, r.name, sq.s, sr.s, r.target_id, r.via_id, r.line, r.col FROM refs r {} WHERE r.kind NOT IN (8, 11, 12) AND (1=1", crate::db::REF_STRS);
         let sql = match &scope {
             Scope::All | Scope::Fresh(_) => format!("{base})"),
             Scope::Incremental { files, names, via_refs, .. } => {
-                // One pass over (name hash, receiver path) picks every ref that could change meaning:
-                // refs naming a changed symbol, and typed receivers whose path runs through one.
+                // One pass over (name hash, receiver segments, qualifier head) picks every ref that
+                // could change meaning: refs naming a changed symbol, typed receivers whose path runs
+                // through one, and refs that go through an import alias of a changed file
+                // (`Db` / `models.User` receivers, `alias.x` qualifiers). Alias hits are not limited
+                // to the importing file: a superset only re-resolves a few extra refs.
                 tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS scope_refs(id INTEGER PRIMARY KEY); DELETE FROM scope_refs;
                                   CREATE TEMP TABLE IF NOT EXISTS scope_files(id INTEGER PRIMARY KEY); DELETE FROM scope_files;")?;
                 { let mut st = tx.prepare("INSERT OR IGNORE INTO scope_files VALUES(?)")?; for f in files { st.execute([f])?; } }
                 let hashes: std::collections::HashSet<i64> = names.iter().map(|n| crate::db::name_hash(n)).collect();
+                let keys: std::collections::HashSet<i64> = hashes.iter().copied().chain(aliases.iter().map(|(_, l)| crate::db::name_hash(l))).collect();
                 let mut ins = tx.prepare("INSERT OR IGNORE INTO scope_refs VALUES(?)")?;
                 for id in via_refs { ins.execute([id])?; }
                 {
@@ -909,42 +921,60 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
                 }
                 match &refidx {
                     Some(idx) => {
-                        for h in &hashes { for id in idx.get(h).into_iter().flatten() { ins.execute([id])?; } }
+                        for h in &keys { for id in idx.get(h).into_iter().flatten() { ins.execute([id])?; } }
                     }
                     None => {
                         // build the index while scanning when a long-running caller will keep it
                         let mut built: Option<HashMap<i64, Vec<i64>>> = want_cache.then(HashMap::new);
-                        let mut q = tx.prepare("SELECT id, name_h, recv_type FROM refs WHERE kind != 8")?;
+                        let mut q = tx.prepare(&format!("SELECT r.id, r.name_h, sr.s, sq.s FROM refs r {} WHERE r.kind != 8", crate::db::REF_STRS))?;
                         let mut rows = q.query([])?;
                         while let Some(r) = rows.next()? {
                             let (id, h) = (r.get::<_, i64>(0)?, r.get::<_, i64>(1)?);
-                            let rt = r.get_ref(2)?.as_str_or_null()?;
-                            let hit = hashes.contains(&h) || rt.is_some_and(|rt| rt.split('.').any(|s| hashes.contains(&crate::db::name_hash(crate::extract::seg_name(s)))));
-                            if hit { ins.execute([id])?; }
-                            if let Some(b) = built.as_mut() { Cache::index_ref(b, id, h, rt); }
+                            let (rt, qual) = (r.get_ref(2)?.as_str_or_null()?, r.get_ref(3)?.as_str_or_null()?);
+                            if Cache::ref_keys(h, rt, qual).any(|k| keys.contains(&k)) { ins.execute([id])?; }
+                            if let Some(b) = built.as_mut() { Cache::index_ref(b, id, h, rt, qual); }
                         }
                         drop(rows);
                         refidx = built;
                     }
                 }
                 drop(ins);
-                tx.execute_batch("DROP TABLE IF EXISTS temp.scope_alias; CREATE TEMP TABLE scope_alias(file_id INTEGER, local TEXT, h INTEGER, typeish INTEGER);")?;
-                {
-                    let mut st = tx.prepare("INSERT INTO scope_alias VALUES(?,?,?,?)")?;
-                    for (f, l) in &aliases {
-                        let typeish = l.starts_with(|c: char| c.is_uppercase());
-                        st.execute(rusqlite::params![f, l, crate::db::name_hash(l), typeish])?;
-                    }
+                trace(&t, "scope: names/via/miss/aliases");
+                // An inferred call-path receiver (`make_and_find()`, `=repo.find()`) can depend on
+                // return types in other files, so in importers of a type-like alias those stay in
+                // scope whatever they name (driven from the call-path strings via idx_refs_recv).
+                tx.execute_batch("DROP TABLE IF EXISTS temp.scope_typed; CREATE TEMP TABLE scope_typed(file_id INTEGER PRIMARY KEY);
+                                  DROP TABLE IF EXISTS temp.recv_call; CREATE TEMP TABLE recv_call(sid INTEGER PRIMARY KEY);")?;
+                let typed: std::collections::HashSet<i64> = aliases.iter().filter(|(_, l)| l.starts_with(|c: char| c.is_uppercase())).map(|(f, _)| *f).collect();
+                // few importers: walk their refs by file; many (a hub file): drive from the call-path
+                // strings instead of visiting most of the repository's refs
+                let by_string = typed.len() > 300;
+                if !typed.is_empty() {
+                    let mut st = tx.prepare("INSERT INTO scope_typed VALUES(?)")?;
+                    for f in &typed { st.execute([f])?; }
+                    if by_string { tx.execute_batch("INSERT INTO recv_call SELECT id FROM strs WHERE s LIKE '%(%' OR s LIKE '=%'")?; }
                 }
-                format!("{base} AND id IN (SELECT id FROM refs WHERE file_id IN (SELECT id FROM scope_files)
-                         UNION SELECT id FROM scope_refs UNION SELECT id FROM refs WHERE kind IN ({}, {})
-                         UNION SELECT r.id FROM scope_alias a JOIN refs r ON r.file_id = a.file_id
-                           WHERE r.name_h = a.h OR r.qualifier = a.local OR r.qualifier LIKE a.local || '.%'
-                              -- receiver types can reach a type-like alias indirectly (a field typed with it)
-                              OR a.typeish AND r.recv_type IS NOT NULL))",
+                trace(&t, &format!("scope: {} aliases, {} typed importers", aliases.len(), typed.len()));
+                let call_paths = if by_string {
+                    "SELECT x.id FROM recv_call c CROSS JOIN refs x ON x.recv_id = c.sid
+                       WHERE x.recv_id IS NOT NULL AND x.file_id IN (SELECT file_id FROM scope_typed)"
+                } else {
+                    "SELECT x.id FROM scope_typed f CROSS JOIN refs x ON x.file_id = f.file_id
+                       WHERE x.recv_id IS NOT NULL AND EXISTS (SELECT 1 FROM strs s WHERE s.id = x.recv_id AND (s.s LIKE '%(%' OR s.s LIKE '=%'))"
+                };
+                format!("{base} AND r.id IN (SELECT id FROM refs WHERE file_id IN (SELECT id FROM scope_files)
+                         UNION SELECT id FROM scope_refs
+                         -- the partial heritage index only applies when its own predicate is repeated
+                         UNION SELECT id FROM refs WHERE kind IN (2, 3, 8, 11, 12) AND kind IN ({}, {})
+                         -- CROSS JOIN pins the order: temp tables have no statistics
+                         UNION {call_paths}))",
                     RefKind::Extends as i64, RefKind::Implements as i64)
             }
         };
+        if std::env::var_os("XGRAPH_TRACE").is_some() {
+            let plan: Vec<String> = tx.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?.query_map([], |r| r.get::<_, String>(3))?.collect::<rusqlite::Result<_>>()?;
+            eprintln!("[resolve] plan:\n  {}", plan.join("\n  "));
+        }
         let mut q = tx.prepare(&sql)?;
         let rows = q.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?,
             r.get::<_, String>(4)?, r.get::<_, Option<String>>(5)?, r.get::<_, Option<String>>(6)?, r.get::<_, Option<i64>>(7)?, r.get::<_, Option<i64>>(8)?, r.get::<_, u32>(9)?, r.get::<_, u32>(10)?)))?;
@@ -1078,12 +1108,24 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
                 if target.is_some() { resolved += 1; }
                 by_id[x.id as usize] = (target, x.res.map(|(_, c)| c as i64).unwrap_or(0), x.owner.map(|o| mem.node(o).id), x.via.map(|v| mem.node(v).id), x.miss);
             }
-            let mut ins = tx.prepare("INSERT INTO refs(id,file_id,src_id,kind,name,name_h,qualifier,recv_type,line,col,target_id,confidence,src_owner_id,via_id,miss_h) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")?;
+            let mut ins = tx.prepare("INSERT INTO refs(id,file_id,src_id,kind,name,name_h,qual_id,recv_id,line,col,target_id,confidence,src_owner_id,via_id,miss_h) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")?;
+            // the table starts empty on a fresh index: intern in memory, bulk-insert the strings
+            let mut strs: HashMap<String, i64> = HashMap::default();
+            let mut put = tx.prepare("INSERT INTO strs(id, s) VALUES(?, ?)")?;
+            let mut id_of = |s: Option<&str>| -> rusqlite::Result<Option<i64>> {
+                let Some(s) = s else { return Ok(None) };
+                if let Some(&i) = strs.get(s) { return Ok(Some(i)); }
+                let i = strs.len() as i64 + 1;
+                put.execute(rusqlite::params![i, s])?;
+                strs.insert(s.to_string(), i);
+                Ok(Some(i))
+            };
             for (i, r) in pending_rows.iter().enumerate() {
                 let (t, c, o, v, m) = by_id[i + 1];
                 // most bare-name arguments are plain values; keep only the ones that are functions
                 if matches!(r.kind, RefKind::Callback | RefKind::Read) && t.is_none() { continue; }
-                ins.execute(rusqlite::params![i as i64 + 1, r.file_id, r.src_id, r.kind as i64, r.name, crate::db::name_hash(&r.name), r.qualifier, r.recv_type, r.line, r.col, t, c, o, v, m])?;
+                let (q, rt) = (id_of(r.qualifier.as_deref())?, id_of(r.recv_type.as_deref())?);
+                ins.execute(rusqlite::params![i as i64 + 1, r.file_id, r.src_id, r.kind as i64, r.name, crate::db::name_hash(&r.name), q, rt, r.line, r.col, t, c, o, v, m])?;
             }
         }
         let mut up = tx.prepare("UPDATE refs SET target_id=?, confidence=?, src_owner_id=?, via_id=?, miss_h=? WHERE id=?")?;
@@ -1182,9 +1224,9 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
     }
     if want_cache && let Some(idx) = refidx.as_mut() && !new_files.is_empty() {
         let list = new_files.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-        let mut q = tx.prepare(&format!("SELECT id, name_h, recv_type FROM refs WHERE kind != 8 AND file_id IN ({list})"))?;
+        let mut q = tx.prepare(&format!("SELECT r.id, r.name_h, sr.s, sq.s FROM refs r {} WHERE r.kind != 8 AND r.file_id IN ({list})", crate::db::REF_STRS))?;
         let mut rows = q.query([])?;
-        while let Some(r) = rows.next()? { Cache::index_ref(idx, r.get(0)?, r.get(1)?, r.get_ref(2)?.as_str_or_null()?); }
+        while let Some(r) = rows.next()? { Cache::index_ref(idx, r.get(0)?, r.get(1)?, r.get_ref(2)?.as_str_or_null()?, r.get_ref(3)?.as_str_or_null()?); }
     }
     tx.commit()?;
     trace(&t, "persisted");

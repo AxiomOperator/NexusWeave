@@ -236,7 +236,13 @@ pub fn full_index(root: &Path, mut progress: impl FnMut(usize, usize)) -> Result
     st.ms_resolve = t2.elapsed().as_millis();
     db.set_meta("indexed_at", &now_ms().to_string())?;
     db.set_meta("version", env!("CARGO_PKG_VERSION"))?;
-    db.conn.execute_batch("INSERT INTO nodes_fts(nodes_fts) VALUES('optimize'); PRAGMA journal_mode=WAL; ANALYZE;")?;
+    let t = Instant::now();
+    db.conn.execute_batch("INSERT INTO nodes_fts(nodes_fts) VALUES('optimize');")?;
+    let t_opt = t.elapsed();
+    let t = Instant::now();
+    // sampled statistics: the planner only needs rough row counts per index
+    db.conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA analysis_limit=1000; ANALYZE;")?;
+    if std::env::var_os("XGRAPH_TRACE").is_some() { eprintln!("[index] fts optimize {} ms, analyze {} ms", t_opt.as_millis(), t.elapsed().as_millis()); }
     drop(db);
     for ext in ["-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{ext}", path.display())); }
     std::fs::rename(&tmp, &path)?;
@@ -248,6 +254,7 @@ pub fn full_index(root: &Path, mut progress: impl FnMut(usize, usize)) -> Result
 pub fn reresolve(root: &Path) -> Result<Stats> {
     let t0 = Instant::now();
     let mut db = Db::open(&db_path(root))?;
+    db.ensure_sync_indexes()?;
     let mut st = Stats { resolved: crate::resolve::resolve(&mut db, root, crate::resolve::Scope::All)?, ..Default::default() };
     st.ms_resolve = t0.elapsed().as_millis();
     st.ms_total = st.ms_resolve;
@@ -278,6 +285,7 @@ pub fn sync_with(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Op
         drop(db);
         return rebuild(&mut cache);
     }
+    db.ensure_sync_indexes()?;
     let mut st = Stats::default();
     let mut known: HashMap<String, Known> = HashMap::new();
     {

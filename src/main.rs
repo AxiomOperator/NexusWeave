@@ -272,12 +272,13 @@ fn main() -> Result<()> {
             let g = graph_here()?;
             let lang_clause = lang.as_deref().and_then(model::Lang::parse).map(|l| format!(" AND f.lang = {}", l as i64)).unwrap_or_default();
             let kind_clause = kind.as_deref().and_then(model::RefKind::parse).map(|k| format!(" AND r.kind = {}", k as i64)).unwrap_or_default();
+            let strs = db::REF_STRS;
             let sql = match what.as_str() {
-                "miss" => format!("SELECT f.path, r.line, r.kind, r.name, r.qualifier, r.recv_type, (SELECT COUNT(*) FROM nodes x WHERE x.name = r.name AND x.kind != 0), 0
-                    FROM refs r JOIN files f ON f.id = r.file_id WHERE r.target_id IS NULL{lang_clause}{kind_clause}
+                "miss" => format!("SELECT f.path, r.line, r.kind, r.name, sq.s, sr.s, (SELECT COUNT(*) FROM nodes x WHERE x.name = r.name AND x.kind != 0), 0
+                    FROM refs r JOIN files f ON f.id = r.file_id {strs} WHERE r.target_id IS NULL{lang_clause}{kind_clause}
                     AND EXISTS (SELECT 1 FROM nodes x WHERE x.name = r.name AND x.kind != 0) ORDER BY random() LIMIT {n}"),
-                _ => format!("SELECT f.path, r.line, r.kind, r.name, r.qualifier, r.recv_type, r.confidence, t.qname || ' @' || tf.path
-                    FROM refs r JOIN files f ON f.id = r.file_id JOIN nodes t ON t.id = r.target_id JOIN files tf ON tf.id = t.file_id
+                _ => format!("SELECT f.path, r.line, r.kind, r.name, sq.s, sr.s, r.confidence, t.qname || ' @' || tf.path
+                    FROM refs r JOIN files f ON f.id = r.file_id JOIN nodes t ON t.id = r.target_id JOIN files tf ON tf.id = t.file_id {strs}
                     WHERE r.confidence < 70{lang_clause}{kind_clause} ORDER BY random() LIMIT {n}"),
             };
             let mut st = g.db.conn.prepare(&sql)?;

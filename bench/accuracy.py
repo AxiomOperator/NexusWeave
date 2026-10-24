@@ -286,7 +286,7 @@ def compare(repo: Path, scip_path: Path, samples: int) -> tuple[Score, dict]:
     sc = Score()
     wrong_samples, missed_samples = [], []
     # route -> handler (`handles`) edges are synthesized without a call site, so they aren't scored
-    refs = con.execute("""SELECT f.path, r.line, r.name, r.kind, r.target_id, r.qualifier, r.confidence, r.col FROM refs r
+    refs = con.execute("""SELECT f.path, r.line, r.name, r.kind, r.target_id, sq.s, r.confidence, r.col FROM refs r LEFT JOIN strs sq ON sq.id = r.qual_id
                           JOIN files f ON f.id = r.file_id
                           WHERE r.kind IN (0, 1, 2, 3, 4, 6, 7) ORDER BY f.path, r.line, r.col""").fetchall()
     truth_files = {d.path for d in docs}
