@@ -8,3 +8,4 @@ main -> run
 util -> helper
 !Server.Handle -> Println
 GET /users/:id -> handleUser
+greetAll -> Greeter.Greet

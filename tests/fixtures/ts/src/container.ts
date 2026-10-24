@@ -18,3 +18,7 @@ export function wire(c: Container) {
   const repo = c.get<MemRepo>("repo");
   repo.find("2");
 }
+
+export function useRepo<R extends MemRepo>(r: R) {
+  r.find("generic");
+}

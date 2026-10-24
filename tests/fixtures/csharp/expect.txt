@@ -7,3 +7,4 @@ Startup.Configure -> Extensions.Shout
 Extensions.Shout -> User.Greet
 GET /api/Users/{id} -> UsersController.Get
 SqlRepo.Find -> IRepo.Find
+UserService.Fetch -> IRepo.Find

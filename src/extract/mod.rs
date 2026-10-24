@@ -116,14 +116,16 @@ impl<'a> Cx<'a> {
 
     pub fn bind_var(&mut self, name: &str, ty: &str) {
         if ty.contains("()") { return self.bind_var_path(name, ty); }
-        let ty = normalize_type(ty);
+        let mut ty = normalize_type(ty);
+        if let Some(b) = self.type_param_bound(&ty) { ty = b.to_string(); }
         if ty.is_empty() || name.is_empty() { return; }
         if let Some(s) = self.scopes.last_mut() { s.vars.insert(name.to_string(), ty); }
     }
 
     /// Bind a member field type on the nearest type scope (`this.name` lookups).
     pub fn bind_field(&mut self, name: &str, ty: &str) {
-        let ty = if ty.contains("()") { ty.to_string() } else { normalize_type(ty) };
+        let mut ty = if ty.contains("()") { ty.to_string() } else { normalize_type(ty) };
+        if let Some(b) = self.type_param_bound(&ty) { ty = b.to_string(); }
         if ty.is_empty() || name.is_empty() { return; }
         if let Some(owner) = self.enclosing_type() {
             let owner = owner.to_string();
@@ -291,13 +293,34 @@ impl<'a> Cx<'a> {
         });
     }
 
-    /// Declare generic type parameters (`<T, K extends X>`) in the current scope.
+    /// Declare generic type parameters (`<T, K extends X>`, `T: Bound`, `[T Bound]`) in the current
+    /// scope, remembering each one's first bound so `x: T` can resolve members on the bound.
     pub fn declare_type_params(&mut self, params: Node<'_>) {
         let mut c = params.walk();
-        let names: Vec<String> = params.named_children(&mut c).filter_map(|p| {
-            p.child_by_field_name("name").or_else(|| p.named_child(0)).map(|x| self.text(x).to_string())
-        }).collect();
-        if let Some(s) = self.scopes.last_mut() { for n in names { s.vars.insert(format!("<{n}>"), String::new()); } }
+        let mut decls: Vec<(String, String)> = Vec::new();
+        for p in params.named_children(&mut c) {
+            let Some(name) = p.child_by_field_name("name").or_else(|| p.named_child(0)) else { continue };
+            let bound = p.child_by_field_name("constraint").or_else(|| p.child_by_field_name("bounds"))
+                .or_else(|| p.child_by_field_name("type"))
+                .or_else(|| { let mut c2 = p.walk(); p.named_children(&mut c2).find(|x| x.kind() == "type_bound") })
+                .and_then(|b| first_type_name(self, b)).unwrap_or_default();
+            decls.push((self.text(name).to_string(), bound));
+        }
+        if let Some(s) = self.scopes.last_mut() { for (n, b) in decls { s.vars.insert(format!("<{n}>"), b); } }
+    }
+
+    /// `where T: Bound` / `where T : IBound` — set (or refine) a declared parameter's bound.
+    pub fn bound_type_param(&mut self, param: &str, bound: Node<'_>) {
+        let Some(b) = first_type_name(self, bound) else { return };
+        let key = format!("<{param}>");
+        if let Some(s) = self.scopes.iter_mut().rev().find(|s| s.vars.contains_key(&key)) { s.vars.insert(key, b); }
+        else if let Some(s) = self.scopes.last_mut() { s.vars.insert(key, b); }
+    }
+
+    /// The bound of an in-scope generic parameter, if it has one.
+    pub fn type_param_bound(&self, name: &str) -> Option<&str> {
+        let key = format!("<{name}>");
+        self.scopes.iter().rev().find_map(|s| s.vars.get(&key)).map(String::as_str).filter(|b| !b.is_empty())
     }
 
     /// A type name that refers to an in-scope generic parameter, not a declared type.
@@ -392,14 +415,30 @@ pub fn walk<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, depth: u32) {
                 let (q, base) = split_qual(name);
                 cx.add_ref(*k, base, q, n);
             }
+            // generic parameters and their bounds come first: parameter types may refer to them
+            let mut early: Vec<usize> = Vec::new();
+            {
+                let mut c = n.walk();
+                let generics: Vec<Node<'_>> = n.named_children(&mut c)
+                    .filter(|ch| matches!(ch.kind(), "type_parameters" | "type_parameter_list" | "type_parameter_constraints_clause" | "where_clause"))
+                    .collect();
+                for ch in generics { early.push(ch.id()); walk(h, ch, cx, depth + 1); }
+            }
             h.after_def(n, cx);
             match d.body {
                 Some(b) if b.id() != n.id() => {
                     // Walk non-body children too (parameters, decorators, default values).
                     let mut c = n.walk();
                     for ch in n.named_children(&mut c) {
+                        if early.contains(&ch.id()) { continue; }
                         if ch.id() == b.id() { walk(h, ch, cx, depth + 1); }
                         else { walk_aux(h, ch, cx, depth + 1, d.name_node_id(n)); }
+                    }
+                }
+                _ if !early.is_empty() => {
+                    let mut c = n.walk();
+                    for ch in n.named_children(&mut c) {
+                        if !early.contains(&ch.id()) && ch.is_named() { walk(h, ch, cx, depth + 1); }
                     }
                 }
                 _ => walk_children(h, n, cx, depth),
@@ -588,6 +627,25 @@ pub fn type_ref(t: &str) -> (Option<String>, String) {
     if !is_ident(last) { return none; }
     let qual = qual.map(|q| q.trim_start_matches(['*', '&', '\\']).replace("::", ".").replace('\\', ".")).filter(|q| !q.is_empty() && !matches!(q.as_str(), "crate" | "self" | "super"));
     (qual, last.to_string())
+}
+
+/// First non-builtin nominal type mentioned under `n` (skipping `comparable`, `Clone`, …).
+fn first_type_name(cx: &Cx<'_>, n: Node<'_>) -> Option<String> {
+    let mut stack = vec![n];
+    while let Some(x) = stack.pop() {
+        if matches!(x.kind(), "type_identifier" | "identifier" | "scoped_type_identifier" | "qualified_name" | "generic_type") {
+            let t = normalize_type(cx.text(x));
+            if !t.is_empty() && !is_builtin_type(&t) && !matches!(t.as_str(), "comparable" | "any" | "Clone" | "Copy" | "Send" | "Sync"
+                | "Debug" | "Sized" | "Default" | "class" | "struct" | "notnull" | "unmanaged" | "object") {
+                return Some(t);
+            }
+            if x.kind() == "generic_type" { continue; }
+        }
+        let mut c = x.walk();
+        let kids: Vec<_> = x.named_children(&mut c).collect();
+        stack.extend(kids.into_iter().rev());
+    }
+    None
 }
 
 fn is_common_value(name: &str) -> bool {

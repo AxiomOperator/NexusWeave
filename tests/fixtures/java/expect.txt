@@ -9,3 +9,4 @@ GET /api/users/{id} -> UserController.get
 UserController.get -> Repo.find
 Repo.find -> Finder.find
 Dispatch.lookup -> Finder.find
+Service.hello -> Person.name

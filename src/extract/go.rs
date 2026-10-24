@@ -102,6 +102,7 @@ impl LangHooks for Go {
                 }
                 Visit::Continue
             }
+            "type_parameter_list" => { cx.declare_type_params(n); Visit::Continue }
             "func_literal" => { self.bind_params(n.child_by_field_name("parameters"), cx); Visit::Continue }
             "short_var_declaration" => {
                 if let (Some(l), Some(r)) = (n.child_by_field_name("left"), n.child_by_field_name("right")) {

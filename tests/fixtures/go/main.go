@@ -34,3 +34,7 @@ func handleUser() { helper() }
 func routes(r *Router) {
 	r.GET("/users/:id", handleUser)
 }
+
+type Greeter interface{ Greet() string }
+
+func greetAll[T Greeter](t T) { t.Greet() }

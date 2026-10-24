@@ -14,3 +14,5 @@ fn main() {
 }
 
 fn helper() {}
+
+fn describe<T: Named>(t: &T) -> String { t.name() }

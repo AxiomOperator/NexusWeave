@@ -261,6 +261,10 @@ impl LangHooks for Rust {
                 Visit::Skip
             }
             "type_parameters" => { cx.declare_type_params(n); Visit::Continue }
+            "where_predicate" => {
+                if let (Some(l), Some(b)) = (n.child_by_field_name("left"), n.child_by_field_name("bounds")) { let l = cx.text(l).to_string(); cx.bound_type_param(&l, b); }
+                Visit::Continue
+            }
             "type_identifier" => {
                 let t = cx.text(n);
                 if !is_builtin_type(t) && !cx.is_type_param(t) { cx.add_ref(RefKind::TypeRef, t, None, n); }

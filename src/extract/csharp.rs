@@ -215,6 +215,16 @@ impl LangHooks for CSharp {
                 if let Some(i) = n.child_by_field_name("initializer") { walk_children(self, i, cx, 0); }
                 Visit::Skip
             }
+            "type_parameter_list" => { cx.declare_type_params(n); Visit::Continue }
+            "type_parameter_constraints_clause" => {
+                let mut c = n.walk();
+                let kids: Vec<Node<'_>> = n.named_children(&mut c).collect();
+                if let Some(t) = kids.first() {
+                    let t = cx.text(*t).to_string();
+                    for k in kids.iter().skip(1) { cx.bound_type_param(&t, *k); }
+                }
+                Visit::Skip
+            }
             "attribute" => {
                 let nm = name.trim_end_matches("Attribute");
                 cx.add_ref(RefKind::TypeRef, nm, None, n);

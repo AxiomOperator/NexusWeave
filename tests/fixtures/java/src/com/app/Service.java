@@ -7,6 +7,8 @@ import java.util.List;
 public class Service {
     private final Repo repo = new Repo();
 
+    public <T extends com.app.models.Person> String hello(T p) { return p.name(); }
+
     public void handle() {
         var u = repo.find("1");
         u.greet();
