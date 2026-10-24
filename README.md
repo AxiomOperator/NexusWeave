@@ -281,7 +281,10 @@ question correctly in both conditions. With NexusWeave they used 25% fewer tool 
 tokens and 5% less time. Cost came out 4% higher overall: lower on the largest repo, higher on
 the small ones. (An earlier 80-session run: −30% tool calls, −12% tokens, +5% cost.) Per repo, it
 saved 24% of cost on the largest repo (1.2k files) and cost 1–22% more on repos of 80–300 files;
-`enhancements.md` §8 has the paired comparison with confidence intervals. The details and next steps are in `enhancements.md` section 6;
+`enhancements.md` §8 has the paired comparison with confidence intervals. With smaller default
+explore budgets on small repos (now the default) a 24-session pilot came out 10.7% cheaper than
+baseline overall (17 of 24 tasks cheaper) with unchanged answer quality; not yet confirmed by a
+full run. The details and next steps are in `enhancements.md` section 6;
 reproduce with `bench/agent/run.py`.
 
 ## Development

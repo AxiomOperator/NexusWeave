@@ -414,3 +414,11 @@ recommended for cost.
 Conclusion: today NexusWeave saves tool calls everywhere and money only on larger repos. The
 lever is how much explore sends on small repos (default budget 12k chars ≤150 files, 16k ≤1000),
 not how often agents call it.
+
+**Budget pilot** (default explore budget 12k → 5k chars for ≤150 files, 16k → 8k for ≤1,000;
+larger repos unchanged; 24 sessions vs the same baseline, answers LLM-judged): cost **−10.7%**
+(−21.5% … +3.5%), cheaper on **17/24** tasks, uncached input −11.9%, tokens −11.5%, tool calls
+−17.7%. Answer quality unchanged: rubric 100%, LLM judge 100% (2 wrong claims in 24 answers vs 1
+for the old-budget pilot). Agents read a little more (3.0 Reads per session vs 2.1) and pay less.
+Kept as the default. The interval still includes zero (one repeat; codegraph moved −36% with an
+unchanged budget, which shows the noise): a 2-repeat run of both conditions (~$20) would settle it.

@@ -81,9 +81,11 @@ struct Local {
 }
 
 fn tiers(files: i64) -> (usize, usize) {
+    // small repos get small answers: explore output is full-price input, and below ~1k files an
+    // agent reads little anyway (enhancements.md §8)
     match files {
-        0..=150 => (12_000, 4),
-        151..=1000 => (16_000, 6),
+        0..=150 => (5_000, 4),
+        151..=1000 => (8_000, 6),
         1001..=5000 => (20_000, 8),
         _ => (24_000, 9),
     }
