@@ -22,7 +22,7 @@ Every limitation in section 2 and every roadmap item in section 3 is now impleme
 | 2: generic bounds | ✅ | `declare_type_params`, `bound_type_param` | `T: Repo` / `T extends Repo` / `where T : Repo` fixtures |
 | 3.1 accuracy benchmark | ✅ | `bench/` | section 4 |
 | 3.2 SCIP import | ✅ | `src/scip.rs`, confidence 100 | hono recall 79.0 → 84.3%, ripgrep 81.7 → 91.6% |
-| 3.3 agent evaluation | ✅ | `bench/agent/` | section 5 |
+| 3.3 agent evaluation | ✅ | `bench/agent/` | section 6 |
 | 3.4 diff-impact / PR mode | ✅ | `src/impact.rs`, `xgraph_diff_impact`, `.github/workflows/pr-impact.yml` | — |
 | 3.5 session-aware explore | ✅ | `explore::Seen`, staleness guard | — |
 | 3.6 framework stubs | ✅ | `resolve/stubs.toml` | — |
@@ -40,9 +40,9 @@ Every limitation in section 2 and every roadmap item in section 3 is now impleme
 
 | | before this pass | now |
 |---|---:|---:|
-| vscode full index | ~14.2 s (busy machine) | **9.1 s** |
-| vscode database | 440 MB | **389 MB** |
-| vscode warm resync, hub file (`lifecycle.ts`, 17k import aliases) | 2.5 s | **1.2 s** |
+| vscode full index | ~14.2 s (busy machine) | **9.8 s** |
+| vscode database | 440 MB | **405 MB** |
+| vscode warm resync, hub file (`lifecycle.ts`, 17k import aliases) | 2.5 s | **1.3 s** |
 | vscode warm resync, ordinary file | 0.5 s | **0.12 s** |
 | django full index / warm resync | 1.0 s / 0.22 s | **0.85 s / 0.15 s** |
 
@@ -276,7 +276,27 @@ The benchmark also caught several problems in the scorer and the ground truth, a
 | Low-confidence name fallback for unknown receivers is 18% precise on flask and 74% on gin | Python, Go | drop or demote it for those languages, or only allow it when the receiver name matches the owner type |
 | Object-literal keys matching interface members (`{ mkdir: vi.fn() }`) | TS tests | contextual typing of object literals against a declared interface |
 
-## 5. Agent evaluation (roadmap 3.3)
+## 5. Review pass with xgraph itself
+
+xgraph was used to review its own code and the vscode index. These were found and fixed:
+
+| finding | effect | fix |
+|---|---|---|
+| `Array.isArray` fell through to the unknown-receiver name guess | 2,379 vscode calls bound to an extension's jQuery typings | no name guess when the qualifier is a language builtin (`Array`, `Response`, `HashMap::`, `os.`, …) |
+| Bare calls to local closures/parameters resolved globally | `let pick = \|…\|; pick()` → an unrelated `fn pick` | locals shadow functions in Rust, JS/TS, Python, Go, Lua |
+| Calls inside string interpolation were never extracted | `` `${escape(x)}` ``, f-strings, `#{}` … | interpolations walked in every language |
+| Functions used as values in literals, `.bind`, casts | missing `passes` edges; such code looked dead | value positions noted |
+| `json!({"k": f(x)})` macro bodies dropped | calls inside serde `json!` missing | object keys blanked before the macro re-parse |
+| Dead-code false positives | trait-impl members, `#[cfg]` platform twins, attribute-macro items, names used by unresolved refs | excluded |
+| Resolver panic on vscode | import targets without a file node | guarded |
+| Unresolved value refs never came back incrementally | `app.use(auth)` stayed unlinked after `auth` was defined | `value_names` + targeted re-extraction |
+| Viewer: Graph tab empty until switching tabs | first page drew nothing | default root, ResizeObserver, redesign |
+| Upgrade used a predictable temp path | local archive swap between checksum and extract | private 0700 directory, created exclusively |
+
+Recall rose on four repos (codegraph 92.8 → 93.9, express 86.9 → 89.8, flask 73.8 → 75.7,
+httpx 81.1 → 82.5) with precision unchanged or higher.
+
+## 6. Agent evaluation (roadmap 3.3)
 
 `bench/agent/run.py`: 20 questions over the 7 corpus repos × {baseline: Read/Grep/Glob,
 xgraph: the same + the MCP server} × 2 repeats = 80 headless Claude Code sessions (default

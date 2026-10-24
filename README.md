@@ -32,7 +32,7 @@ Windows (x86_64); each release carries `SHA256SUMS`.
 | **Beyond direct calls** | HTTP routes become graph nodes linked to their handlers, with router prefixes and mounts applied. Event topics (`emitter.on("x")` / `emit("x")`, Python signals, C# events) link emitters to listeners. Functions passed as callbacks get `passes` edges. Methods get `overrides` edges to the interface or base method they implement, so flows cross dynamic dispatch (`calls → dispatches → …`). |
 | **Compiler-grade when available** | An `index.scip` in the project (from scip-typescript, rust-analyzer, scip-clang, …) is imported as ground-truth edges; heuristics fill in the rest. Library return types missing from the index can be declared in `xgraph.stubs.toml`. |
 | **Review mode** | `xgraph diff-impact` maps a git diff to the symbols it touches, their callers, the routes whose flows reach them and the tests to run; the bundled GitHub workflow comments it on PRs. `xgraph analyze` reports dead code, import cycles, entry points and hot spots. |
-| **Fast** | Parsing runs in parallel. References are resolved in memory before the single bulk write. vscode (15.4k files, 2.6M references) indexes in about 9 s into a 389 MB database; django (2.4k files) in 0.85 s. Resyncing after a one-file edit takes about 0.15 s on django and 0.12 s on vscode, and up to 1.2 s on vscode for a hub file imported by thousands of others. Those figures are for the long-running watcher or MCP server, which keeps resolver state warm. |
+| **Fast** | Parsing runs in parallel. References are resolved in memory before the single bulk write. vscode (15.4k files, 2.6M references) indexes in under 10 s into a 405 MB database; django (2.4k files) in 0.85 s. Resyncing after a one-file edit takes about 0.15 s on django and 0.12 s on vscode, and up to 1.3 s on vscode for a hub file imported by thousands of others. Incremental results match a fresh full index (checked by `tests/sync.rs` for every language). Those figures are for the long-running watcher or MCP server, which keeps resolver state warm. |
 | **Always fresh** | `xgraph serve` watches the tree with a 300 ms debounce and applies pending edits before answering each tool call. |
 | **Local** | Nothing leaves your machine. No telemetry. |
 
@@ -201,7 +201,7 @@ With a SCIP index present: hono 100% / 84.3%, ripgrep 99.2% / 91.6%.
 80 headless Claude Code sessions (20 questions × with/without xgraph × 2) answered every
 question correctly in both conditions. With xgraph they used 30% fewer tool calls, 12% fewer
 tokens and 10% less time. Cost came out 5% higher overall: lower on the largest repo, higher on
-the small ones. The details and next steps are in `enhancements.md` section 5;
+the small ones. The details and next steps are in `enhancements.md` section 6;
 reproduce with `bench/agent/run.py`.
 
 ## Development
