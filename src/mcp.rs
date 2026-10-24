@@ -20,7 +20,8 @@ Use `xgraph_explore` FIRST for almost any code question or before editing — in
 - Include a file path (optionally `path:10-40`) to read that file region in the same call.
 - Results are lexical+graph ranked, not semantic: if a name is reported as not in the index, try a different identifier.
 - Trust the returned source; it is read from disk at call time. Don't re-read the same ranges.
-Use `xgraph_node` to read one symbol (source + callers + callees) or a file with line numbers. If a project has no index, fall back to your normal tools — don't run `xgraph init` yourself unless asked.";
+Use `xgraph_node` to read one symbol (source + callers + callees) or a file with line numbers.
+Use `xgraph_diff_impact` after making changes (or when reviewing a branch) to see what they affect and which tests to run. If a project has no index, fall back to your normal tools — don't run `xgraph init` yourself unless asked.";
 
 fn tool_defs() -> Vec<Value> {
     let pp = json!({"type": "string", "description": "Absolute path of the project to query (defaults to the server's project)."});
@@ -39,6 +40,8 @@ fn tool_defs() -> Vec<Value> {
             "inputSchema": {"type": "object", "properties": {"symbol": {"type": "string"}, "file": {"type": "string"}, "depth": {"type": "integer", "default": 2}, "projectPath": pp}, "required": ["symbol"]}}),
         json!({"name": "xgraph_files", "description": "List indexed files under a directory prefix with symbol counts.",
             "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "projectPath": pp}}}),
+        json!({"name": "xgraph_diff_impact", "description": "Before committing or reviewing: which symbols the current change (git diff against `base`, default HEAD) touches, who calls them, the HTTP routes whose flows reach them, and the tests to run.",
+            "inputSchema": {"type": "object", "properties": {"base": {"type": "string", "description": "git ref to diff against (default HEAD = all uncommitted changes)"}, "depth": {"type": "integer", "default": 2}, "projectPath": pp}}}),
         json!({"name": "xgraph_status", "description": "Index statistics and freshness.",
             "inputSchema": {"type": "object", "properties": {"projectPath": pp}}}),
     ]
@@ -48,7 +51,7 @@ fn enabled_tools() -> Vec<String> {
     match std::env::var("XGRAPH_MCP_TOOLS") {
         Ok(v) if v.trim() == "all" => tool_defs().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect(),
         Ok(v) => v.split(',').map(|s| { let s = s.trim(); if s.starts_with("xgraph_") { s.to_string() } else { format!("xgraph_{s}") } }).collect(),
-        Err(_) => vec!["xgraph_explore".into(), "xgraph_node".into()],
+        Err(_) => vec!["xgraph_explore".into(), "xgraph_node".into(), "xgraph_diff_impact".into()],
     }
 }
 
@@ -118,6 +121,10 @@ impl Server {
                 let mut o = String::new();
                 for r in st.query_map([pat], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? { let (p, c) = r?; let _ = writeln!(o, "{p} ({})", c - 1); }
                 o
+            }
+            "xgraph_diff_impact" => {
+                let diff = crate::impact::git_diff(&g.root, s("base").unwrap_or("HEAD"), false)?;
+                crate::impact::render(&g.diff_impact(&diff, n("depth").unwrap_or(2).clamp(1, 6) as u32)?)
             }
             "xgraph_status" => serde_json::to_string_pretty(&g.status()?)?,
             _ => return Err(anyhow!("unknown tool {name}")),

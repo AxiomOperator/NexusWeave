@@ -44,6 +44,14 @@ enum Cmd {
         #[arg(short, long)] filter: Option<String>, #[arg(short, long)] json: bool, #[arg(short, long)] quiet: bool },
     /// List indexed files
     Files { path: Option<String>, #[arg(long)] symbols: bool },
+    /// What the current change touches: changed symbols, callers, affected routes and tests
+    DiffImpact {
+        #[arg(long, default_value = "HEAD", help = "git ref to diff against")] base: String,
+        #[arg(long, help = "only staged changes")] staged: bool,
+        #[arg(long, help = "read a unified diff from stdin instead of running git")] stdin: bool,
+        #[arg(short, long, default_value_t = 2)] depth: u32,
+        #[arg(short, long)] json: bool,
+    },
     /// Watch the project and keep the graph in sync
     Watch { path: Option<PathBuf> },
     /// Run the MCP server on stdio
@@ -183,6 +191,14 @@ fn main() -> Result<()> {
                 println!("{p} ({} symbols)", n - 1);
                 if symbols { for s in g.file_symbols(&p)? { if s.parent_id.is_some_and(|_| true) { println!("    {:<10} {}:{}", s.kind.as_str(), explore::display_name(&s), s.start_line); } } }
             }
+        }
+        Cmd::DiffImpact { base, staged, stdin, depth, json } => {
+            let root = query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `xgraph init`"))?;
+            index::sync(&root, None)?;  // analyse the working tree as it is now
+            let g = Graph::open(&root)?;
+            let diff = if stdin { let mut s = String::new(); std::io::stdin().read_to_string(&mut s)?; s } else { impact::git_diff(&root, &base, staged)? };
+            let r = g.diff_impact(&diff, depth)?;
+            if json { println!("{}", serde_json::to_string_pretty(&r)?); } else { print!("{}", impact::render(&r)); }
         }
         Cmd::Watch { path } => {
             let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).unwrap_or(root_arg(None)?) };

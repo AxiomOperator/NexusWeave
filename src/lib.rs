@@ -3,6 +3,7 @@
 pub mod db;
 pub mod explore;
 pub mod extract;
+pub mod impact;
 pub mod index;
 pub mod install;
 pub mod lang;
