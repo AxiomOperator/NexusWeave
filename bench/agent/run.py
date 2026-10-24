@@ -18,6 +18,7 @@ Results append to a JSONL file, so an interrupted run resumes where it stopped:
   python3 bench/agent/run.py                       # 20 tasks x 2 conditions x 2 repeats = 80 sessions
   python3 bench/agent/run.py --tasks gin-abort --repeats 1    # a pilot
   python3 bench/agent/run.py --report bench/results/agent.jsonl
+  python3 bench/agent/run.py --judge-file bench/results/agent.jsonl   # LLM-grade existing answers
 """
 
 from __future__ import annotations
@@ -178,6 +179,46 @@ def classify_reads(calls: list[dict], ws: Path) -> list[dict]:
     return out
 
 
+JUDGE = """You are grading an answer to a question about the source code of the {repo} repository.
+
+Question:
+{prompt}
+
+Facts a complete answer must state (verified against the code; each line lists accepted spellings):
+{facts}
+
+Answer to grade:
+<answer>
+{answer}
+</answer>
+
+For each fact, decide whether the answer states it correctly (a passing mention in a wrong role does
+not count). Then list any claims in the answer that are clearly wrong about this code (not merely
+missing or vague). Reply with JSON only, no prose, exactly:
+{{"facts": [true or false for each fact, in order], "errors": ["short description", ...]}}"""
+
+
+def judge(task: dict, answer: str, model: str | None, timeout: int = 300) -> dict:
+    """LLM grade: per-fact verdicts and clearly wrong claims, from a separate tool-less session."""
+    facts = "\n".join(f"{i + 1}. " + " / ".join(alts) for i, alts in enumerate(task["rubric"]))
+    prompt = JUDGE.format(repo=task["repo"], prompt=task["prompt"], facts=facts, answer=answer[:20000])
+    cmd = ["claude", "-p", prompt, "--output-format", "json", "--setting-sources", "", "--no-session-persistence",
+           "--strict-mcp-config", "--mcp-config", '{"mcpServers": {}}', "--disallowedTools", *READ_TOOLS, *DENY]
+    if model:
+        cmd += ["--model", model]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        res = json.loads(p.stdout)
+        text = res.get("result") or ""
+        verdict = json.loads(text[text.find("{"):text.rfind("}") + 1])
+        marks = [bool(x) for x in verdict.get("facts", [])][:len(task["rubric"])]
+        errors = [str(e) for e in verdict.get("errors", [])]
+        score = sum(marks) / len(task["rubric"]) if marks else 0.0
+        return {"judge_score": score, "judge_errors": errors, "judge_cost_usd": res.get("total_cost_usd", 0.0)}
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, AttributeError) as e:
+        return {"judge_score": None, "judge_errors": [], "judge_failed": str(e)[:200]}
+
+
 def total_tokens(r: dict) -> int:
     return r["input_tokens"] + r["cache_write"] + r["cache_read"] + r["output_tokens"]
 
@@ -228,6 +269,15 @@ def report(path: Path) -> str:
                 used[k] = used.get(k, 0) + v
     if used:
         out.append("\nnexusweave-condition tool use: " + ", ".join(f"{k} {v}" for k, v in sorted(used.items(), key=lambda kv: -kv[1])))
+    judged = [r for r in rows if r.get("judge_score") is not None]
+    if judged:
+        parts = []
+        for c in CONDITIONS:
+            js = [r for r in judged if r["condition"] == c]
+            if js:
+                errs = sum(len(r.get("judge_errors", [])) for r in js)
+                parts.append(f"{c} {statistics.mean(r['judge_score'] for r in js):.1%} ({errs} wrong claims in {len(js)} answers)")
+        out.append("\nLLM judge: " + "; ".join(parts))
     reads = [x for r in rows if r["condition"] == "nexusweave" for x in r.get("reads", [])]
     if reads:
         kinds = {k: sum(1 for x in reads if x["kind"] == k) for k in ("redundant", "cut_off", "new_file")}
@@ -248,9 +298,24 @@ def main() -> None:
     ap.add_argument("--nexusweave", default=str(ROOT / "target/release/nexusweave"))
     ap.add_argument("--out", default=str(BENCH / "results/agent.jsonl"))
     ap.add_argument("--report", metavar="JSONL", help="only print the report for an existing results file")
+    ap.add_argument("--judge", action="store_true", help="also grade each answer with an LLM judge (a few cents per session)")
+    ap.add_argument("--judge-model", help="model for the judge (default: Claude Code's default)")
+    ap.add_argument("--judge-file", metavar="JSONL", help="grade the answers in an existing results file (rewritten in place)")
     args = ap.parse_args()
     if args.report:
         print(report(Path(args.report)))
+        return
+    if args.judge_file:
+        path = Path(args.judge_file)
+        tasks = {t["id"]: t for t in load_tasks()}
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        todo = [r for r in rows if r.get("judge_score") is None and r["task"] in tasks]
+        print(f"judging {len(todo)} answers in {path}", flush=True)
+        with cf.ThreadPoolExecutor(args.parallel) as pool:
+            for r, v in zip(todo, pool.map(lambda r: judge(tasks[r["task"]], r["answer"], args.judge_model), todo)):
+                r.update(v)
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        print(report(path))
         return
     nexusweave = Path(args.nexusweave).resolve()
     if not nexusweave.exists():
@@ -279,6 +344,8 @@ def main() -> None:
         futs = {pool.submit(run_one, t, c, rep, args, nexusweave): (t["id"], c, rep) for t, c, rep in jobs}
         for i, f in enumerate(cf.as_completed(futs), 1):
             r = f.result()
+            if args.judge:
+                r.update(judge(next(t for t in tasks if t["id"] == r["task"]), r["answer"], args.judge_model))
             with lock, out.open("a") as fh:
                 fh.write(json.dumps(r) + "\n")
             flag = "" if r["ok"] else f"  FAILED: {r['stderr'][-200:]}"

@@ -357,17 +357,22 @@ for cost. Next steps, each measurable with the harness:
 2. Say when the answer is self-sufficient: each file section's header now states "entire
    file", or the exact line ranges shown and which symbols are only partly shown (to which line),
    and the server instructions tell agents to read further only for those. **Measured, no effect:**
-   `Read` calls per NexusWeave session went from 2.0 to 2.2 (second run below). Still open; the
-   harness now records each session's tool trace and classifies every Read after an explore
-   answer as `redundant` (already shown in full), `cut_off` (file shown in part) or `new_file`,
-   so the next run says which of these to fix.
+   `Read` calls per NexusWeave session went from 2.0 to 2.2 (second run below).
+   **Diagnosed with traces** (pilot, 24 sessions, NexusWeave condition, ~$5): of 51 Reads, 27 came
+   *before* the first explore call (the tool loads lazily behind `ToolSearch`), and of the 24
+   after one, **0 re-read code already shown**: 11 read past a cut-off body, 13 opened files the
+   answer never included. So there is no redundant re-reading to remove; the follow-up Reads
+   fetch code explore didn't show. The levers are coverage (more of the cut-off seed bodies,
+   better file recall) and eager tool listing (client side), not de-duplication.
 3. List `nexusweave_explore` eagerly instead of behind `ToolSearch` (client behavior; nothing to
    change server-side).
 4. ✅ Harder tasks authored (`gin-render-impls`, `httpx-transport-dispatch`,
    `flask-add-url-rule-impact`, `ripgrep-sink-dispatch`): implementations of interfaces/traits,
    runtime transport dispatch, and impact through deferred calls, each fact checked at the pinned
-   commit. Run, and they saturated too (100% in both conditions). Still open: an LLM-judge
-   grade alongside the keyword rubric, and tasks on vscode / django.
+   commit. Run, and they saturated too (100% in both conditions).
+5. ✅ LLM judge: `run.py --judge` (or `--judge-file results.jsonl` for saved answers) grades each
+   answer with a separate tool-less session: per-fact verdicts plus clearly wrong claims
+   (~$0.07 per answer). Tasks on vscode / django: not added.
 
 **Second run (2026-10-24, 24 tasks × 2 conditions × 2 = 96 sessions, ~$20):** rubric 100% in both
 conditions again; NexusWeave vs baseline: tool calls −25%, turns −21%, tokens −5%, wall −5%,
