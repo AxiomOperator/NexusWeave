@@ -11,17 +11,30 @@ static binary with no Node runtime, and puts its effort into indexing speed, res
 accuracy, and token-efficient answers.
 
 ```
-curl -fsSL https://raw.githubusercontent.com/AxiomOperator/xGraph/main/scripts/install.sh | sh
-                              # or: cargo install --path .   (one ~25 MB binary)
+git clone https://github.com/AxiomOperator/xGraph.git && cd xGraph
+cargo install --path .        # Rust 1.88+; one ~37 MB binary in ~/.cargo/bin
 xgraph install                # registers the MCP server with Claude Code / Cursor / Codex / Gemini / opencode
                               #   --hooks also adds a Claude Code hint hook (see below)
 cd your-project && xgraph init
-xgraph upgrade                # later: replace the binary with the latest release (checksum-verified)
+xgraph ui                     # optional: browse the graph at http://127.0.0.1:7878
 ```
 
-The repository is private for now: export `GITHUB_TOKEN` (read access) before running the
-installer or `xgraph upgrade`. Release binaries cover Linux and macOS (x86_64, aarch64) and
-Windows (x86_64); each release carries `SHA256SUMS`.
+Restart your agent after `xgraph install` so it starts the server. After rebuilding with
+`cargo install`, the per-repo daemon hands over to the new binary on its own; restart the agent
+to replace the `xgraph serve` process it holds as well.
+
+**Prebuilt binaries.** Pushing a `v*` tag runs `.github/workflows/release.yml`, which publishes
+binaries for Linux and macOS (x86_64, aarch64) and Windows (x86_64) with a `SHA256SUMS` file.
+No release has been published yet. Once one is, install and update without a Rust toolchain:
+
+```
+curl -fsSL https://raw.githubusercontent.com/AxiomOperator/xGraph/main/scripts/install.sh | sh
+xgraph upgrade [--check]      # replace the binary with the latest release (checksum-verified)
+```
+
+The repository is private for now: export `GITHUB_TOKEN` (read access) for the installer and
+`xgraph upgrade`. The `raw.githubusercontent.com` download itself also needs the token, so with
+a private repository run the script from a clone instead: `sh scripts/install.sh`.
 
 ## Why
 
@@ -33,7 +46,7 @@ Windows (x86_64); each release carries `SHA256SUMS`.
 | **Compiler-grade when available** | An `index.scip` in the project (from scip-typescript, rust-analyzer, scip-clang, …) is imported as ground-truth edges; heuristics fill in the rest. Library return types missing from the index can be declared in `xgraph.stubs.toml`. |
 | **Review mode** | `xgraph diff-impact` maps a git diff to the symbols it touches, their callers, the routes whose flows reach them and the tests to run; the bundled GitHub workflow comments it on PRs. `xgraph analyze` reports dead code, import cycles, entry points and hot spots. |
 | **Fast** | Parsing runs in parallel. References are resolved in memory before the single bulk write. vscode (15.4k files, 2.6M references) indexes in under 10 s into a 405 MB database; django (2.4k files) in 0.85 s. Resyncing after a one-file edit takes about 0.15 s on django and 0.12 s on vscode, and up to 1.3 s on vscode for a hub file imported by thousands of others. Incremental results match a fresh full index (checked by `tests/sync.rs` for every language). Those figures are for the long-running watcher or MCP server, which keeps resolver state warm. |
-| **Always fresh** | `xgraph serve` watches the tree with a 300 ms debounce and applies pending edits before answering each tool call. |
+| **Always fresh** | `xgraph serve` watches the tree with a 300 ms debounce and applies pending edits before answering each tool call. Every agent session in a repository shares one background daemon (one watcher, one warm resolver cache). It follows a rebuilt index (`xgraph index`), restarts itself when its binary is replaced, and exits after 15 minutes without clients. |
 | **Local** | Nothing leaves your machine. No telemetry. |
 
 ## Languages
@@ -72,27 +85,29 @@ Each language gets:
 ```
 xgraph init [path]              create .xgraph/ and build the graph
 xgraph index [path]             rebuild from scratch (atomic swap; readers never see a half-built graph)
-xgraph sync [path]              incremental update (size/mtime prefilter, xxh3 content hash)
+xgraph sync [path] [--resolve]  incremental update (size/mtime prefilter, xxh3 content hash);
+                                --resolve re-resolves every reference after config/stub changes
 xgraph status [--json]          counts, languages, kinds, db size
 xgraph query <words> [-k kind]  symbol search (alias: search)
-xgraph explore <question>       same output as the xgraph_explore MCP tool
+xgraph explore <question> [--budget N]   same output as the xgraph_explore MCP tool
 xgraph node <symbol|file>       one symbol's source + callers + callees, or a file with line numbers
 xgraph callers <symbol>         who calls / references it
 xgraph callees <symbol>         what it calls / references
 xgraph impact <symbol> [-d N]   transitive dependents, grouped by file
 xgraph affected [files] [--stdin] [-f glob]   test files affected by changed files
 xgraph files [prefix] [--symbols]
-xgraph diff-impact [--base REF] symbols touched by a git diff, their callers, routes and tests
-xgraph analyze dead|cycles|entry|hotspots
+xgraph diff-impact [--base REF] [--staged] [--stdin]   symbols touched by a diff, their callers, routes and tests
+xgraph analyze dead|cycles|entry|hotspots [--exported]
 xgraph watch [path]             keep the graph in sync from the terminal
-xgraph serve                    MCP server on stdio (auto-syncs; shares one daemon per repo)
-xgraph daemon [status|stop]     the shared per-repo index process (restarts itself after an upgrade)
-xgraph ui [--port 7878]         viewer: overview, call graph, module map, routes, call paths, insights, ask
+xgraph serve [--no-watch]       MCP server on stdio (auto-syncs; shares one daemon per repo)
+xgraph daemon [status|stop]     the shared per-repo index process
+xgraph ui [path] [--port 7878] [--no-open]   viewer: overview, call graph, module map, routes, call paths, insights, ask
 xgraph install | uninstall      (un)register the MCP server with agents (--target, --print, --hooks)
-xgraph upgrade [--check]        self-update from GitHub releases
+xgraph upgrade [--check] [--version TAG] [--force]   self-update from GitHub releases
 ```
 
-Symbols can be written as `name`, `Class.method`, `mod::fn`, or `path/file.ts:Name`.
+Symbols can be written as `name`, `Class.method`, `mod::fn`, or `path/file.ts:Name`; `-f file`
+picks one when a name is ambiguous. Most query commands take `--json` and `-l/--limit`.
 
 CI example: only run the tests your change can affect:
 
@@ -102,8 +117,8 @@ git diff --name-only HEAD | xgraph affected --stdin --quiet | xargs -r npx vites
 
 ## MCP tools
 
-By default only `xgraph_explore` and `xgraph_node` are listed. A small menu steers agents
-better than a large one. Enable the rest with `XGRAPH_MCP_TOOLS=all`, or with a list such as
+By default only `xgraph_explore`, `xgraph_node` and `xgraph_diff_impact` are listed. A small
+menu steers agents better than a large one. Enable the rest with `XGRAPH_MCP_TOOLS=all`, or with a list such as
 `XGRAPH_MCP_TOOLS=explore,node,callers,impact`.
 
 | tool | purpose |
@@ -178,7 +193,17 @@ discover (ignore-aware, parallel) ─► parse + extract (rayon, tree-sitter, pe
 - `xgraph.stubs.toml` (or `.xgraph/stubs.toml`) declares return types of libraries that aren't
   indexed (`Model.objects → Manager → QuerySet`); common frameworks are built in.
 - `index.scip` / `.xgraph/index.scip` is imported when present.
-- `XGRAPH_TRACE=1` prints phase timings.
+- Environment variables:
+
+  | variable | effect |
+  |---|---|
+  | `XGRAPH_MCP_TOOLS` | MCP tools to list: `all`, or a comma list such as `explore,node,impact` |
+  | `XGRAPH_EXPLORE_DEDUP=0` | always print source in `xgraph_explore`, even if already shown this session |
+  | `XGRAPH_NO_DAEMON=1` | `xgraph serve` answers in-process instead of using the shared daemon |
+  | `XGRAPH_DAEMON_IDLE` | seconds without clients before the daemon exits (default 900) |
+  | `XGRAPH_REPO` | `owner/name` that `xgraph upgrade` downloads from (default `AxiomOperator/xGraph`) |
+  | `GITHUB_TOKEN` / `GH_TOKEN` | sent by `xgraph upgrade` and the installer (needed while the repository is private) |
+  | `XGRAPH_TRACE=1` | print phase timings |
 
 ## Accuracy
 
@@ -207,12 +232,18 @@ reproduce with `bench/agent/run.py`.
 ## Development
 
 ```
+scripts/check.sh          # what CI runs: clippy -D warnings + cargo test --release
 cargo test --release      # unit + fixture resolution tests (tests/fixtures/<lang>/expect.txt) + sync convergence
-bench/accuracy.py         # precision/recall vs SCIP ground truth (after bench/setup.sh)
+bench/accuracy.py         # precision/recall vs SCIP ground truth (after bench/setup.sh); --check bench/baseline.json gates CI
 bench/agent/run.py        # agent evaluation: Claude Code sessions with vs without xgraph
 xgraph dump <file>        # hidden: raw extraction for one file
+xgraph ast <file>         # hidden: the tree-sitter syntax tree
 xgraph debug miss|low     # hidden: sample unresolved-but-defined refs / low-confidence edges
+xgraph bench-sync <file>  # hidden: time warm incremental syncs after editing a file
 ```
+
+CI (`.github/workflows/ci.yml`) runs on pushes to `main` and on pull requests: tests on Linux,
+macOS and Windows, plus the accuracy gate. `pr-impact.yml` comments `xgraph diff-impact` on PRs.
 
 `tests/fixtures/<lang>/expect.txt` lists `src -> target` edges that must exist and
 `!src -> name` edges that must not. Add a case there when you fix resolution for a pattern.
