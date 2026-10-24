@@ -2,7 +2,7 @@
 //!
 //! Uses the system `curl` and `tar` (both ship with Windows 10+) instead of an HTTP stack, and
 //! verifies the archive against the release's `SHA256SUMS` before swapping the executable.
-//! `GITHUB_TOKEN` / `GH_TOKEN` is sent when set, which private repositories require.
+//! `GITHUB_TOKEN` / `GH_TOKEN` is sent when set (higher API rate limit; required for a private fork).
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const DEFAULT_REPO: &str = "AxiomOperator/xGraph";
+pub const DEFAULT_REPO: &str = "AxiomOperator/NexusWeave";
 pub const TARGET: &str = env!("NEXUSWEAVE_TARGET");
 
 fn repo() -> String { std::env::var("NEXUSWEAVE_REPO").unwrap_or_else(|_| DEFAULT_REPO.into()) }

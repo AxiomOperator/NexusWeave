@@ -26,7 +26,7 @@ accuracy, and token-efficient answers. Nothing leaves your machine.
 ## Install
 
 ```bash
-git clone https://github.com/AxiomOperator/xGraph.git nexusweave && cd nexusweave
+git clone https://github.com/AxiomOperator/NexusWeave.git && cd NexusWeave
 cargo install --path .            # Rust 1.88+; one ~37 MB binary in ~/.cargo/bin
 nexusweave install                # register the MCP server with Claude Code / Cursor / Codex / Gemini / opencode
                                   #   --hooks also adds a Claude Code hint hook (see below)
@@ -45,13 +45,13 @@ a `SHA256SUMS` file. No release has been published yet. Once one is, install and
 a Rust toolchain:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AxiomOperator/xGraph/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/AxiomOperator/NexusWeave/main/scripts/install.sh | sh
 nexusweave upgrade [--check]      # replace the binary with the latest release (checksum-verified)
 ```
 
-The repository is private for now: export `GITHUB_TOKEN` (read access) for the installer and
-`nexusweave upgrade`. The `raw.githubusercontent.com` download itself also needs the token, so with
-a private repository run the script from a clone instead: `sh scripts/install.sh`.
+No token is needed. If `GITHUB_TOKEN` (or `GH_TOKEN`) is set, the installer and `nexusweave
+upgrade` send it, which raises GitHub's API rate limit and lets them install from a private fork
+(`NEXUSWEAVE_REPO=owner/name`).
 
 **Upgrading from xgraph.** NexusWeave was called xgraph before. Run `nexusweave install` once: it
 replaces the old `xgraph` MCP registrations and the old Claude Code hook. Existing `.xgraph/`
@@ -224,8 +224,8 @@ discover (ignore-aware, parallel) ─► parse + extract (rayon, tree-sitter, pe
   | `NEXUSWEAVE_EXPLORE_DEDUP=0` | always print source in `nexusweave_explore`, even if already shown this session |
   | `NEXUSWEAVE_NO_DAEMON=1` | `nexusweave serve` answers in-process instead of using the shared daemon |
   | `NEXUSWEAVE_DAEMON_IDLE` | seconds without clients before the daemon exits (default 900) |
-  | `NEXUSWEAVE_REPO` | `owner/name` that `nexusweave upgrade` downloads from (default `AxiomOperator/xGraph`) |
-  | `GITHUB_TOKEN` / `GH_TOKEN` | sent by `nexusweave upgrade` and the installer (needed while the repository is private) |
+  | `NEXUSWEAVE_REPO` | `owner/name` that `nexusweave upgrade` downloads from (default `AxiomOperator/NexusWeave`) |
+  | `GITHUB_TOKEN` / `GH_TOKEN` | optional; sent by `nexusweave upgrade` and the installer (higher rate limit, private forks) |
   | `NEXUSWEAVE_TRACE=1` | print phase timings |
 
 ## Accuracy

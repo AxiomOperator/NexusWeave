@@ -1,11 +1,11 @@
 #!/usr/bin/env sh
 # Install the latest nexusweave release:
-#   curl -fsSL https://raw.githubusercontent.com/AxiomOperator/xGraph/main/scripts/install.sh | sh
-# Private repository: export GITHUB_TOKEN (a token with read access) first.
+#   curl -fsSL https://raw.githubusercontent.com/AxiomOperator/NexusWeave/main/scripts/install.sh | sh
+# GITHUB_TOKEN / GH_TOKEN is sent when set (higher API rate limit; required for a private fork).
 # Options (environment): NEXUSWEAVE_VERSION=v0.2.0, NEXUSWEAVE_INSTALL_DIR=~/.local/bin, NEXUSWEAVE_REPO=owner/name
 set -eu
 
-REPO="${NEXUSWEAVE_REPO:-AxiomOperator/xGraph}"
+REPO="${NEXUSWEAVE_REPO:-AxiomOperator/NexusWeave}"
 DIR="${NEXUSWEAVE_INSTALL_DIR:-$HOME/.local/bin}"
 TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 
