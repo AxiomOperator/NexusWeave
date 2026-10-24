@@ -29,49 +29,106 @@ fn exe() -> String {
     std::env::current_exe().ok().and_then(|p| crate::canonical(p).ok()).map(|p| p.display().to_string()).unwrap_or_else(|| "nexusweave".into())
 }
 
-fn read_json(p: &Path) -> Result<Value> {
-    if !p.exists() { return Ok(json!({})); }
-    let s = std::fs::read_to_string(p)?;
-    if s.trim().is_empty() { return Ok(json!({})); }
-    serde_json::from_str(&crate::resolve::modules::strip_jsonc(&s)).with_context(|| format!("parsing {}", p.display()))
+/// A config file's contents; empty when it doesn't exist. Any other read error is returned, so an
+/// unreadable config is never mistaken for an empty one and overwritten.
+fn read_config(p: &Path) -> Result<String> {
+    match std::fs::read_to_string(p) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", p.display())),
+    }
 }
 
-fn write_json(p: &Path, v: &Value) -> Result<()> {
+/// The parsed file and its text (`{}` and empty when it doesn't exist).
+fn read_json(p: &Path) -> Result<(Value, String)> {
+    let s = read_config(p)?;
+    if s.trim().is_empty() { return Ok((json!({}), s)); }
+    let v = serde_json::from_str(&crate::resolve::modules::strip_jsonc(&s)).with_context(|| format!("parsing {}", p.display()))?;
+    Ok((v, s))
+}
+
+/// Copy an existing config aside before rewriting it; returns the backup's path.
+fn backup(p: &Path) -> Result<Option<PathBuf>> {
+    if !p.exists() { return Ok(None); }
+    let mut name = p.file_name().unwrap_or_default().to_os_string();
+    name.push(".nexusweave-bak");
+    let b = p.with_file_name(name);
+    std::fs::copy(p, &b).with_context(|| format!("backing up {}", p.display()))?;
+    Ok(Some(b))
+}
+
+/// One in-place change: the member at a key path set to a value, or removed (`None`).
+type Edit<'a> = (&'a [&'a str], Option<&'a Value>);
+
+/// Write `want` to `p`. Applied as in-place `edits` of the current `text` when they reproduce
+/// `want` exactly, so the user's comments and formatting survive; otherwise (a shape the editor
+/// can't handle) as a fresh pretty-printed file, with a note when that drops comments.
+fn write_json(p: &Path, text: &str, edits: &[Edit], want: &Value) -> Result<()> {
+    let base = if text.trim().is_empty() { "{}\n" } else { text };
+    let edited = edits.iter().try_fold(base.to_string(), |t, (path, v)| crate::jsonc::set(&t, path, *v))
+        .filter(|t| serde_json::from_str::<Value>(&crate::resolve::modules::strip_jsonc(t)).ok().as_ref() == Some(want));
     if let Some(d) = p.parent() { std::fs::create_dir_all(d)?; }
-    if p.exists() { std::fs::copy(p, p.with_extension("json.nexusweave-bak"))?; }
-    std::fs::write(p, serde_json::to_string_pretty(v)? + "\n")?;
+    let b = backup(p)?;
+    match edited {
+        Some(t) => std::fs::write(p, t)?,
+        None => {
+            std::fs::write(p, serde_json::to_string_pretty(want)? + "\n")?;
+            if crate::resolve::modules::strip_jsonc(text) != text && let Some(b) = b {
+                eprintln!("  note: comments in {} could not be kept; the original is saved as {}", p.display(), b.display());
+            }
+        }
+    }
     Ok(())
 }
 
 fn set_json_server(p: &Path, outer: &str, entry: Option<Value>) -> Result<()> {
-    let mut v = read_json(p)?;
-    if !v.is_object() { v = json!({}); }
+    let (cur, text) = read_json(p)?;
+    let mut v = if cur.is_object() { cur.clone() } else { json!({}) };
     let obj = v.as_object_mut().unwrap();
-    let servers = obj.entry(outer).or_insert_with(|| json!({}));
-    if let Some(m) = servers.as_object_mut() {
-        m.remove(LEGACY_NAME);
-        match entry { Some(e) => { m.insert("nexusweave".into(), e); } None => { m.remove("nexusweave"); } }
+    // removing from a file that has no server table leaves it alone
+    if entry.is_some() || obj.contains_key(outer) {
+        let servers = obj.entry(outer).or_insert_with(|| json!({}));
+        if let Some(m) = servers.as_object_mut() {
+            m.remove(LEGACY_NAME);
+            match &entry { Some(e) => { m.insert("nexusweave".into(), e.clone()); } None => { m.remove("nexusweave"); } }
+        }
     }
-    write_json(p, &v)
+    if v == cur { return Ok(()); }
+    write_json(p, &text, &[(&[outer, LEGACY_NAME], None), (&[outer, "nexusweave"], entry.as_ref())], &v)
 }
 
 fn codex_toml(p: &Path, add: bool) -> Result<()> {
-    let s = std::fs::read_to_string(p).unwrap_or_default();
-    // drop any existing block
+    let s = read_config(p)?;
+    let out = codex_toml_text(&s, add.then(exe).as_deref());
+    if out == s { return Ok(()); }
+    if let Some(d) = p.parent() { std::fs::create_dir_all(d)?; }
+    backup(p)?;
+    std::fs::write(p, out)?;
+    Ok(())
+}
+
+/// `s` without our `[mcp_servers.nexusweave]` table (and its subtables such as `.env`, and the
+/// pre-rebrand name's), plus a fresh one for `exe` when given.
+fn codex_toml_text(s: &str, exe: Option<&str>) -> String {
+    let ours = |header: &str| {
+        let name = header.trim_start_matches('[').trim_end_matches(']').trim();
+        ["nexusweave", LEGACY_NAME].iter().any(|n| {
+            let t = format!("mcp_servers.{n}");
+            name == t || name.starts_with(&format!("{t}."))
+        })
+    };
     let mut out = String::new();
     let mut skip = false;
     for line in s.lines() {
         let t = line.trim();
-        if t.starts_with('[') { skip = t == "[mcp_servers.nexusweave]" || t == format!("[mcp_servers.{LEGACY_NAME}]"); }
+        if t.starts_with('[') { skip = ours(t.split('#').next().unwrap_or(t).trim()); }
         if !skip { out.push_str(line); out.push('\n'); }
     }
-    if add {
+    if let Some(exe) = exe {
         if !out.ends_with("\n\n") && !out.is_empty() { out.push('\n'); }
-        out.push_str(&format!("[mcp_servers.nexusweave]\ncommand = {:?}\nargs = [\"serve\"]\n", exe()));
+        out.push_str(&format!("[mcp_servers.nexusweave]\ncommand = {}\nargs = [\"serve\"]\n", toml::Value::String(exe.to_string())));
     }
-    if let Some(d) = p.parent() { std::fs::create_dir_all(d)?; }
-    std::fs::write(p, out)?;
-    Ok(())
+    out
 }
 
 fn apply(agent: &Agent, h: &Path, add: bool) -> Result<String> {
@@ -140,9 +197,14 @@ pub fn install(targets: &[String], print: bool, hooks: bool) -> Result<()> {
 fn claude_hook(h: &Path, add: bool) -> Result<String> {
     let p = h.join(".claude/settings.json");
     if !add && !p.exists() { return Ok(p.display().to_string()); }
-    let cur = read_json(&p)?;
+    let (cur, text) = read_json(&p)?;
     let next = crate::hook::set_claude_hook(&cur, &exe(), add);
-    if next != cur { write_json(&p, &next)?; }
+    if next != cur {
+        let pre = next.get("hooks").and_then(|h| h.get("PreToolUse"));
+        let mut edits: Vec<Edit> = vec![(&["hooks", "PreToolUse"], pre)];
+        if next.get("hooks").is_none() { edits.push((&["hooks"], None)); }
+        write_json(&p, &text, &edits, &next)?;
+    }
     Ok(p.display().to_string())
 }
 
@@ -156,4 +218,64 @@ pub fn uninstall(targets: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::codex_toml_text;
+    use serde_json::json;
+
+    #[test]
+    fn json_configs_keep_comments() {
+        let dir = std::env::temp_dir().join(format!("nexusweave-install-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("settings.json");
+        let orig = "{\n  // my theme\n  \"theme\": \"dark\",\n  \"mcpServers\": {\n    \"xgraph\": { \"command\": \"/old\" }, // legacy\n    \"other\": { \"command\": \"keep\" },\n  },\n}\n";
+        std::fs::write(&p, orig).unwrap();
+        super::set_json_server(&p, "mcpServers", Some(json!({"command": "/bin/nw", "args": ["serve"]}))).unwrap();
+        let installed = std::fs::read_to_string(&p).unwrap();
+        assert!(installed.contains("// my theme") && !installed.contains("xgraph"), "{installed}");
+        let (v, _) = super::read_json(&p).unwrap();
+        assert_eq!(v["mcpServers"]["nexusweave"]["command"], "/bin/nw");
+        assert_eq!(v["mcpServers"]["other"]["command"], "keep");
+        assert_eq!(std::fs::read_to_string(dir.join("settings.json.nexusweave-bak")).unwrap(), orig, "backup of the original");
+        super::set_json_server(&p, "mcpServers", None).unwrap();
+        let removed = std::fs::read_to_string(&p).unwrap();
+        assert!(removed.contains("// my theme") && !removed.contains("nexusweave"), "{removed}");
+        // uninstalling from a file without a server table changes nothing
+        let bare = dir.join("bare.json");
+        std::fs::write(&bare, "{ \"a\": 1 } // x\n").unwrap();
+        super::set_json_server(&bare, "mcpServers", None).unwrap();
+        assert_eq!(std::fs::read_to_string(&bare).unwrap(), "{ \"a\": 1 } // x\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn claude_hook_keeps_comments() {
+        let home = std::env::temp_dir().join(format!("nexusweave-hookhome-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let p = home.join(".claude/settings.json");
+        let orig = "{\n  // keep me\n  \"model\": \"x\",\n  \"hooks\": {\n    \"Stop\": [] // mine\n  }\n}\n";
+        std::fs::write(&p, orig).unwrap();
+        super::claude_hook(&home, true).unwrap();
+        let added = std::fs::read_to_string(&p).unwrap();
+        assert!(added.contains("// keep me") && added.contains("// mine") && added.contains("hook pretool"), "{added}");
+        super::claude_hook(&home, false).unwrap();
+        let removed = std::fs::read_to_string(&p).unwrap();
+        assert!(removed.contains("// keep me") && removed.contains("\"Stop\": [] // mine") && !removed.contains("PreToolUse"), "{removed}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn codex_table_replaced_with_subtables() {
+        let cfg = "model = \"o3\"\n\n[mcp_servers.nexusweave]\ncommand = \"/old\"\n\n[mcp_servers.nexusweave.env]\nX = \"1\"\n\n[mcp_servers.xgraph]\ncommand = \"/x\"\n\n[mcp_servers.other]\ncommand = \"keep\"\n";
+        let removed = codex_toml_text(cfg, None);
+        assert!(!removed.contains("nexusweave") && !removed.contains("xgraph") && !removed.contains("X = "), "{removed}");
+        assert!(removed.contains("[mcp_servers.other]") && removed.contains("model = \"o3\""));
+        let added = codex_toml_text(cfg, Some(r"C:\Users\me\nexusweave.exe"));
+        let v: toml::Value = toml::from_str(&added).expect("valid TOML");
+        assert_eq!(v["mcp_servers"]["nexusweave"]["command"].as_str(), Some(r"C:\Users\me\nexusweave.exe"));
+        assert!(v["mcp_servers"]["nexusweave"].get("env").is_none());
+        assert_eq!(codex_toml_text(&added, Some(r"C:\Users\me\nexusweave.exe")), added, "install is idempotent");
+    }
 }

@@ -107,8 +107,14 @@ pub fn strip_jsonc(s: &str) -> String {
             continue;
         }
         if c == b',' {
+            // a trailing comma, possibly followed by comments: `[1, // last\n]`
             let mut j = i + 1;
-            while j < b.len() && (b[j] as char).is_whitespace() { j += 1; }
+            loop {
+                while j < b.len() && (b[j] as char).is_whitespace() { j += 1; }
+                if b[j..].starts_with(b"//") { while j < b.len() && b[j] != b'\n' { j += 1; } }
+                else if b[j..].starts_with(b"/*") { j += 2; while j + 1 < b.len() && !(b[j] == b'*' && b[j + 1] == b'/') { j += 1; } j = (j + 2).min(b.len()); }
+                else { break; }
+            }
             if j < b.len() && (b[j] == b'}' || b[j] == b']') { i += 1; continue; }
         }
         out.push(c as char);

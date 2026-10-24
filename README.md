@@ -234,9 +234,9 @@ Measured against compiler-grade SCIP indexes on 7 pinned repos (`bench/`, run wi
 
 | language | precision | recall | repos |
 |---|---:|---:|---|
-| TypeScript | 100.0% | 89.1% | hono, codegraph |
+| TypeScript | 100.0% | 89.4% | hono, codegraph |
 | JavaScript | 100.0% | 89.8% | express |
-| Python | 99.8% | 80.5% | flask, httpx |
+| Python | 99.9% | 84.3% | flask, httpx |
 | Go | 99.9% | 96.5% | gin |
 | Rust | 98.6% | 81.8% | ripgrep |
 
@@ -266,7 +266,8 @@ nexusweave bench-sync <file>  # hidden: time warm incremental syncs after editin
 ```
 
 CI (`.github/workflows/ci.yml`) runs on pushes to `main` and on pull requests: tests on Linux,
-macOS and Windows, plus the accuracy gate. `pr-impact.yml` comments `nexusweave diff-impact` on PRs.
+macOS and Windows, plus the accuracy gate. `pr-impact.yml` builds a `nexusweave diff-impact` report for each PR
+(read-only token) and `pr-impact-comment.yml` posts it as a comment, fork PRs included.
 
 `tests/fixtures/<lang>/expect.txt` lists `src -> target` edges that must exist and
 `!src -> name` edges that must not. Add a case there when you fix resolution for a pattern.

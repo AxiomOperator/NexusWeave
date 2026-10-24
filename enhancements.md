@@ -34,7 +34,7 @@ Every limitation in section 2 and every roadmap item in section 3 is now impleme
 | 3.7 event topics | ✅ | see section 2 row | — |
 | 3.8 analysis views | ✅ | `src/analyze.rs`, viewer Insights tab | — |
 | 3.9 viewer upgrades | ✅ | Routes, Flow (trails, Markdown/Mermaid export), file code view | — |
-| 3.10 shared daemon | ✅ | `src/daemon.rs` (Unix; Windows serves in-process) | — |
+| 3.10 shared daemon | ✅ | `src/daemon.rs` (Unix socket; on Windows token-authenticated loopback TCP) | — |
 | 3.11 more languages | ✅ | `extract/{kotlin,swift,dart,scala,lua,sfc}.rs` | fixtures + warm-sync equivalence for all seven |
 | 3.12 distribution | ✅ | `release.yml`, `scripts/install.sh`, `nexusweave upgrade`, CI on Linux/macOS/Windows | — |
 | 3.13 Claude Code hook | ✅ | `src/hook.rs`, `nexusweave install --hooks` | — |
@@ -276,9 +276,10 @@ The benchmark also caught several problems in the scorer and the ground truth, a
 
 | gap | where | idea |
 |---|---|---|
-| Property reads of `@property` / getters (`self.debug`, `url.port`) | Python ~25% of misses; TS accessors are excluded from the score | model property reads of accessor members as `reads` edges |
+| ~~Names read as values~~ ✅ | Python: `cls.handler` / `tasks.add` reads, `except E:` / `raise E`, class qualifiers (`Cls.make()`), returned closures, tuples/sets and assignment right sides as value positions, properties passed as arguments | done: `reads` edges may target methods, functions and classes (never by name guessing); flask recall **75.7 → 83.3%**, httpx **82.5 → 84.8%**, hono 79.1 → 79.9%, precision unchanged or higher (fixture `py/app/values.py`) |
+| Property writes (`self.debug = x` through a setter) | Python | a `writes` ref from assignment targets that only resolves to properties |
 | Unknown receivers in tests (`response.url`, `client.timeout`, `c.req.param()`) | httpx, hono | return-type stubs for test clients (enhancement 6), and inferring the types of untyped parameters from call sites |
-| Low-confidence name fallback for unknown receivers is 18% precise on flask and 74% on gin | Python, Go | drop or demote it for those languages, or only allow it when the receiver name matches the owner type |
+| ~~Low-confidence name fallback for unknown receivers~~ re-measured | Python, Go | the 18% / 74% figures predate later fixes: the `<50` band is now 4/4 correct on flask and 14/17 on gin, so dropping it would lose more correct edges than wrong ones; kept |
 | Object-literal keys matching interface members (`{ mkdir: vi.fn() }`) | TS tests | contextual typing of object literals against a declared interface |
 
 ## 5. Review pass with NexusWeave itself
@@ -334,7 +335,13 @@ The token-efficiency claim holds for tool calls and large repos. On small repos 
 for cost. Next steps, each measurable with the harness:
 
 1. Size explore's budget to the repository: small repos get small answers.
-2. Make the answer self-sufficient enough that the follow-up `Read` isn't needed (or say so).
-3. List `nexusweave_explore` eagerly instead of behind `ToolSearch`.
-4. Harder tasks, where grep struggles: cross-file dispatch, callers through interfaces, impact
-   on large repos (vscode, django). Grade with an LLM judge as well as the keyword rubric.
+2. ✅ Say when the answer is self-sufficient: each file section's header now states "entire
+   file", or the exact line ranges shown and which symbols are only partly shown (to which line),
+   and the server instructions tell agents to read further only for those. Not yet re-measured.
+3. List `nexusweave_explore` eagerly instead of behind `ToolSearch` (client behavior; nothing to
+   change server-side).
+4. ✅ Harder tasks authored (`gin-render-impls`, `httpx-transport-dispatch`,
+   `flask-add-url-rule-impact`, `ripgrep-sink-dispatch`): implementations of interfaces/traits,
+   runtime transport dispatch, and impact through deferred calls, each fact checked at the pinned
+   commit. Not yet run (a full run is ~$20 of API usage). Still open: an LLM-judge grade
+   alongside the keyword rubric, and tasks on vscode / django.

@@ -106,11 +106,16 @@ fn want_for(kind: RefKind) -> fn(NodeKind) -> bool {
         RefKind::Instantiate => |k| k.is_type() || k == NodeKind::Function,
         RefKind::Extends | RefKind::Implements => |k| k.is_type(),
         RefKind::TypeRef => |k| k.is_type() || matches!(k, NodeKind::Namespace | NodeKind::Module | NodeKind::EnumMember),
-        // property reads only link to accessors / declared properties (fields would explode the graph)
-        RefKind::Read => |k| k == NodeKind::Property,
+        // member reads link to accessors / declared properties, to methods and functions read as
+        // values (`cls.handler`, `tasks.add.delay`) and to classes named as values (`except E:`,
+        // `Cls.make()`); never to plain fields (that would explode the graph). Reads never fall
+        // back to name guessing, so only names in scope, imports and known receivers resolve.
+        RefKind::Read => |k| k == NodeKind::Property || k.is_callable() || k.is_type() && k != NodeKind::TypeAlias,
         RefKind::Import => |k| k != NodeKind::File,
-        // a bare name passed as a value: a function, or a class (`isinstance(x, Foo)`, `register(Foo)`)
-        RefKind::Callback => |k| k.is_callable() || k.is_type() && k != NodeKind::TypeAlias,
+        // a name passed as a value: a function, or a class (`isinstance(x, Foo)`, `register(Foo)`),
+        // or a property whose getter runs right there (`decode(self.encoding)`); member reads in
+        // value positions are noted only this way (see `extract::drop_shadowed_reads`)
+        RefKind::Callback => |k| k.is_callable() || k.is_type() && k != NodeKind::TypeAlias || k == NodeKind::Property,
         RefKind::Overrides | RefKind::Dispatch | RefKind::Handles => |k| k.is_callable(),
         // raw emit sites are wired to listeners by the `triggers` synthesis, not by name resolution
         RefKind::Emit | RefKind::Triggers => |_| false,

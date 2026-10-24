@@ -290,6 +290,26 @@ impl<'a> Cx<'a> {
         for a in items { self.note_value(a); }
     }
 
+    /// A name read as a value where it can only mean a declaration (`except NoApp:`, `raise E1`,
+    /// the `AppContext` in `AppContext.from_environ()`): a `reads` ref, which resolves through
+    /// scope, imports and known receivers only, never by guessing.
+    pub fn note_read(&mut self, a: Node<'_>) {
+        match a.kind() {
+            "identifier" => {
+                let name = self.text(a);
+                if self.self_names.contains(&name) || self.var_type(name).is_some() || is_common_value(name) || self.is_local(name) { return; }
+                self.add_ref(RefKind::Read, name, None, a);
+            }
+            "attribute" | "member_expression" => {
+                if let Some((q, name)) = callee_parts(self, a) {
+                    let at = ["attribute", "property"].iter().find_map(|f| a.child_by_field_name(f)).unwrap_or(a);
+                    self.add_ref(RefKind::Read, name, q, at);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// One value position (an argument, an array element, an object value): a function or method
     /// named there is passed, not called.
     pub fn note_value(&mut self, a: Node<'_>) {
@@ -314,7 +334,9 @@ impl<'a> Cx<'a> {
                     // `this.save` / `views.index` pass functions; `cache.size` on a typed instance is a value read
                     if let Some((q, name)) = callee_parts(self, a)
                         && q.is_none_or(|q| self.self_names.contains(&q.trim()) || self.infer(q).is_none()) {
-                        self.add_ref(RefKind::Callback, name, q, a);
+                        // anchored on the member name, like every other member ref
+                        let at = ["attribute", "property", "field", "name"].iter().find_map(|f| a.child_by_field_name(f)).unwrap_or(a);
+                        self.add_ref(RefKind::Callback, name, q, at);
                     }
                 }
                 _ => {}
@@ -457,7 +479,18 @@ fn extract_src(lang: Lang, path: &str, src: &[u8]) -> FileExtraction {
     cx.scopes.push(Scope { node: 0, kind: NodeKind::File, name: String::new(), vars: HashMap::new(), ret: None, locals: HashSet::new() });
     if root.has_error() { cx.out.parse_errors = count_errors(root); }
     walk_children(h, root, &mut cx, 0);
+    drop_shadowed_reads(&mut cx.out.refs);
     cx.out
+}
+
+/// A member read in a value position (`sorted(xs, key=self.by_name)`) is also noted as a passed
+/// callback; keep the one `passes` edge rather than two edges for one expression.
+fn drop_shadowed_reads(refs: &mut Vec<ExRef>) {
+    let passed: HashSet<(u32, u32, &str)> = refs.iter().filter(|r| r.kind == RefKind::Callback).map(|r| (r.from, r.line, r.name.as_str())).collect();
+    if passed.is_empty() { return; }
+    let keep: Vec<bool> = refs.iter().map(|r| r.kind != RefKind::Read || !passed.contains(&(r.from, r.line, r.name.as_str()))).collect();
+    let mut i = 0;
+    refs.retain(|_| { i += 1; keep[i - 1] });
 }
 
 fn count_errors(root: Node<'_>) -> u32 {
@@ -512,6 +545,12 @@ pub fn walk<'t>(h: &dyn LangHooks, n: Node<'t>, cx: &mut Cx<'_>, depth: u32) {
         "arguments" | "argument_list" => cx.note_callbacks(n),
         // `[label, formatShell]`, `{ save, load: loadAll }`, `handlers = {"x": on_x}`
         "array" | "object" | "list" | "dictionary" if js_py => cx.note_callbacks(n),
+        // `for m in (cls.a, cls.b)`, `{on_a, on_b}`
+        "tuple" | "set" if cx.lang == Lang::Python => cx.note_callbacks(n),
+        // `request_class = Request`, `handler = self.on_save`: the value assigned is passed
+        "assignment" if cx.lang == Lang::Python => {
+            if let Some(r) = n.child_by_field_name("right").filter(|r| matches!(r.kind(), "identifier" | "attribute")) { cx.note_value(r); }
+        }
         // `this.poll.bind(this)` / `fn.call(ctx)` pass the function
         "call_expression" if js_py => {
             if let Some(f) = n.child_by_field_name("function") && f.kind() == "member_expression"

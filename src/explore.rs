@@ -353,6 +353,8 @@ impl Graph {
                 section.clear();
             }
             if section.is_empty() { continue; }
+            // say exactly what was shown, so the agent knows whether a follow-up read is needed
+            section.insert_str(section.find('\n').unwrap_or(0), &coverage(&ranges, lines.len() as u32, &syms));
             if let Some(seen) = &opts.seen {
                 let mut seen = seen.lock().unwrap();
                 let (todo, done) = seen.split(path, hash, &ranges);
@@ -573,6 +575,20 @@ fn pick_ranges(syms: &[(Sym, f64)], lines: &[&str], alloc: usize, anchor: Option
         }
     }
     (merged, names)
+}
+
+/// Header note for a file section: the whole file, or which lines, plus the symbols whose
+/// bodies were cut off (the only reason to read that file further).
+fn coverage(ranges: &[(u32, u32)], total: u32, syms: &[(Sym, f64)]) -> String {
+    let covered = |a: u32, b: u32| ranges.iter().any(|&(x, y)| x <= a && b <= y);
+    if covered(1, total.max(1)) { return " (entire file)".to_string(); }
+    let spans = ranges.iter().map(|(a, b)| if a == b { a.to_string() } else { format!("{a}-{b}") }).collect::<Vec<_>>().join(", ");
+    let mut cut: Vec<String> = syms.iter().map(|(s, _)| s)
+        .filter(|s| ranges.iter().any(|&(a, b)| (a..=b).contains(&s.start_line)) && !covered(s.start_line, s.end_line))
+        .map(|s| format!("{} (to line {})", s.name, s.end_line)).collect();
+    cut.dedup();
+    let cut = if cut.is_empty() { " — every symbol shown is complete".to_string() } else { format!(" — partly shown: {}", cut.into_iter().take(6).collect::<Vec<_>>().join(", ")) };
+    format!(" (lines {spans} of {total}{cut})")
 }
 
 fn render_file(path: &str, lines: &[&str], ranges: &[(u32, u32)], names: &[String], lang: &str) -> String {

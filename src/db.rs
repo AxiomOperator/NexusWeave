@@ -150,11 +150,42 @@ pub fn adopt_legacy(root: &Path) -> bool {
 pub type FileId = (u64, u64);
 
 pub fn file_id(path: &Path) -> Option<FileId> {
-    let m = std::fs::metadata(path).ok()?;
     #[cfg(unix)]
-    { use std::os::unix::fs::MetadataExt; Some((m.dev(), m.ino())) }
-    #[cfg(not(unix))]
-    { m.created().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| (d.as_secs(), d.subsec_nanos() as u64)) }
+    { use std::os::unix::fs::MetadataExt; let m = std::fs::metadata(path).ok()?; Some((m.dev(), m.ino())) }
+    #[cfg(windows)]
+    { windows_file_id(path) }
+    #[cfg(not(any(unix, windows)))]
+    { let m = std::fs::metadata(path).ok()?; m.created().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| (d.as_secs(), d.subsec_nanos() as u64)) }
+}
+
+/// Volume serial number and NTFS file index: what a rename keeps and a new file never shares.
+/// (Creation time is no substitute: NTFS "tunneling" gives a file created or renamed into a
+/// just-vacated name the old file's creation time.)
+#[cfg(windows)]
+fn windows_file_id(path: &Path) -> Option<FileId> {
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    #[derive(Default)]
+    struct ByHandleFileInformation {
+        attributes: u32,
+        creation_time: [u32; 2],
+        last_access_time: [u32; 2],
+        last_write_time: [u32; 2],
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+    unsafe extern "system" {
+        fn GetFileInformationByHandle(file: *mut std::ffi::c_void, info: *mut ByHandleFileInformation) -> i32;
+    }
+    // std opens with FILE_SHARE_READ | WRITE | DELETE, so this never blocks a concurrent swap
+    let f = std::fs::File::open(path).ok()?;
+    let mut info = ByHandleFileInformation::default();
+    if unsafe { GetFileInformationByHandle(f.as_raw_handle(), &mut info) } == 0 { return None; }
+    Some((info.volume_serial_number as u64, (info.file_index_high as u64) << 32 | info.file_index_low as u64))
 }
 
 impl Db {
@@ -377,3 +408,28 @@ pub fn intern(conn: &Connection, s: Option<&str>) -> Result<Option<i64>> {
 
 /// SQL joins exposing a ref `r`'s interned strings as `sq.s` (qualifier) and `sr.s` (receiver type).
 pub const REF_STRS: &str = "LEFT JOIN strs sq ON sq.id = r.qual_id LEFT JOIN strs sr ON sr.id = r.recv_id";
+
+#[cfg(test)]
+mod tests {
+    use super::file_id;
+
+    /// What `is_replaced` relies on: a rename keeps a file's identity, and a new file swapped into
+    /// the old name (how `nexusweave index` replaces graph.db) gets a different one, at once.
+    #[test]
+    fn file_identity_follows_the_swap() {
+        let dir = std::env::temp_dir().join(format!("nexusweave-fileid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (live, fresh, moved) = (dir.join("graph.db"), dir.join("graph.db.tmp"), dir.join("moved.db"));
+        std::fs::write(&live, b"old").unwrap();
+        let old = file_id(&live).expect("identity of an existing file");
+        assert_eq!(file_id(&live), Some(old), "stable");
+        std::fs::rename(&live, &moved).unwrap();
+        assert_eq!(file_id(&moved), Some(old), "a rename keeps the identity");
+        assert_eq!(file_id(&live), None, "nothing at the old name");
+        std::fs::rename(&moved, &live).unwrap();
+        std::fs::write(&fresh, b"new").unwrap();
+        std::fs::rename(&fresh, &live).unwrap();
+        assert_ne!(file_id(&live), Some(old), "a file swapped in is a different file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

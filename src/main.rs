@@ -90,8 +90,6 @@ enum Cmd {
 }
 
 /// Escape `%`, `_` and `\` for a `LIKE … ESCAPE '\'` prefix match.
-fn like_escape(s: &str) -> String { s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_") }
-
 fn root_arg(p: Option<PathBuf>) -> Result<PathBuf> {
     let p = p.unwrap_or_else(|| PathBuf::from("."));
     Ok(nexusweave::canonical(&p)?)
@@ -237,7 +235,6 @@ fn main() -> Result<()> {
         }
         Cmd::Daemon { action, path } => {
             let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).ok_or_else(|| anyhow::anyhow!("no index here; run `nexusweave init`"))? };
-            #[cfg(unix)]
             match action.as_deref().unwrap_or("status") {
                 "run" => daemon::run(&root)?,
                 "status" => match daemon::connect(&root) {
@@ -250,8 +247,6 @@ fn main() -> Result<()> {
                 },
                 other => bail!("unknown daemon action `{other}` (run | status | stop)"),
             }
-            #[cfg(not(unix))]
-            { let _ = (action, root); bail!("the shared daemon needs Unix sockets; `nexusweave serve` runs in-process on this platform"); }
         }
         Cmd::Watch { path } => {
             let root = match path { Some(p) => root_arg(Some(p))?, None => query::find_root(Path::new(".")).unwrap_or(root_arg(None)?) };

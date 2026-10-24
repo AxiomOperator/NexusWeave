@@ -1,7 +1,6 @@
 //! NexusWeave — connected code intelligence for AI agents.
 
 pub mod analyze;
-#[cfg(unix)]
 pub mod daemon;
 pub mod db;
 pub mod explore;
@@ -10,6 +9,7 @@ pub mod hook;
 pub mod impact;
 pub mod index;
 pub mod install;
+pub mod jsonc;
 pub mod lang;
 pub mod mcp;
 pub mod model;
@@ -39,3 +39,6 @@ pub fn canonical(p: impl AsRef<std::path::Path>) -> std::io::Result<std::path::P
 pub fn count(n: usize, noun: &str) -> String {
     if n == 1 { format!("1 {noun}") } else { format!("{n} {noun}s") }
 }
+
+/// `s` with SQL LIKE wildcards made literal, for a pattern run with `ESCAPE '\'`.
+pub fn like_escape(s: &str) -> String { s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_") }

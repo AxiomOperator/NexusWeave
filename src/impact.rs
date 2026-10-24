@@ -39,9 +39,13 @@ pub fn parse_diff(diff: &str) -> BTreeMap<String, Vec<(u32, u32)>> {
 
 /// `git diff -U0 <base>` (working tree vs `base`, staged and unstaged) in `root`.
 pub fn git_diff(root: &Path, base: &str, staged_only: bool) -> Result<String> {
+    // `base` can come from an MCP client: an option-shaped value (`--output=<file>`) would make
+    // git write wherever it says
+    if !staged_only && (base.is_empty() || base.starts_with('-')) { anyhow::bail!("invalid git ref {base:?}"); }
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(root).args(["diff", "-U0", "--no-color", "--no-ext-diff"]);
-    if staged_only { cmd.arg("--cached"); } else { cmd.arg(base); }
+    // `--` after the ref: it is always read as a revision, never as a path
+    if staged_only { cmd.arg("--cached"); } else { cmd.arg(base).arg("--"); }
     let out = cmd.output().context("running git diff")?;
     if !out.status.success() { anyhow::bail!("git diff failed: {}", String::from_utf8_lossy(&out.stderr).trim()); }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -208,6 +212,17 @@ pub fn render(r: &Report) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn option_shaped_base_is_rejected() {
+        let dir = std::env::temp_dir().join(format!("nexusweave-gitdiff-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("written");
+        let err = super::git_diff(&dir, &format!("--output={}", out.display()), false).unwrap_err();
+        assert!(err.to_string().contains("invalid git ref"), "{err:#}");
+        assert!(!out.exists(), "git must not have run");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn parses_hunks() {
         let d = "diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -3,0 +4,2 @@\n+a\n+b\n@@ -10 +12 @@\n-c\n+d\n@@ -20,3 +22,0 @@\n";

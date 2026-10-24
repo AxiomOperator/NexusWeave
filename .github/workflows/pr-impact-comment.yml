@@ -1,0 +1,38 @@
+name: pr-impact-comment
+
+# Posts the report built by pr-impact.yml as a PR comment, including on pull requests from forks.
+# It never checks out or runs PR code; the artifact is untrusted data: the PR number is checked
+# against the run's head commit, and the report is only ever used as a comment body.
+on:
+  workflow_run:
+    workflows: [pr-impact]
+    types: [completed]
+
+permissions:
+  actions: read
+  pull-requests: write
+
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr-impact
+          path: report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          pr=$(head -c 20 report/pr-number | tr -d '[:space:]')
+          case "$pr" in ''|*[!0-9]*) echo "invalid PR number"; exit 1 ;; esac
+          [ "$(gh pr view "$pr" --json headRefOid -q .headRefOid)" = "$HEAD_SHA" ] \
+            || { echo "PR #$pr is not at $HEAD_SHA (stale run, or a mismatched number): not commenting"; exit 0; }
+          # GitHub caps comment bodies at 65,536 characters
+          { echo "<!-- nexusweave-impact -->"; head -c 60000 report/impact.md; } > body.md
+          gh pr comment "$pr" --edit-last --body-file body.md || gh pr comment "$pr" --body-file body.md

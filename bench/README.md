@@ -72,11 +72,11 @@ Generated files outside the checkout (scip-go's build-cache test mains) are drop
 
 | repo | lang | truth refs | extracted | precision | recall |
 |---|---|---:|---:|---:|---:|
-| hono | typescript | 9,427 | 94.9% | 99.9% | 79.1% |
-| codegraph | typescript | 19,925 | 95.9% | 100.0% | 93.9% |
+| hono | typescript | 9,427 | 95.8% | 99.9% | 79.9% |
+| codegraph | typescript | 19,925 | 96.0% | 100.0% | 94.0% |
 | express | javascript | 343 | 91.5% | 100.0% | 89.8% |
-| flask | python | 1,143 | 78.3% | 100.0% | 75.7% |
-| httpx | python | 2,833 | 89.2% | 99.8% | 82.5% |
+| flask | python | 1,143 | 85.9% | 100.0% | 83.3% |
+| httpx | python | 2,833 | 91.5% | 99.8% | 84.8% |
 | gin | go | 5,564 | 98.8% | 99.9% | 96.5% |
 | ripgrep | rust | 19,393 | 92.2% | 98.6% | 81.8% |
 

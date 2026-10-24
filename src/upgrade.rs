@@ -50,8 +50,15 @@ pub fn asset_name(target: &str) -> String {
     format!("nexusweave-{target}.{}", if target.contains("windows") { "zip" } else { "tar.gz" })
 }
 
-fn parse_ver(v: &str) -> Vec<u64> {
-    v.trim_start_matches('v').split(['.', '-', '+']).take(3).map(|p| p.parse().unwrap_or(0)).collect()
+/// `(major, minor, patch)`, then whether it is a release (a pre-release sorts before its release),
+/// then the pre-release text; build metadata (`+…`) is ignored.
+fn parse_ver(v: &str) -> (Vec<u64>, bool, String) {
+    let v = v.trim_start_matches('v');
+    let v = v.split_once('+').map_or(v, |(a, _)| a);
+    let (core, pre) = v.split_once('-').map_or((v, ""), |(a, b)| (a, b));
+    let mut nums: Vec<u64> = core.split('.').take(3).map(|p| p.parse().unwrap_or(0)).collect();
+    nums.resize(3, 0);
+    (nums, pre.is_empty(), pre.to_string())
 }
 
 pub fn newer(latest: &str, current: &str) -> bool { parse_ver(latest) > parse_ver(current) }
@@ -87,7 +94,6 @@ pub fn run(version: Option<&str>, check: bool, force: bool) -> Result<()> {
     let _ = std::fs::remove_dir_all(&tmp);
     let exe = res?;
     println!("upgraded nexusweave {current} → {tag} ({})", exe.display());
-    #[cfg(unix)]
     if crate::daemon::connect(&std::env::current_dir()?).is_some() {
         println!("note: a running `nexusweave daemon` keeps the old version until it restarts (`nexusweave daemon stop`)");
     }
@@ -180,6 +186,11 @@ mod tests {
         assert!(newer("v1.0.0", "0.9.9"));
         assert!(!newer("v0.1.0", "0.1.0"));
         assert!(!newer("0.1.0", "0.2.0"));
+        assert!(newer("v0.2.0", "0.2.0-rc1"), "a release is newer than its pre-release");
+        assert!(!newer("v0.2.0-rc1", "0.2.0"));
+        assert!(newer("v0.2.0-rc2", "0.2.0-rc1"));
+        assert!(!newer("v0.2.0+build5", "0.2.0"));
+        assert!(newer("v0.2", "0.1.9"));
     }
 
     #[test]

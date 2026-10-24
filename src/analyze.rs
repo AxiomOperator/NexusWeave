@@ -148,7 +148,7 @@ impl Graph {
              WHERE f.is_test = 0 AND (n.kind IN (19, 20)
                 OR (n.kind = 9 AND n.name = 'main')
                 OR (n.exported = 1 AND n.kind IN (3, 4, 5, 6, 9) AND n.parent_id IN (SELECT id FROM nodes WHERE kind = 0)
-                    AND (f.path LIKE '%index.%' OR f.path LIKE '%/lib.rs' OR f.path = 'lib.rs' OR f.path LIKE '%__init__.py'
+                    AND (f.path LIKE '%index.%' OR f.path LIKE '%/lib.rs' OR f.path = 'lib.rs' OR f.path LIKE '%\\_\\_init\\_\\_.py' ESCAPE '\\'
                          OR f.path LIKE '%/main.%' OR f.path LIKE 'main.%')))
              ORDER BY n.kind DESC, f.path, n.start_line LIMIT ?1");
         let mut st = self.db.conn.prepare(&sql)?;

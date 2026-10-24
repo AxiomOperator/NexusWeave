@@ -1,12 +1,13 @@
 name: pr-impact
 
-# Comments a change-impact report (changed symbols, callers, routes, tests to run) on pull requests.
+# Builds a change-impact report (changed symbols, callers, routes, tests to run) for a pull request.
+# This job runs the PR's code, so it gets a read-only token (fork PRs get one regardless);
+# pr-impact-comment.yml posts the uploaded report from a trusted context.
 on:
   pull_request:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   impact:
@@ -17,16 +18,19 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
+      - run: cargo build --release --locked
       - name: Impact report
-        run: |
-          ./target/release/nexusweave init -q
-          ./target/release/nexusweave diff-impact --base "origin/${{ github.base_ref }}" > impact.md
-          cat impact.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Comment
         env:
-          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          { echo "<!-- nexusweave-impact -->"; cat impact.md; } > body.md
-          gh pr comment "${{ github.event.pull_request.number }}" --edit-last --body-file body.md \
-            || gh pr comment "${{ github.event.pull_request.number }}" --body-file body.md
+          mkdir -p report
+          ./target/release/nexusweave init -q
+          ./target/release/nexusweave diff-impact --base "origin/$BASE_REF" > report/impact.md
+          cat report/impact.md >> "$GITHUB_STEP_SUMMARY"
+          echo "$PR_NUMBER" > report/pr-number
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr-impact
+          path: report/
+          retention-days: 3
