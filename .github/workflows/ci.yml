@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # run on any branch from the Actions tab or `gh workflow run ci --ref <branch>`
+  workflow_dispatch:
 
 jobs:
   test:
