@@ -66,9 +66,8 @@ enum Cmd {
     /// Register the MCP server with coding agents (Claude Code, Cursor, Codex, ...)
     Install { #[arg(long)] target: Vec<String>, #[arg(long)] print: bool,
               #[arg(long, help = "also add a Claude Code PreToolUse hook that suggests nexusweave_explore for symbol greps")] hooks: bool,
-              #[arg(long, help = "also add a NexusWeave section to the agents' global instruction files (CLAUDE.md, AGENTS.md, GEMINI.md)")] instructions: bool,
               #[arg(long, help = "also allow NexusWeave's MCP tools in Claude Code without a permission prompt")] allow: bool,
-              #[arg(long, help = "print the agent instruction section that --instructions installs")] print_instructions: bool },
+              #[arg(long, hide = true, help = "print the agent instruction text the evaluation harness tests")] print_instructions: bool },
     /// Remove the MCP server registration (and the Claude Code hook)
     Uninstall { #[arg(long)] target: Vec<String> },
     /// Replace this binary with the latest GitHub release (checksum-verified)
@@ -267,7 +266,7 @@ fn main() -> Result<()> {
             ui::serve(&root, port, !no_open)?;
         }
         Cmd::Install { print_instructions: true, .. } => println!("{}", install::SECTION),
-        Cmd::Install { target, print, hooks, instructions, allow, .. } => install::install(&target, print, install::Extras { hooks, instructions, allow })?,
+        Cmd::Install { target, print, hooks, allow, .. } => install::install(&target, print, install::Extras { hooks, allow })?,
         Cmd::Upgrade { version, check, force } => upgrade::run(version.as_deref(), check, force)?,
         Cmd::Hook { event } => match event.as_str() {
             "pretool" => hook::pretool()?,

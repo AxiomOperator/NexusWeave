@@ -187,8 +187,6 @@ fn selected(targets: &[String], h: &Path) -> Vec<&'static Agent> {
 pub struct Extras {
     /// Claude Code PreToolUse hint hook on Grep/Glob
     pub hooks: bool,
-    /// a marked NexusWeave section in the agents' global instruction files
-    pub instructions: bool,
     /// allow NexusWeave's MCP tools in Claude Code without a permission prompt
     pub allow: bool,
 }
@@ -217,14 +215,6 @@ pub fn install(targets: &[String], print: bool, extras: Extras) -> Result<()> {
             Err(e) => eprintln!("✗ Claude Code hook — {e:#}"),
         }
     }
-    if extras.instructions {
-        for (name, p) in instruction_files(&h) {
-            match set_section(&p, true) {
-                Ok(_) => eprintln!("✓ {name} instructions — {}", p.display()),
-                Err(e) => eprintln!("✗ {name} instructions — {e:#}"),
-            }
-        }
-    }
     if extras.allow {
         match claude_allow(&h, true) {
             Ok(p) => eprintln!("✓ Claude Code permissions — {p} (NexusWeave tools allowed)"),
@@ -235,6 +225,9 @@ pub fn install(targets: &[String], print: bool, extras: Extras) -> Result<()> {
     Ok(())
 }
 
+// An instruction-file section earlier builds could install (`--instructions`, removed after it
+// measurably raised agent cost, enhancements.md §8); uninstall still cleans it up. The text stays
+// available to the evaluation harness (`install --print-instructions`).
 const SECTION_START: &str = "<!-- nexusweave:start (managed by `nexusweave install --instructions`; `nexusweave uninstall` removes it) -->";
 const SECTION_END: &str = "<!-- nexusweave:end -->";
 pub const SECTION: &str = "## NexusWeave
