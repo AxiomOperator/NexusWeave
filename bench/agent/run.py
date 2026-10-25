@@ -55,7 +55,7 @@ DENY = ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Agent
 lock = threading.Lock()
 
 
-SUITES = {"questions": "agent/tasks.toml", "impact": "agent/impact_tasks.toml"}
+SUITES = {"questions": "agent/tasks.toml", "impact": "agent/impact_tasks.toml", "impact-large": "agent/impact_large_tasks.toml"}
 SUITE = "questions"
 
 

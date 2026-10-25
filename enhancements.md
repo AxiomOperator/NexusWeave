@@ -526,3 +526,19 @@ cost, NexusWeave is neutral here and cheaper than codegraph (+19%).
 
 Where accuracy might still matter, untested: tasks too large to verify by reading every hit
 (hundreds of sites, transitive impact several hops deep), or agents with a smaller context budget.
+
+**Directive server instructions** (follow-up to close the tool-call gap): the MCP instructions and
+the `explore` description now say what codegraph's do: shown source is Read-equivalent, don't
+re-open those files or re-verify with Grep, call explore again for more. Pilot (24 sessions, same
+baseline): tool calls **−38.0%** (−47.7 … −26.9; codegraph −43.9%), Reads per session **1.33**
+(codegraph 1.6, before 2.6), but cost **+18.7%** (+4.9 … +36.0) and uncached input +41.7%: agents
+call explore more (39 calls in 24 sessions) and each answer is full-price input. The gap in tool
+calls is mostly closed; it is bought with cost. Kept as the default (it matches codegraph's
+behaviour and makes sessions shorter); revert the instruction text if per-token cost matters more.
+
+**Large impact tier** (`impact_tasks.py --tier large`: 50–250 sites in ≥6 files; 6 targets, up to
+138 sites and 41 same-named rivals; 3 conditions × 2 = 36 sessions, ~$13): recall **100%** for all
+three (grep alone included) on every task; precision NexusWeave 93.9%, baseline 92.5%, codegraph
+97.4% (the spread comes from one task, rack's `call` with 41 rivals: 77% / 67% / 97%); cost within
+2% of each other. Even at this size agents enumerate and verify every hit. The benchmark that was
+meant to reward graph accuracy shows no answer-quality advantage for NexusWeave at either scale.

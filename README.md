@@ -257,6 +257,7 @@ time, grades answers by keyword rubric and optionally by an LLM judge (`--judge`
 | 24 tasks, 7 repos up to 1.2k files | 96 | +3.9% (−6 … +16) | −24.8% (−36 … −13) | −4.6% | equal |
 | 8 tasks on django and vscode | 64 | +17.0% (+6.5 … +27.6) | −46.5% (−60 … −33) | −15% | equal |
 
+| 6 large impact tasks (50–138 sites) | 36 | −0.1% | +6% | ±0% | recall 100% for all; precision 93.9% vs 92.5% (codegraph 97.4%) |
 | 13 call-site impact tasks (graded vs compiler truth) | 78 | −0.9% (−25 … +13) | −3.9% | +9.8% | site recall 99.4% vs 98.4%, precision 96.3% vs 96.4% |
 
 NexusWeave saved money on codegraph's tasks (−24% and −32% in two runs) and cost more nearly
