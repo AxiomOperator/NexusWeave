@@ -388,7 +388,7 @@ Done: `nexusweave.json` (extensions, exclude, include, deprioritize); `install -
 rule); Kiro and VS Code install targets; frontend page routes and `navigates` edges (React Router,
 Vue Router, Angular route objects, Next.js / Nuxt / SvelteKit file routes), fixture `react`.
 
-Still behind codegraph: language count (16 vs ~40), backend routes for Drupal / Play /
+**Deferred by decision (2026-10-24), not planned for this pass:** the remaining differences from codegraph: language count (16 vs ~40), backend routes for Drupal / Play /
 Axum-actix-Rocket / Vapor / Astro, mobile bridging (Swift↔Objective-C, React Native), an npm-style
 library API, signed release provenance, and its published agent-efficiency numbers.
 
@@ -445,3 +445,14 @@ wall time, with answer quality unchanged. The cost driver is the same everywhere
 is full-price uncached input that outweighs the reading it replaces. The next lever to test is a
 more compact answer on large repos (signatures and call sites instead of whole bodies), measured
 with `run.py --compare`; smaller budgets alone (§8, budget runs) did not help on small repos.
+
+## 9. Status at the end of the 2026-10-24 review pass
+
+- **Resolved:** every review finding (security, correctness, platform, CI) and every approved
+  improvement in sections 5b–8, each with tests and CI on Linux, macOS and Windows.
+- **Resolved by measurement:** the re-read gap (no redundant re-reads exist; §6); the instruction
+  section (`install --instructions`) stays opt-in and is documented as not saving cost (§8);
+  smaller explore budgets were tried and reverted (§8); "does it save cost" is answered with
+  repeated paired runs (§8).
+- **Deferred by decision, not open defects:** the codegraph parity items in §7, ground truth for
+  Java / C# / Kotlin / Swift / Dart / Scala / PHP / Lua, rustfmt in CI, and a first release tag.

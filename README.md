@@ -268,7 +268,7 @@ Measured against compiler-grade SCIP indexes on 9 pinned repos (`accuracy = fals
 | C | 98.7% | 70.7% | zlib |
 | Ruby | 98.7% | 85.5% | rack |
 
-Java, C#, Kotlin, Swift, Dart, Scala, PHP and Lua are covered by fixture tests only so far.
+Java, C#, Kotlin, Swift, Dart, Scala, PHP and Lua are covered by fixture tests (compiler ground truth for them is deferred; see `enhancements.md` §9).
 
 With a SCIP index present: hono 100% / 84.3%, ripgrep 99.2% / 91.6%.
 
