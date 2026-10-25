@@ -2,41 +2,46 @@
 # `sites`: every reference of the target outside imports, as path:line.
 
 [[task]]
-id = "hono-impact-match"
-repo = "hono"
-kind = "impact"
-prompt = "If the signature of `Router.match` (defined at src/router.ts:51) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
-rivals = 9
-sites = ["src/helper/dev/index.ts:77", "src/hono-base.ts:438", "src/router/common.case.test.ts:41", "src/router/common.case.test.ts:294", "src/router/reg-exp-router/matcher.ts:31", "src/router/reg-exp-router/prepared-router.test.ts:33", "src/router/smart-router/router.ts:38", "src/router/smart-router/router.ts:46"]
-
-[[task]]
 id = "hono-impact-json"
 repo = "hono"
 kind = "impact"
+name = "json"
 prompt = "If the signature of `HonoRequest.json` (defined at src/request.ts:258) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
 rivals = 5
 sites = ["src/middleware/csrf/index.test.ts:7", "src/request.test.ts:267", "src/request.test.ts:284", "src/request.test.ts:303", "src/request.test.ts:317", "src/request.test.ts:338", "src/request.test.ts:359", "src/request.test.ts:484", "src/request.test.ts:610", "src/validator/validator.test.ts:463", "src/validator/validator.test.ts:1125", "src/validator/validator.test.ts:1430", "src/validator/validator.ts:99"]
 
 [[task]]
+id = "hono-impact-text"
+repo = "hono"
+kind = "impact"
+name = "text"
+prompt = "If the signature of `HonoRequest.text` (defined at src/request.ts:274) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
+rivals = 4
+sites = ["src/adapter/aws-lambda/handler.test.ts:596", "src/adapter/lambda-edge/handler.test.ts:205", "src/middleware/body-limit/index.test.ts:139", "src/middleware/cache/index.test.ts:803", "src/middleware/cache/index.test.ts:845", "src/middleware/cache/index.test.ts:874", "src/middleware/cache/index.test.ts:1015", "src/middleware/cache/index.test.ts:1162", "src/middleware/cache/index.test.ts:1169", "src/middleware/method-override/index.test.ts:194", "src/request.test.ts:266", "src/request.test.ts:285", "src/request.test.ts:304", "src/request.test.ts:316", "src/request.test.ts:337", "src/request.test.ts:358", "src/request.test.ts:374", "src/request.test.ts:414", "src/request.test.ts:426", "src/request.test.ts:427", "src/request.test.ts:443", "src/request.test.ts:478", "src/validator/validator.test.ts:1127", "src/validator/validator.test.ts:1162"]
+
+[[task]]
 id = "codegraph-impact-close"
 repo = "codegraph"
 kind = "impact"
+name = "close"
 prompt = "If the signature of `CodeGraph.close` (defined at src/index.ts:556) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
 rivals = 13
 sites = ["src/index.ts:2854", "src/index.ts:2864", "src/mcp/engine.ts:256", "src/mcp/engine.ts:315", "src/mcp/engine.ts:328", "src/mcp/engine.ts:400", "src/mcp/engine.ts:435", "src/mcp/index-freshness-worker.ts:24", "src/mcp/project-lifecycle.ts:91", "src/mcp/tools.ts:2538", "src/ui-server/api/session.ts:184"]
 
 [[task]]
-id = "codegraph-impact-detect"
+id = "codegraph-impact-extract"
 repo = "codegraph"
 kind = "impact"
-prompt = "If the signature of `FrameworkResolver.detect` (defined at src/resolution/types.ts:375) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
-rivals = 12
-sites = ["src/resolution/frameworks/angular-router.ts:988", "src/resolution/frameworks/astro.ts:30", "src/resolution/frameworks/cics.ts:60", "src/resolution/frameworks/csharp.ts:19", "src/resolution/frameworks/drupal.ts:313", "src/resolution/frameworks/expo-modules.ts:167", "src/resolution/frameworks/expo-modules.ts:272", "src/resolution/frameworks/expo-modules.ts:273", "src/resolution/frameworks/expo-router.ts:746", "src/resolution/frameworks/express.ts:117", "src/resolution/frameworks/fabric.ts:370", "src/resolution/frameworks/go.ts:17", "src/resolution/frameworks/goframe.ts:61", "src/resolution/frameworks/index.ts:125", "src/resolution/frameworks/java.ts:24", "src/resolution/frameworks/laravel.ts:43", "src/resolution/frameworks/nestjs.ts:50", "src/resolution/frameworks/nextjs.ts:233", "src/resolution/frameworks/play.ts:32", "src/resolution/frameworks/python.ts:17", "src/resolution/frameworks/python.ts:185", "src/resolution/frameworks/python.ts:239", "src/resolution/frameworks/react-native.ts:548", "src/resolution/frameworks/react-router.ts:180", "src/resolution/frameworks/react.ts:29", "src/resolution/frameworks/ruby.ts:41", "src/resolution/frameworks/rust.ts:38", "src/resolution/frameworks/svelte.ts:52", "src/resolution/frameworks/sveltekit-router.ts:130", "src/resolution/frameworks/swift-objc.ts:258", "src/resolution/frameworks/swift.ts:20", "src/resolution/frameworks/swift.ts:93", "src/resolution/frameworks/swift.ts:175", "src/resolution/frameworks/tanstack-router.ts:367", "src/resolution/frameworks/terraform.ts:48", "src/resolution/frameworks/vue-router.ts:410", "src/resolution/frameworks/vue.ts:94", "src/resolution/frameworks/vue.ts:208"]
+name = "extract"
+prompt = "If the signature of `TreeSitterExtractor.extract` (defined at src/extraction/tree-sitter.ts:945) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
+rivals = 9
+sites = ["src/extraction/astro-extractor.ts:203", "src/extraction/cfml-extractor.ts:118", "src/extraction/cfml-extractor.ts:516", "src/extraction/cfml-extractor.ts:640", "src/extraction/cfml-extractor.ts:750", "src/extraction/razor-extractor.ts:262", "src/extraction/svelte-extractor.ts:183", "src/extraction/tree-sitter.ts:9709", "src/extraction/vue-extractor.ts:259"]
 
 [[task]]
 id = "flask-impact-request"
 repo = "flask"
 kind = "impact"
+name = "request"
 prompt = "If the signature of `AppContext.request` (defined at src/flask/ctx.py:371) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
 rivals = 1
 sites = ["src/flask/app.py:605", "src/flask/app.py:860", "src/flask/app.py:890", "src/flask/app.py:943", "src/flask/app.py:963", "src/flask/app.py:976", "src/flask/app.py:1161", "src/flask/app.py:1376", "src/flask/app.py:1410", "src/flask/app.py:1442", "src/flask/ctx.py:388", "src/flask/ctx.py:522", "src/flask/debughelpers.py:141", "src/flask/helpers.py:409", "src/flask/templating.py:29", "src/flask/testing.py:162", "src/flask/testing.py:165", "src/flask/testing.py:180", "src/flask/testing.py:181"]
@@ -45,6 +50,7 @@ sites = ["src/flask/app.py:605", "src/flask/app.py:860", "src/flask/app.py:890",
 id = "httpx-impact-content"
 repo = "httpx"
 kind = "impact"
+name = "content"
 prompt = "If the signature of `Response.content` (defined at httpx/_models.py:636) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
 rivals = 6
 sites = ["httpx/_main.py:186", "httpx/_main.py:498", "httpx/_models.py:644", "httpx/_models.py:649", "httpx/_models.py:832", "tests/client/test_async_client.py:78", "tests/client/test_async_client.py:89", "tests/client/test_async_client.py:179", "tests/client/test_client.py:22", "tests/models/test_responses.py:332", "tests/models/test_responses.py:347", "tests/models/test_responses.py:366", "tests/models/test_responses.py:382", "tests/models/test_responses.py:696", "tests/models/test_responses.py:713", "tests/test_asgi.py:80", "tests/test_asgi.py:90", "tests/test_decoders.py:30", "tests/test_decoders.py:48", "tests/test_decoders.py:62", "tests/test_decoders.py:75", "tests/test_decoders.py:88", "tests/test_decoders.py:106", "tests/test_decoders.py:141", "tests/test_decoders.py:161", "tests/test_decoders.py:174", "tests/test_decoders.py:182", "tests/test_decoders.py:212", "tests/test_decoders.py:355", "tests/test_multipart.py:28", "tests/test_multipart.py:67", "tests/test_multipart.py:136", "tests/test_multipart.py:433", "tests/test_multipart.py:439"]
@@ -53,6 +59,7 @@ sites = ["httpx/_main.py:186", "httpx/_main.py:498", "httpx/_models.py:644", "ht
 id = "httpx-impact-request"
 repo = "httpx"
 kind = "impact"
+name = "request"
 prompt = "If the signature of `Response.request` (defined at httpx/_models.py:596) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
 rivals = 5
 sites = ["httpx/_client.py:1018", "httpx/_client.py:1733", "httpx/_models.py:606", "httpx/_models.py:607", "httpx/_models.py:633", "httpx/_models.py:1106", "tests/client/test_auth.py:319", "tests/client/test_auth.py:568", "tests/client/test_auth.py:571", "tests/client/test_auth.py:584", "tests/client/test_auth.py:587", "tests/client/test_client.py:26", "tests/client/test_redirects.py:177", "tests/models/test_responses.py:41", "tests/models/test_responses.py:42", "tests/models/test_responses.py:928", "tests/models/test_responses.py:930", "tests/models/test_responses.py:931", "tests/models/test_responses.py:938", "tests/models/test_responses.py:971", "tests/test_multipart.py:24", "tests/test_multipart.py:66", "tests/test_multipart.py:94", "tests/test_multipart.py:132"]
@@ -61,6 +68,7 @@ sites = ["httpx/_client.py:1018", "httpx/_client.py:1733", "httpx/_models.py:606
 id = "gin-impact-Render"
 repo = "gin"
 kind = "impact"
+name = "Render"
 prompt = "If the signature of `Context.Render` (defined at context.go:1201) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
 rivals = 21
 sites = ["context.go:1222", "context.go:1227", "context.go:1235", "context.go:1242", "context.go:1251", "context.go:1254", "context.go:1260", "context.go:1266", "context.go:1272", "context.go:1278", "context.go:1284", "context.go:1289", "context.go:1294", "context.go:1299", "context.go:1304", "context.go:1309", "context.go:1314", "context.go:1323", "context.go:1331", "context.go:1374", "context_test.go:1165", "context_test.go:1620", "middleware_test.go:243"]
@@ -69,6 +77,7 @@ sites = ["context.go:1222", "context.go:1227", "context.go:1235", "context.go:12
 id = "gin-impact-JSON"
 repo = "gin"
 kind = "impact"
+name = "JSON"
 prompt = "If the signature of `Context.JSON` (defined at context.go:1259) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
 rivals = 4
 sites = ["benchmarks_test.go:57", "context.go:241", "context.go:1422", "context_test.go:1177", "context_test.go:1217", "context_test.go:1231", "context_test.go:1244", "gin_test.go:1061", "gin_test.go:1087", "gin_test.go:1106", "gin_test.go:1122", "gin_test.go:1140", "gin_test.go:1144", "githubapi_test.go:382", "logger.go:217", "middleware_test.go:238", "middleware_test.go:241"]
@@ -77,6 +86,7 @@ sites = ["benchmarks_test.go:57", "context.go:241", "context.go:1422", "context_
 id = "ripgrep-impact-name_long"
 repo = "ripgrep"
 kind = "impact"
+name = "name_long"
 prompt = "If the signature of `Flag.name_long` (defined at crates/core/flags/mod.rs:89) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
 rivals = 104
 sites = ["crates/core/flags/complete/bash.rs:67", "crates/core/flags/complete/bash.rs:90", "crates/core/flags/complete/fish.rs:22", "crates/core/flags/complete/powershell.rs:48", "crates/core/flags/complete/powershell.rs:49", "crates/core/flags/defs.rs:7648", "crates/core/flags/defs.rs:7659", "crates/core/flags/defs.rs:7701", "crates/core/flags/defs.rs:7717", "crates/core/flags/defs.rs:7739", "crates/core/flags/defs.rs:7753", "crates/core/flags/defs.rs:7766", "crates/core/flags/doc/help.rs:71", "crates/core/flags/doc/help.rs:143", "crates/core/flags/doc/help.rs:158", "crates/core/flags/doc/help.rs:167", "crates/core/flags/doc/man.rs:56", "crates/core/flags/doc/man.rs:74", "crates/core/flags/doc/man.rs:85", "crates/core/flags/parse.rs:188", "crates/core/flags/parse.rs:429"]
@@ -85,6 +95,7 @@ sites = ["crates/core/flags/complete/bash.rs:67", "crates/core/flags/complete/ba
 id = "ripgrep-impact-name_negated"
 repo = "ripgrep"
 kind = "impact"
+name = "name_negated"
 prompt = "If the signature of `Flag.name_negated` (defined at crates/core/flags/mod.rs:111) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
 rivals = 42
 sites = ["crates/core/flags/complete/bash.rs:74", "crates/core/flags/complete/bash.rs:96", "crates/core/flags/complete/fish.rs:60", "crates/core/flags/complete/powershell.rs:73", "crates/core/flags/defs.rs:7681", "crates/core/flags/defs.rs:7725", "crates/core/flags/doc/help.rs:166", "crates/core/flags/doc/help.rs:177", "crates/core/flags/doc/man.rs:84", "crates/core/flags/doc/man.rs:96", "crates/core/flags/parse.rs:205", "crates/core/flags/parse.rs:434"]
@@ -93,6 +104,7 @@ sites = ["crates/core/flags/complete/bash.rs:74", "crates/core/flags/complete/ba
 id = "rack-impact-request"
 repo = "rack"
 kind = "impact"
+name = "request"
 prompt = "If the signature of `Rack#MockRequest.request` (defined at lib/rack/mock_request.rb:68) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
 rivals = 8
 sites = ["lib/rack/mock_request.rb:49", "lib/rack/mock_request.rb:51", "lib/rack/mock_request.rb:53", "lib/rack/mock_request.rb:55", "lib/rack/mock_request.rb:57", "lib/rack/mock_request.rb:59", "lib/rack/mock_request.rb:61", "lib/rack/mock_request.rb:63", "test/spec_common_logger.rb:113", "test/spec_mock_request.rb:84", "test/spec_mock_request.rb:198"]
@@ -101,6 +113,7 @@ sites = ["lib/rack/mock_request.rb:49", "lib/rack/mock_request.rb:51", "lib/rack
 id = "rack-impact-params"
 repo = "rack"
 kind = "impact"
+name = "params"
 prompt = "If the signature of `Rack#<Class:MediaType>.params` (defined at lib/rack/media_type.rb:34) changed, which call sites in this repository would have to be updated? Find every place that calls or references this exact method \u2014 not other symbols that share its name. End your answer with a fenced code block listing each location on its own line as `path:line` (path relative to the repository root, line of the reference)."
 rivals = 5
 sites = ["lib/rack/request.rb:547", "lib/rack/response.rb:254", "test/spec_media_type.rb:20", "test/spec_media_type.rb:32", "test/spec_media_type.rb:44", "test/spec_media_type.rb:56", "test/spec_media_type.rb:68", "test/spec_media_type.rb:80"]

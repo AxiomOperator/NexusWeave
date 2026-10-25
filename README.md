@@ -257,8 +257,12 @@ time, grades answers by keyword rubric and optionally by an LLM judge (`--judge`
 | 24 tasks, 7 repos up to 1.2k files | 96 | +3.9% (−6 … +16) | −24.8% (−36 … −13) | −4.6% | equal |
 | 8 tasks on django and vscode | 64 | +17.0% (+6.5 … +27.6) | −46.5% (−60 … −33) | −15% | equal |
 
+| 13 call-site impact tasks (graded vs compiler truth) | 78 | −0.9% (−25 … +13) | −3.9% | +9.8% | site recall 99.4% vs 98.4%, precision 96.3% vs 96.4% |
+
 NexusWeave saved money on codegraph's tasks (−24% and −32% in two runs) and cost more nearly
-everywhere else. Things tried that did not help, with their numbers, are in `enhancements.md` §6
+everywhere else. On the impact tasks every setup, grep alone included, found ~98% of the call
+sites: agents verify each hit by reading it, so graph accuracy did not change answer quality there
+(`enhancements.md` §11, which also has the head-to-head with codegraph). Things tried that did not help, with their numbers, are in `enhancements.md` §6
 and §8: smaller `explore` budgets, whole bodies for named functions, and an agent instruction
 section.
 

@@ -487,3 +487,42 @@ receiver (`RouterGroup.Use` for `Engine.Use`), no type references for struct fie
 Takeaways: on agent cost/time the tools are equivalent; NexusWeave's graph is substantially more
 accurate (which the read-only tasks don't reward, since both reach 100%). Immediate fix to copy:
 register NexusWeave's MCP server with `alwaysLoad` in Claude Code.
+
+## 11. alwaysLoad, and a benchmark that should reward accuracy (2026-10-25)
+
+**alwaysLoad.** `nexusweave install` now registers with Claude Code through `claude mcp add-json`
+with `alwaysLoad: true`, as codegraph does, so the tools are listed up front. Pilot (24 sessions,
+same baseline): `ToolSearch` calls 37 → **0**; tool calls −27.9% (was −24.8%; codegraph −43.9%);
+cost +14.6% (−4.1 … +36.5, noise). It removes the lookup round trip but does **not** close most of
+the tool-call gap: NexusWeave sessions still read more files after an answer (2.6 Reads per
+session vs 1.6 for codegraph). codegraph's server instructions are far more directive ("treat the
+shown source as already Read; do NOT re-open those files"); that is the next lever to test.
+
+**Impact benchmark** (`bench/agent/impact_tasks.py`, `run.py --suite impact`): "if X's signature
+changed, which call sites must be updated?" for 13 targets picked from compiler ground truth to be
+hard for name search (each defined once, its name shared with 1–104 other definitions, 8–40 sites
+in ≥3 files). Answers list `path:line`; graded by precision / recall against the SCIP references,
+within 2 lines, one to one. Fairness fixes found while validating: interface implementations are
+not call sites (excluded from truth, and declaration lines an answer lists are set aside rather than
+counted wrong); files the indexer doesn't cover (e.g. codegraph's `__tests__/`, outside its
+tsconfig) are not graded (`impact_scope.json`). `--regrade` re-scores saved answers.
+
+Result (13 tasks × 3 conditions × 2 = 78 sessions, ~$20):
+
+| vs baseline | NexusWeave | codegraph |
+|---|---:|---:|
+| site recall (baseline 98.4%) | 99.4% (+1.0 pts, +0.0 … +2.9) | 98.4% (±0) |
+| site precision (baseline 96.4%) | 96.3% (−0.1 pts) | 96.3% (−0.1 pts) |
+| cost | −0.9% (−24.7 … +12.9) | +19.3% (−6.8 … +34.6) |
+| uncached input | −15.3% (−37.4 … −1.4) | +16.5% |
+| tool calls | −3.9% | −11.1% |
+
+**The hypothesis did not hold.** Even on targets chosen to defeat grep, agents with only
+Grep/Read reach ~98% recall and ~96% precision: they disambiguate by reading each hit. NexusWeave's
+2–10× graph-recall advantage over codegraph does not turn into an answer-quality difference on this
+task (it is +1 point of recall, within noise of zero). Remaining "errors" are mostly gaps in the
+truth itself (uses scip-python could not type, e.g. `ctx.request`), shared by all conditions. On
+cost, NexusWeave is neutral here and cheaper than codegraph (+19%).
+
+Where accuracy might still matter, untested: tasks too large to verify by reading every hit
+(hundreds of sites, transitive impact several hops deep), or agents with a smaller context budget.

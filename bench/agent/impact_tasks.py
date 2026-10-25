@@ -9,7 +9,9 @@ truth is cached) to be hard for name search and easy to get wrong:
 - whose bare name is also defined elsewhere in the project (ambiguous for grep),
 - referenced 8–40 times from at least 3 files.
 Truth sites are its non-definition references outside import statements whose source text names
-it. Writes bench/agent/impact_tasks.toml (deterministic for pinned commits).
+it, minus implementations (a reference at another symbol's definition). Writes
+bench/agent/impact_tasks.toml and impact_scope.json, the files the truth covers (an indexer can
+skip some, e.g. tests outside the tsconfig project); grading ignores listed sites outside them.
 
     bench/agent/impact_tasks.py [--per-repo 2]
 """
@@ -37,6 +39,22 @@ PROMPT = ("If the signature of `{display}` (defined at {path}:{line}) changed, w
           "would have to be updated? Find every place that calls or references this exact {what} — not other "
           "symbols that share its name. End your answer with a fenced code block listing each location on its "
           "own line as `path:line` (path relative to the repository root, line of the reference).")
+
+
+MODIFIERS = {"", "async", "static", "public", "private", "protected", "override", "readonly", "get", "set"}
+
+
+def declares(line: str, start: int, name: str) -> bool:
+    """Whether the name at `start` declares a member (`detect(ctx): boolean {`, `detect: (ctx) =>`)
+    rather than using one: object-literal implementations of an interface member, which some
+    indexers report as references to it."""
+    before = line[:start].strip()
+    after = line[start + len(name):].lstrip()
+    if not all(w in MODIFIERS for w in before.split()) and before not in MODIFIERS:
+        return False
+    if after.startswith(("(", "<")) and line.rstrip().endswith("{"):
+        return True
+    return after.startswith(":") and ("=>" in after or "function" in after)
 
 
 def display(symbol: str) -> str | None:
@@ -74,11 +92,14 @@ def tasks_for(r: dict, per_repo: int) -> list[dict]:
 
     defs: dict[str, list[tuple[str, int]]] = defaultdict(list)
     names: dict[str, set[str]] = defaultdict(set)  # bare name -> every symbol defining it
+    def_spots: set[tuple[str, int, int]] = set()  # where any symbol is defined
     for d in docs:
         for o in d.occurrences:
-            if o.roles & scip.DEFINITION and not scip.is_local(o.symbol):
-                defs[o.symbol].append((d.path, o.line + 1))
-                names[scip.descriptor_name(o.symbol)].add(o.symbol)
+            if o.roles & scip.DEFINITION:
+                def_spots.add((d.path, o.line, o.start))
+                if not scip.is_local(o.symbol):
+                    defs[o.symbol].append((d.path, o.line + 1))
+                    names[scip.descriptor_name(o.symbol)].add(o.symbol)
     refs: dict[str, set[tuple[str, int]]] = defaultdict(set)
     for d in docs:
         for o in d.occurrences:
@@ -86,10 +107,14 @@ def tasks_for(r: dict, per_repo: int) -> list[dict]:
                 continue
             if scip.descriptor_kind(o.symbol) != "method" or in_import(d.path, o.line + 1):
                 continue
+            if (d.path, o.line, o.start) in def_spots:
+                continue  # an implementation (`detect(ctx) {…}` of an interface member), not a call site
             ln = lines(d.path)
             text = ln[o.line][o.start:o.end] if o.line < len(ln) and o.end >= 0 else None
             if text != scip.descriptor_name(o.symbol):
                 continue  # the source doesn't name it here (alias, operator, indexer quirk)
+            if declares(ln[o.line], o.start, text):
+                continue  # an implementation of the member, not a use
             refs[o.symbol].add((d.path, o.line + 1))
     cands = []
     for sym, sites in refs.items():
@@ -109,12 +134,17 @@ def tasks_for(r: dict, per_repo: int) -> list[dict]:
         used.add(name)
         path, line = defs[sym][0]
         what = "method" if "#" in sym.split(" ", 4)[-1] else "function"
-        out.append({"id": f"{r['name']}-impact-{name}", "repo": r["name"], "kind": "impact",
+        out.append({"id": f"{r['name']}-impact-{name}", "repo": r["name"], "kind": "impact", "name": name,
                     "prompt": PROMPT.format(display=disp, path=path, line=line, what=what),
                     "rivals": len(names[name]) - 1, "sites": [f"{p}:{l}" for p, l in sites]})
         if len(out) >= per_repo:
             break
+    SCOPE[r["name"]] = sorted({d.path for d in docs})
     return out
+
+
+# repo -> files the truth covers; listed sites outside them are neither right nor wrong
+SCOPE: dict[str, list[str]] = {}
 
 
 def main() -> int:
@@ -127,12 +157,13 @@ def main() -> int:
            "# `sites`: every reference of the target outside imports, as path:line.", ""]
     for t in tasks:
         out.append("[[task]]")
-        for k in ("id", "repo", "kind", "prompt"):
+        for k in ("id", "repo", "kind", "name", "prompt"):
             out.append(f"{k} = {json.dumps(t[k])}")
         out.append(f"rivals = {t['rivals']}")
         out.append("sites = [" + ", ".join(json.dumps(s) for s in t["sites"]) + "]")
         out.append("")
     (BENCH / "agent" / "impact_tasks.toml").write_text("\n".join(out))
+    (BENCH / "agent" / "impact_scope.json").write_text(json.dumps(SCOPE, indent=0, sort_keys=True) + "\n")
     for t in tasks:
         print(f"{t['id']:<40} {len(t['sites']):>3} sites, {t['rivals']} same-named rivals")
     return 0

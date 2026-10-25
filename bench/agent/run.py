@@ -66,7 +66,17 @@ def load_tasks() -> list[dict]:
 SITE = re.compile(r"(/?[\w@+\-\[\]().]+(?:/[\w@+\-\[\]().]+)*\.\w+):(\d+)")
 
 
-def site_score(answer: str, truth: list[str], ws: Path) -> dict:
+def declares_member(line: str, name: str) -> bool:
+    """A line that declares `name` (`fn name(`, `def name(`, `name(ctx) {`, `func (r T) name(`) rather
+    than using it: an implementation, which the call-site question doesn't ask for."""
+    if re.search(rf"\b(fn|def|func|function|sub)\s+(\([^)]*\)\s*)?{re.escape(name)}\b", line):
+        return True
+    s = line.strip()
+    return bool(re.match(rf"(?:(?:async|static|public|private|protected|override|readonly|get|set)\s+)*{re.escape(name)}\s*(<[^>]*>)?\s*\(", s)) \
+        and s.endswith("{")
+
+
+def site_score(answer: str, truth: list[str], ws: Path, scope: set[str] | None = None, name: str | None = None) -> dict:
     """Precision / recall of the `path:line` sites an answer lists against compiler ground truth.
     Sites come from the answer's last fenced block (else the whole answer); a listed site matches a
     true one in the same file within 2 lines, one to one."""
@@ -76,6 +86,15 @@ def site_score(answer: str, truth: list[str], ws: Path) -> dict:
     listed = []
     for path, line in SITE.findall(text):
         path = path.removeprefix(prefix).removeprefix("./")
+        if scope is not None and path not in scope:
+            continue  # a file the compiler truth doesn't cover: can't be judged
+        if name:
+            try:
+                text_line = (ws / path).read_text(errors="replace").split("\n")[int(line) - 1]
+            except (OSError, IndexError):
+                text_line = ""
+            if declares_member(text_line, name):
+                continue  # an implementation of the member: not a call site, not wrong either
         if (path, int(line)) not in listed:
             listed.append((path, int(line)))
     want: dict[str, list[int]] = {}
@@ -92,6 +111,11 @@ def site_score(answer: str, truth: list[str], ws: Path) -> dict:
     p = hit / len(listed) if listed else 0.0
     r = hit / len(truth) if truth else 0.0
     return {"site_precision": p, "site_recall": r, "site_f1": 2 * p * r / (p + r) if p + r else 0.0, "sites_listed": len(listed)}
+
+
+def impact_scope() -> dict[str, set[str]]:
+    p = BENCH / "agent/impact_scope.json"
+    return {k: set(v) for k, v in json.loads(p.read_text()).items()} if p.exists() else {}
 
 
 def corpus() -> dict[str, dict]:
@@ -187,7 +211,7 @@ def run_one(task: dict, cond: str, rep: int, args, nexusweave: Path) -> dict:
             final = ev
     answer = final.get("result") or ""
     u = final.get("usage") or {}
-    sites = site_score(answer, task["sites"], ws) if "sites" in task else {}
+    sites = site_score(answer, task["sites"], ws, impact_scope().get(task["repo"]), task.get("name")) if "sites" in task else {}
     s, missed = (sites["site_f1"], []) if sites else score(answer, task["rubric"])
     return {
         "task": task["id"], "repo": task["repo"], "kind": task["kind"], "condition": cond, "repeat": rep,
@@ -421,6 +445,7 @@ def main() -> None:
     ap.add_argument("--report", metavar="JSONL", help="only print the report for an existing results file")
     ap.add_argument("--deferred-nexusweave", action="store_true", help="register NexusWeave without alwaysLoad (as installs before 0.2.1 did)")
     ap.add_argument("--instructions", action="store_true", help="give nexusweave sessions the `install --instructions` text as a system prompt")
+    ap.add_argument("--regrade", metavar="JSONL", help="re-score saved impact answers with the current grader (use with --suite impact)")
     ap.add_argument("--compare", nargs=2, metavar=("BASELINE_JSONL", "NEXUSWEAVE_JSONL"),
                     help="paired per-task cost/token comparison: baseline sessions from the first file, the --vs condition from the second")
     ap.add_argument("--vs", default="nexusweave", choices=[c for c in CONDITIONS if c != "baseline"], help="condition --compare measures against baseline")
@@ -433,6 +458,19 @@ def main() -> None:
     SUITE = args.suite
     if args.report:
         print(report(Path(args.report)))
+        return
+    if args.regrade:
+        # re-score saved impact answers with the current grader and task truth (no new sessions)
+        tasks = {t["id"]: t for t in load_tasks()}
+        path = Path(args.regrade)
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        for r in rows:
+            t = tasks.get(r["task"])
+            if t and "sites" in t and r["ok"]:
+                sites = site_score(r["answer"], t["sites"], WORK / f"{r['repo']}-{r['condition']}", impact_scope().get(r["repo"]), t.get("name"))
+                r.update(sites, score=sites["site_f1"])
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        print(report(path))
         return
     if args.compare:
         print(compare(Path(args.compare[0]), Path(args.compare[1]), args.vs))
