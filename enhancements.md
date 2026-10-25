@@ -420,5 +420,14 @@ larger repos unchanged; 24 sessions vs the same baseline, answers LLM-judged): c
 (−21.5% … +3.5%), cheaper on **17/24** tasks, uncached input −11.9%, tokens −11.5%, tool calls
 −17.7%. Answer quality unchanged: rubric 100%, LLM judge 100% (2 wrong claims in 24 answers vs 1
 for the old-budget pilot). Agents read a little more (3.0 Reads per session vs 2.1) and pay less.
-Kept as the default. The interval still includes zero (one repeat; codegraph moved −36% with an
-unchanged budget, which shows the noise): a 2-repeat run of both conditions (~$20) would settle it.
+**Confirmation run** (smaller budgets, both conditions × 2 repeats = 96 sessions, LLM-judged,
+~$25): cost **+2.0%** (−11.2% … +15.9%), cheaper on 8/24 tasks, tokens −2.3%, tool calls only −7.8%
+(−20.1% … +6.8%); quality equal (judge 100% both, 2 vs 3 wrong claims in 48 answers). By repo:
+codegraph −32%, every smaller repo +4% to +32%. The pilot's −10.7% was noise. Smaller budgets don't
+change cost and halve the tool-call saving (agents read more instead), so the original budgets are
+restored.
+
+**Answer to "does it save cost?"** Not on repos of a few hundred files: there the agent's own
+Read/Grep is already cheap and explore output adds full-price input. It does on the one larger repo
+in the set (−24% and −32% in two independent runs). Tool calls are reliably fewer with the original
+budgets (−25%). Untested: repos of 5k+ files (vscode, django), where the effect should be larger.
