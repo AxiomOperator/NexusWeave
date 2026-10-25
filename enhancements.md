@@ -451,7 +451,8 @@ with `run.py --compare`; smaller budgets alone (§8, budget runs) did not help o
 - **Resolved:** every review finding (security, correctness, platform, CI) and every approved
   improvement in sections 5b–8, each with tests and CI on Linux, macOS and Windows.
 - **Resolved by measurement:** the re-read gap (no redundant re-reads exist; §6); the instruction
-  section (`install --instructions`) stays opt-in and is documented as not saving cost (§8);
+  section (`install --instructions`) raised cost and was removed from the installer (§8; uninstall
+  still cleans up a section an earlier build wrote);
   smaller explore budgets were tried and reverted (§8); "does it save cost" is answered with
   repeated paired runs (§8).
 - **Deferred by decision, not open defects:** the codegraph parity items in §7, ground truth for

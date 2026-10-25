@@ -29,9 +29,8 @@ accuracy, and token-efficient answers. Nothing leaves your machine.
 git clone https://github.com/AxiomOperator/NexusWeave.git && cd NexusWeave
 cargo install --path .            # Rust 1.88+; one ~37 MB binary in ~/.cargo/bin
 nexusweave install                # register the MCP server with Claude Code / Cursor / Codex / Gemini / opencode / Kiro / VS Code
-                                  #   --hooks: a Claude Code hint hook (see below); --instructions: a NexusWeave section in
-                                  #   CLAUDE.md / AGENTS.md / GEMINI.md (measured: more explore calls, higher cost on
-                                  #   small repos); --allow: no permission prompts for its tools
+                                  #   --hooks: a Claude Code hint hook (see below); --allow: no permission prompts
+                                  #   for its tools
 cd your-project && nexusweave init
 nexusweave explore "How does authentication work?"
 nexusweave ui                     # optional: browse the graph at http://127.0.0.1:7878
@@ -135,7 +134,7 @@ nexusweave watch [path]             keep the graph in sync from the terminal
 nexusweave serve [--no-watch]       MCP server on stdio (auto-syncs; shares one daemon per repo)
 nexusweave daemon [status|stop]     the shared per-repo index process
 nexusweave ui [path] [--port 7878] [--no-open]   viewer: overview, call graph, module map, routes, call paths, insights, ask
-nexusweave install | uninstall      (un)register the MCP server with agents (--target, --print, --hooks, --instructions, --allow)
+nexusweave install | uninstall      (un)register the MCP server with agents (--target, --print, --hooks, --allow)
 nexusweave upgrade [--check] [--version TAG] [--force]   self-update from GitHub releases
 ```
 
