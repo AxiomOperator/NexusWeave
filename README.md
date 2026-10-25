@@ -293,9 +293,9 @@ thousands of others) in the long-running watcher or server, which keeps its cach
 
 ## Installing a release
 
-Pushing a `v*` tag publishes archives for Linux (x86_64, aarch64, plus a static musl build) and
-macOS (x86_64, aarch64) and Windows (x86_64), with a `SHA256SUMS` file. **No release has been
-published yet.** Once one is, install and update without a Rust toolchain:
+[Releases](https://github.com/AxiomOperator/NexusWeave/releases) ship archives for Linux (x86_64,
+aarch64, plus a static musl build), macOS (x86_64, aarch64) and Windows (x86_64), with a
+`SHA256SUMS` file. Install and update without a Rust toolchain:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AxiomOperator/NexusWeave/main/scripts/install.sh | sh
