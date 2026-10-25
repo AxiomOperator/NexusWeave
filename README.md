@@ -282,10 +282,10 @@ tokens and 5% less time. Cost came out 4% higher overall: lower on the largest r
 the small ones. (An earlier 80-session run: −30% tool calls, −12% tokens, +5% cost.) Per repo, it
 saved 24% of cost on the largest repo (1.2k files) and cost 1–22% more on repos of 80–300 files;
 `enhancements.md` §8 has the paired comparisons with confidence intervals. In short: NexusWeave
-reliably cuts tool calls (−25% overall, −46% on django and vscode) and wall time (−17% on the large
-repos) with answer quality unchanged, but at current answer sizes it does not save money: cost per
-question is about the same to 14% higher (cheaper only on codegraph's tasks), because explore
-output is full-price input. The details and next steps are in `enhancements.md` section 6;
+reliably cuts tool calls (−25% overall, −46% on django and vscode) and wall time (−15% on the large
+repos, faster on every task) with answer quality unchanged, but at current answer sizes it does not
+save money: cost per question is about the same on small repos and 17% higher on django and vscode
+(cheaper only on codegraph's tasks), because explore output is full-price input. The details and next steps are in `enhancements.md` section 6;
 reproduce with `bench/agent/run.py`.
 
 ## Development

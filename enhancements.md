@@ -432,6 +432,11 @@ sessions, LLM-judged, ~$11): cost **+13.7%** (+3.4% … +25.4%), cheaper on 1/8 
 **+39%** (+23% … +60%, higher on every task); tool calls **−46%** (−57% … −32%); wall time **−17%**
 (−28% … −6%); quality equal (rubric and judge 100% both, no wrong claims). The expectation that
 savings grow with repo size did not hold.
+**Repeated** (4 repeats, 64 sessions): cost **+17.0%** (+6.5% … +27.6%), cheaper on 2/8; uncached
+input +46.5%; tool calls −46.5% (−60.2% … −33.0%); wall time −15.1% (faster on all 8 tasks).
+**Instruction pilot repeated** (2 repeats, 48 sessions vs the same baseline): cost +9.9% (−3.1% …
++24.9%), uncached input +24.4%, tool calls −23.9%: confirms the instruction section doesn't save
+money.
 
 **Answer to "does it save cost?"** No, not at current output sizes: across 32 tasks on 9 repos it
 costs about the same to 14% more per question (only codegraph's tasks came out cheaper, −24% and
