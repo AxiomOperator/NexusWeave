@@ -62,7 +62,13 @@ def workspace(repo: str, cond: str, nexusweave: Path) -> Path:
     """A clean checkout per (repo, condition); only the nexusweave one carries an index."""
     ws = WORK / f"{repo}-{cond}"
     src = CACHE / "repos" / repo
-    commit = corpus()[repo]["commit"]
+    r = corpus()[repo]
+    commit = r["commit"]
+    if not (src / ".git").exists():
+        # agent-only repos (`accuracy = false`) aren't fetched by accuracy.py
+        src.mkdir(parents=True, exist_ok=True)
+        for cmd in (["git", "init", "-q"], ["git", "fetch", "-q", "--depth", "1", r["url"], commit], ["git", "checkout", "-q", "FETCH_HEAD"]):
+            subprocess.run(cmd, cwd=src, check=True)
     marker = ws / ".eval-ready"
     if marker.exists() and marker.read_text() == commit:
         return ws

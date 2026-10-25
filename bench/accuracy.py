@@ -414,7 +414,7 @@ def main() -> int:
     ap.add_argument("--update-baseline", action="store_true")
     a = ap.parse_args()
 
-    corpus = tomllib.loads((BENCH / "corpus.toml").read_text())["repo"]
+    corpus = [r for r in tomllib.loads((BENCH / "corpus.toml").read_text())["repo"] if r.get("accuracy", True)]
     if a.repo:
         corpus = [r for r in corpus if r["name"] in a.repo]
     xg = Path(a.nexusweave)

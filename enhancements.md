@@ -427,7 +427,16 @@ codegraph −32%, every smaller repo +4% to +32%. The pilot's −10.7% was noise
 change cost and halve the tool-call saving (agents read more instead), so the original budgets are
 restored.
 
-**Answer to "does it save cost?"** Not on repos of a few hundred files: there the agent's own
-Read/Grep is already cheap and explore output adds full-price input. It does on the one larger repo
-in the set (−24% and −32% in two independent runs). Tool calls are reliably fewer with the original
-budgets (−25%). Untested: repos of 5k+ files (vscode, django), where the effect should be larger.
+**Large repos** (django ~2.4k files, vscode ~15k; 8 verified tasks × 2 conditions × 2 = 32
+sessions, LLM-judged, ~$11): cost **+13.7%** (+3.4% … +25.4%), cheaper on 1/8 tasks; uncached input
+**+39%** (+23% … +60%, higher on every task); tool calls **−46%** (−57% … −32%); wall time **−17%**
+(−28% … −6%); quality equal (rubric and judge 100% both, no wrong claims). The expectation that
+savings grow with repo size did not hold.
+
+**Answer to "does it save cost?"** No, not at current output sizes: across 32 tasks on 9 repos it
+costs about the same to 14% more per question (only codegraph's tasks came out cheaper, −24% and
+−32%). What it reliably saves is agent effort and time: 25–46% fewer tool calls and up to 17% less
+wall time, with answer quality unchanged. The cost driver is the same everywhere: explore output
+is full-price uncached input that outweighs the reading it replaces. The next lever to test is a
+more compact answer on large repos (signatures and call sites instead of whole bodies), measured
+with `run.py --compare`; smaller budgets alone (§8, budget runs) did not help on small repos.
