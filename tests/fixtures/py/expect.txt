@@ -21,3 +21,16 @@ load_bio -> Profile.bio
 # a builtin module qualifier never falls back to a project member
 !uses_json -> dumps
 describe -> render_name
+# names read as values (except/raise, class qualifiers, returned closures, bound methods)
+lookup -> NotFound
+lookup -> Registry
+lookup -> Registry.build
+Registry -> User
+logged -> logged.wrapped_view
+Registry.handlers -> Registry.on_add
+Registry.handlers -> Registry.build
+Registry.describe -> Registry.size
+!unknown_receiver -> on_add
+# assignments through a property setter are writes; plain field writes aren't recorded
+Registry.resize -> Registry.size
+!Registry.resize -> count

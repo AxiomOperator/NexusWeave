@@ -144,3 +144,94 @@ repo = "codegraph"
 kind = "impact"
 prompt = "If the signature of CodeGraph.resolveReferencesBatched changed, which non-test call sites in codegraph would need updating? Name the enclosing methods."
 rubric = [["indexAll"], ["sync"]]
+
+# Harder tasks (added after the first evaluation saturated): dispatch through interfaces and
+# traits, transports picked at runtime, and impact questions, where a name-based grep finds the
+# definition but not who reaches it. Facts verified at the pinned commits.
+
+[[task]]
+id = "gin-render-impls"
+repo = "gin"
+kind = "impact"
+prompt = "In gin, which types in the render package implement the render.Render interface? List them all, and say which gin.Context method every response helper (JSON, HTML, String, ...) funnels into."
+rubric = [["SecureJSON"], ["JsonpJSON"], ["AsciiJSON"], ["PureJSON"], ["IndentedJSON"], ["ProtoBuf"], ["MsgPack"], ["TOML"], ["Reader"], ["Context.Render", "c.Render", "Render(code"]]
+
+[[task]]
+id = "httpx-transport-dispatch"
+repo = "httpx"
+kind = "flow"
+prompt = "Which classes implement httpx's transport interfaces (BaseTransport / AsyncBaseTransport), and how does a Client decide which transport handles a request to a given URL?"
+rubric = [["HTTPTransport"], ["WSGITransport"], ["ASGITransport"], ["MockTransport"], ["_transport_for_url"], ["_mounts", "mounts"], ["URLPattern"]]
+
+[[task]]
+id = "flask-add-url-rule-impact"
+repo = "flask"
+kind = "impact"
+prompt = "If the signature of Flask's add_url_rule changed, which places inside Flask itself call it (directly or through a deferred function) and would need updating? Name the enclosing methods."
+rubric = [["route"], ["BlueprintSetupState"], ["register"], ["record"], ["static"]]
+
+[[task]]
+id = "ripgrep-sink-dispatch"
+repo = "ripgrep"
+kind = "flow"
+prompt = "In ripgrep, which types implement the grep-searcher Sink trait (in the printer crate and in the searcher's own sinks module), and which Sink methods does the Searcher call while it searches?"
+rubric = [["StandardSink"], ["JSONSink"], ["SummarySink"], ["UTF8"], ["Lossy"], ["matched"], ["context"], ["begin"], ["finish"]]
+
+# Large repos (agent-only corpus entries, `accuracy = false`): django ~2.4k files, vscode ~15k.
+# Facts verified at the pinned commits.
+
+[[task]]
+id = "django-request-flow"
+repo = "django"
+kind = "flow"
+prompt = "In Django, trace how a request goes from the WSGI handler to the view function and how middleware wraps it. Name the methods in order."
+rubric = [["WSGIHandler", "__call__"], ["get_response"], ["_middleware_chain"], ["load_middleware"], ["_get_response"], ["resolve_request", "resolver.resolve"]]
+
+[[task]]
+id = "django-queryset-eval"
+repo = "django"
+kind = "flow"
+prompt = "When a Django QuerySet is iterated, what code runs until the rows come back from the database? Trace it to the SQL execution."
+rubric = [["_fetch_all"], ["ModelIterable"], ["execute_sql"], ["SQLCompiler", "compiler"], ["as_sql"], ["results_iter"]]
+
+[[task]]
+id = "django-model-save"
+repo = "django"
+kind = "explain"
+prompt = "What happens when Model.save() is called in Django? Where are the pre_save and post_save signals sent, and how is insert vs update decided?"
+rubric = [["save_base"], ["pre_save"], ["post_save"], ["_save_table"], ["_do_update"], ["_do_insert"]]
+
+[[task]]
+id = "django-migrate"
+repo = "django"
+kind = "flow"
+prompt = "How does `manage.py migrate` apply migrations to the database? Trace it from the management command down to the schema changes."
+rubric = [["MigrationExecutor"], ["migrate("], ["_migrate_all_forwards"], ["apply_migration"], ["Migration.apply", "migration.apply"], ["database_forwards"]]
+
+[[task]]
+id = "vscode-command-exec"
+repo = "vscode"
+kind = "flow"
+prompt = "In VS Code, how does ICommandService.executeCommand reach the registered command handler, and what happens if the command belongs to an extension that isn't active yet?"
+rubric = [["CommandService"], ["_tryExecuteCommand"], ["CommandsRegistry"], ["onCommand:"], ["activateByEvent"], ["invokeFunction", "handler"]]
+
+[[task]]
+id = "vscode-ext-activation"
+repo = "vscode"
+kind = "flow"
+prompt = "How does VS Code activate an extension when an activation event fires? Trace it from the workbench extension service into the extension host."
+rubric = [["AbstractExtensionService"], ["_activateByEvent"], ["ExtensionHostManager"], ["$activateByEvent", "ExtHostExtensionService"], ["ExtensionsActivator"], ["_activateExtensions"]]
+
+[[task]]
+id = "vscode-file-save"
+repo = "vscode"
+kind = "flow"
+prompt = "In VS Code, trace saving a text file from TextFileEditorModel.save to the write on the file system provider."
+rubric = [["doSave"], ["textFileService.write", "TextFileService"], ["writeFile"], ["FileService"], ["doWriteUnbuffered", "doWriteBuffered"], ["provider.writeFile", "provider.write"]]
+
+[[task]]
+id = "vscode-config-value"
+repo = "vscode"
+kind = "explain"
+prompt = "How does VS Code's configuration service resolve the value of a setting across default, user and workspace configuration? Name the classes and methods involved."
+rubric = [["getValue"], ["getConsolidatedConfigurationModel"], ["ConfigurationModel"], ["merge"], ["Configuration"]]

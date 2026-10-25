@@ -10,8 +10,9 @@ on:
         description: "existing tag to (re)build, e.g. v0.2.0"
         required: true
 
+# builds run third-party build scripts: only the publish job gets a write token
 permissions:
-  contents: write
+  contents: read
 
 env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -25,10 +26,14 @@ jobs:
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
           # cross-compiled: hosted arm64 Linux runners aren't available to every private repo
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04, cross: true }
+          # static build for distros older than the gnu build's glibc 2.35; scripts/install.sh
+          # falls back to it when the gnu binary can't run. Best effort: never blocks a release.
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-22.04, musl: true, optional: true }
           - { target: x86_64-apple-darwin, os: macos-latest }
           - { target: aarch64-apple-darwin, os: macos-latest }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional == true }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,17 +55,22 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -yq gcc-aarch64-linux-gnu
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: musl toolchain
+        if: matrix.musl
+        run: sudo apt-get update -q && sudo apt-get install -yq musl-tools
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          dir=target/${{ matrix.target }}/release
-          if [[ "${{ matrix.target }}" == *windows* ]]; then
+          dir="target/$TARGET/release"
+          if [[ "$TARGET" == *windows* ]]; then
             # the viewer embeds the brand fonts: their SIL OFL licenses ship alongside
-            7z a "nexusweave-${{ matrix.target }}.zip" "./$dir/nexusweave.exe" README.md ./src/ui/fonts/OFL-*.txt
+            7z a "nexusweave-$TARGET.zip" "./$dir/nexusweave.exe" README.md ./src/ui/fonts/OFL-*.txt
           else
             cp README.md src/ui/fonts/OFL-*.txt "$dir/"
-            (cd "$dir" && tar -czf "$OLDPWD/nexusweave-${{ matrix.target }}.tar.gz" nexusweave README.md OFL-*.txt)
+            (cd "$dir" && tar -czf "$OLDPWD/nexusweave-$TARGET.tar.gz" nexusweave README.md OFL-*.txt)
           fi
       - name: Smoke test
         # binaries for another architecture can't run on the build host
@@ -75,6 +85,8 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:

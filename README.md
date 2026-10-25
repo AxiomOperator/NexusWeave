@@ -28,8 +28,10 @@ accuracy, and token-efficient answers. Nothing leaves your machine.
 ```bash
 git clone https://github.com/AxiomOperator/NexusWeave.git && cd NexusWeave
 cargo install --path .            # Rust 1.88+; one ~37 MB binary in ~/.cargo/bin
-nexusweave install                # register the MCP server with Claude Code / Cursor / Codex / Gemini / opencode
-                                  #   --hooks also adds a Claude Code hint hook (see below)
+nexusweave install                # register the MCP server with Claude Code / Cursor / Codex / Gemini / opencode / Kiro / VS Code
+                                  #   --hooks: a Claude Code hint hook (see below); --instructions: a NexusWeave section in
+                                  #   CLAUDE.md / AGENTS.md / GEMINI.md (measured: more explore calls, higher cost on
+                                  #   small repos); --allow: no permission prompts for its tools
 cd your-project && nexusweave init
 nexusweave explore "How does authentication work?"
 nexusweave ui                     # optional: browse the graph at http://127.0.0.1:7878
@@ -101,6 +103,14 @@ Each language gets:
   - Go gin, echo, chi and `net/http`
   - Laravel `Route::get`
   - Rails `routes.rb` and Sinatra
+- frontend page routes (`PAGE /users/:id` nodes linked to the component they render): React
+  Router `<Route path element>` (nested paths joined) and route-config objects (React Router,
+  Vue Router, Angular `{ path, component }`); Next.js `app/**/page.tsx` and `pages/**` (also
+  Nuxt), SvelteKit `src/routes/**/+page.svelte`
+- navigation: `navigate()`, `router.push()`, `history.push()`, `goto()`, `redirect()`,
+  `<Link to|href>` / `<NavLink>` / `<RouterLink>` / `<NuxtLink>` get `navigates` edges to the page
+  routes their path matches (`/users/${id}` matches `/users/:id` and `/users/[id]`), so flows run
+  from a click handler through the page to its component
 - C/C++ include paths are read from `compile_commands.json` when present
 
 ## CLI
@@ -125,7 +135,7 @@ nexusweave watch [path]             keep the graph in sync from the terminal
 nexusweave serve [--no-watch]       MCP server on stdio (auto-syncs; shares one daemon per repo)
 nexusweave daemon [status|stop]     the shared per-repo index process
 nexusweave ui [path] [--port 7878] [--no-open]   viewer: overview, call graph, module map, routes, call paths, insights, ask
-nexusweave install | uninstall      (un)register the MCP server with agents (--target, --print, --hooks)
+nexusweave install | uninstall      (un)register the MCP server with agents (--target, --print, --hooks, --instructions, --allow)
 nexusweave upgrade [--check] [--version TAG] [--force]   self-update from GitHub releases
 ```
 
@@ -211,6 +221,22 @@ discover (ignore-aware, parallel) ─► parse + extract (rayon, tree-sitter, pe
 - `.gitignore`, `.git/info/exclude` and `.nexusweaveignore` are respected. Vendored and build
   directories (`node_modules`, `vendor`, `target`, `dist`, …) are always skipped, as are files
   over 1.5 MB, minified files, and generated files (detected by content banners).
+- `nexusweave.json` at the project root (optional, comments allowed):
+
+  ```json
+  {
+    "extensions": { ".inc": "php" },
+    "exclude": ["fixtures/huge/**"],
+    "include": ["generated/api/**"],
+    "deprioritize": ["legacy/**"]
+  }
+  ```
+
+  `extensions` maps file suffixes to a supported language; `exclude` drops paths (committed or
+  not); `include` brings back paths a `.gitignore` hides; `deprioritize` keeps paths indexed but
+  ranks them below everything else, like generated code. Patterns use `.gitignore` syntax.
+  Changing the file rebuilds the index on the next sync. Files git tracks are indexed even if a
+  `.gitignore` pattern matches them, as git itself treats them.
 - The index lives in `.nexusweave/graph.db`. That directory ignores itself in git. An index written by an
   incompatible NexusWeave version is rebuilt automatically.
 - `nexusweave.stubs.toml` (or `.nexusweave/stubs.toml`) declares return types of libraries that aren't
@@ -230,15 +256,19 @@ discover (ignore-aware, parallel) ─► parse + extract (rayon, tree-sitter, pe
 
 ## Accuracy
 
-Measured against compiler-grade SCIP indexes on 7 pinned repos (`bench/`, run with `bench/setup.sh && bench/accuracy.py`):
+Measured against compiler-grade SCIP indexes on 9 pinned repos (`accuracy = false` corpus entries are agent-eval only) (`bench/`, run with `bench/setup.sh && bench/accuracy.py`):
 
 | language | precision | recall | repos |
 |---|---:|---:|---|
-| TypeScript | 100.0% | 89.1% | hono, codegraph |
+| TypeScript | 100.0% | 89.5% | hono, codegraph |
 | JavaScript | 100.0% | 89.8% | express |
-| Python | 99.8% | 80.5% | flask, httpx |
+| Python | 99.9% | 84.3% | flask, httpx |
 | Go | 99.9% | 96.5% | gin |
 | Rust | 98.6% | 81.8% | ripgrep |
+| C | 98.7% | 70.7% | zlib |
+| Ruby | 98.7% | 85.5% | rack |
+
+Java, C#, Kotlin, Swift, Dart, Scala, PHP and Lua are covered by fixture tests only so far.
 
 With a SCIP index present: hono 100% / 84.3%, ripgrep 99.2% / 91.6%.
 
@@ -246,10 +276,16 @@ With a SCIP index present: hono 100% / 84.3%, ripgrep 99.2% / 91.6%.
 
 ## Agent evaluation
 
-80 headless Claude Code sessions (20 questions × with/without NexusWeave × 2) answered every
-question correctly in both conditions. With NexusWeave they used 30% fewer tool calls, 12% fewer
-tokens and 10% less time. Cost came out 5% higher overall: lower on the largest repo, higher on
-the small ones. The details and next steps are in `enhancements.md` section 6;
+96 headless Claude Code sessions (24 questions × with/without NexusWeave × 2) answered every
+question correctly in both conditions. With NexusWeave they used 25% fewer tool calls, 5% fewer
+tokens and 5% less time. Cost came out 4% higher overall: lower on the largest repo, higher on
+the small ones. (An earlier 80-session run: −30% tool calls, −12% tokens, +5% cost.) Per repo, it
+saved 24% of cost on the largest repo (1.2k files) and cost 1–22% more on repos of 80–300 files;
+`enhancements.md` §8 has the paired comparisons with confidence intervals. In short: NexusWeave
+reliably cuts tool calls (−25% overall, −46% on django and vscode) and wall time (−17% on the large
+repos) with answer quality unchanged, but at current answer sizes it does not save money: cost per
+question is about the same to 14% higher (cheaper only on codegraph's tasks), because explore
+output is full-price input. The details and next steps are in `enhancements.md` section 6;
 reproduce with `bench/agent/run.py`.
 
 ## Development
@@ -266,7 +302,8 @@ nexusweave bench-sync <file>  # hidden: time warm incremental syncs after editin
 ```
 
 CI (`.github/workflows/ci.yml`) runs on pushes to `main` and on pull requests: tests on Linux,
-macOS and Windows, plus the accuracy gate. `pr-impact.yml` comments `nexusweave diff-impact` on PRs.
+macOS and Windows, plus the accuracy gate. `pr-impact.yml` builds a `nexusweave diff-impact` report for each PR
+(read-only token) and `pr-impact-comment.yml` posts it as a comment, fork PRs included.
 
 `tests/fixtures/<lang>/expect.txt` lists `src -> target` edges that must exist and
 `!src -> name` edges that must not. Add a case there when you fix resolution for a pattern.

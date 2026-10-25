@@ -19,7 +19,7 @@ Use `nexusweave_explore` FIRST for almost any code question or before editing â€
 - Name concrete identifiers when you know them (`AuthService.login`, `parse_config`); for a flow question name both ends (\"how does handleRequest reach Db.query\").
 - Include a file path (optionally `path:10-40`) to read that file region in the same call.
 - Results are lexical+graph ranked, not semantic: if a name is reported as not in the index, try a different identifier.
-- Trust the returned source; it is read from disk at call time. Don't re-read the same ranges.
+- Trust the returned source; it is read from disk at call time. Each file header says what it covers: \"entire file\", or the line ranges shown and any symbols only partly shown (with their last line). Read further only for those; everything else is already complete.
 - Source already sent earlier in this session comes back as a short \"already shown\" pointer (only while the file is unchanged); pass `fresh: true` if you need it again.
 Use `nexusweave_node` to read one symbol (source + callers + callees) or a file with line numbers.
 Use `nexusweave_diff_impact` after making changes (or when reviewing a branch) to see what they affect and which tests to run. If a project has no index, fall back to your normal tools â€” don't run `nexusweave init` yourself unless asked.";
@@ -110,7 +110,7 @@ impl Server {
                 let q = s("query").ok_or_else(|| anyhow!("query is required"))?;
                 g.explore(q, &Opts { max_chars: n("budget").map(|t| t as usize * 4).unwrap_or(0), seen, ..Default::default() })?
             }
-            "nexusweave_node" => node_text(g, s("symbol").or(s("file")).unwrap_or(""), s("file"), a.get("includeCode").and_then(Value::as_bool).unwrap_or(true), n("offset").map(|x| x as u32), n("limit").map(|x| x as u32))?,
+            "nexusweave_node" => node_text(g, s("symbol").or(s("file")).unwrap_or(""), s("file"), a.get("includeCode").and_then(Value::as_bool).unwrap_or(true), n("offset").map(|x| x.min(u32::MAX as u64) as u32), n("limit").map(|x| x.min(u32::MAX as u64) as u32))?,
             "nexusweave_search" => {
                 let kind = s("kind").and_then(crate::model::NodeKind::parse);
                 let v = g.search(s("query").unwrap_or(""), kind, n("limit").unwrap_or(15).min(100) as usize)?;
@@ -146,8 +146,8 @@ impl Server {
                 o
             }
             "nexusweave_files" => {
-                let mut st = g.db.conn.prepare("SELECT path, node_count FROM files WHERE path LIKE ? ORDER BY path LIMIT 2000")?;
-                let pat = format!("{}%", s("path").unwrap_or("").trim_start_matches("./"));
+                let mut st = g.db.conn.prepare("SELECT path, node_count FROM files WHERE path LIKE ? ESCAPE '\\' ORDER BY path LIMIT 2000")?;
+                let pat = format!("{}%", crate::like_escape(s("path").unwrap_or("").trim_start_matches("./")));
                 let mut o = String::new();
                 for r in st.query_map([pat], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? { let (p, c) = r?; let _ = writeln!(o, "{p} ({})", c - 1); }
                 o
@@ -183,8 +183,8 @@ pub fn node_text(g: &Graph, target: &str, file: Option<&str>, code: bool, offset
         if let Some(p) = g.match_path(t)? {
             let src = g.read_source(&p).unwrap_or_default();
             let lines: Vec<&str> = src.lines().collect();
-            let start = offset.unwrap_or(1).max(1);
-            let end = limit.map(|l| start + l - 1).unwrap_or(lines.len() as u32).min(lines.len() as u32).min(start + 1999);
+            let start = offset.unwrap_or(1).max(1).min((lines.len() as u32).max(1));
+            let end = limit.map(|l| start.saturating_add(l).saturating_sub(1)).unwrap_or(lines.len() as u32).min(lines.len() as u32).min(start.saturating_add(1999));
             let _ = writeln!(o, "### {p} (lines {start}-{end} of {})", lines.len());
             for ln in start..=end { let _ = writeln!(o, "{ln}\t{}", lines[ln as usize - 1]); }
             let deps = g.file_dependents(&p)?;
@@ -242,13 +242,10 @@ fn cap(mut s: String) -> String {
 pub fn serve(root: Option<PathBuf>, watch: bool) -> Result<()> {
     // Prefer the project's shared daemon (one watcher + warm cache for every agent session);
     // fall back to answering in-process.
-    #[cfg(unix)]
     let mut daemon = match (&root, watch) {
         (Some(r), true) if std::env::var_os("NEXUSWEAVE_NO_DAEMON").is_none() => crate::daemon::connect_or_spawn(r),
         _ => None,
     };
-    #[cfg(not(unix))]
-    let daemon: Option<()> = None;
     let mut local: Option<Server> = None;
     let make_local = |root: &Option<PathBuf>| {
         let watcher = match (root, watch) {
@@ -293,16 +290,12 @@ pub fn serve(root: Option<PathBuf>, watch: bool) -> Result<()> {
                 // Calls for other projects (projectPath) are answered in-process; the daemon owns this one.
                 let other_project = args.get("projectPath").and_then(Value::as_str)
                     .is_some_and(|p| find_root(Path::new(p)) != root);
-                #[cfg(unix)]
                 let via_daemon = if other_project { None } else { daemon.as_mut().and_then(|d| d.call(&name, &args).ok()) };
-                #[cfg(not(unix))]
-                let via_daemon: Option<(String, bool)> = { let _ = (&daemon, other_project); None };
                 let (text, is_err) = match via_daemon {
                     Some(r) => r,
                     None => {
-                        #[cfg(unix)]
                         if !other_project && daemon.is_some() {
-                            daemon = root.as_ref().and_then(crate::daemon::connect_or_spawn);  // daemon went away: reconnect
+                            daemon = root.as_deref().and_then(crate::daemon::connect_or_spawn);  // daemon went away: reconnect
                             if let Some(r) = daemon.as_mut().and_then(|d| d.call(&name, &args).ok()) {
                                 let resp = json!({"content": [{"type": "text", "text": r.0}], "isError": r.1});
                                 writeln!(stdout, "{}", json!({"jsonrpc": "2.0", "id": id, "result": resp}))?;

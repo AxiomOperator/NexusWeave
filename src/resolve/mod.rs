@@ -98,6 +98,51 @@ struct Rx<'a> {
     imports: HashMap<u32, Vec<(&'a mem::ImportInfo, Target)>>,
 }
 
+/// URL path segments, without query, hash or empty segments: `/users/42?tab=1` → `users`, `42`.
+fn path_segments(p: &str) -> Vec<&str> {
+    let p = p.split(['?', '#']).next().unwrap_or(p);
+    p.split('/').filter(|s| !s.is_empty()).collect()
+}
+
+/// How well a navigation path matches a page route pattern: `Some(literal segments matched)`, or
+/// `None`. Pattern params (`:id`, `[id]`, `{id}`) and the path's own placeholders (`${id}` → `:p`)
+/// match any one segment; catch-alls (`*`, `[...slug]`, `:rest*`) match the rest.
+fn route_match(pattern: &[&str], path: &[&str]) -> Option<usize> {
+    let param = |s: &str| s.starts_with(':') || s.starts_with('[') && s.ends_with(']') || s.starts_with('{') && s.ends_with('}');
+    let rest = |s: &str| s == "*" || s == "**" || s.starts_with("[...") || s.starts_with("[[...") || s.starts_with(':') && (s.ends_with('*') || s.ends_with('+'));
+    let optional = |s: &str| s.starts_with("[[") || s.starts_with(':') && s.ends_with('?');
+    let mut score = 0;
+    for (i, p) in pattern.iter().enumerate() {
+        if rest(p) { return Some(score); }
+        let Some(s) = path.get(i) else { return pattern[i..].iter().all(|p| optional(p) || rest(p)).then_some(score) };
+        if param(p) || s.starts_with(':') { continue; }
+        if p != s { return None; }
+        score += 1;
+    }
+    (path.len() == pattern.len()).then_some(score)
+}
+
+/// `HTTPServer` → `http_server`, `App` → `app` (Ruby's file-naming convention).
+fn snake_case(name: &str) -> String {
+    let cs: Vec<char> = name.chars().collect();
+    let mut out = String::new();
+    for (i, &c) in cs.iter().enumerate() {
+        if c.is_uppercase() {
+            let next_lower = cs.get(i + 1).is_some_and(|n| n.is_lowercase());
+            if i > 0 && (cs[i - 1].is_lowercase() || next_lower && cs[i - 1].is_uppercase()) { out.push('_'); }
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn is_header(path: &str) -> bool {
+    let ext = path.rsplit_once('.').map_or("", |(_, e)| e);
+    matches!(ext, "h" | "hh" | "hpp" | "hxx" | "h++" | "inl")
+}
+
 fn implicit_this(l: Lang) -> bool { matches!(l, Lang::Java | Lang::CSharp | Lang::Cpp | Lang::C | Lang::Ruby | Lang::Kotlin | Lang::Swift | Lang::Dart | Lang::Scala) }
 
 fn want_for(kind: RefKind) -> fn(NodeKind) -> bool {
@@ -106,14 +151,24 @@ fn want_for(kind: RefKind) -> fn(NodeKind) -> bool {
         RefKind::Instantiate => |k| k.is_type() || k == NodeKind::Function,
         RefKind::Extends | RefKind::Implements => |k| k.is_type(),
         RefKind::TypeRef => |k| k.is_type() || matches!(k, NodeKind::Namespace | NodeKind::Module | NodeKind::EnumMember),
-        // property reads only link to accessors / declared properties (fields would explode the graph)
-        RefKind::Read => |k| k == NodeKind::Property,
+        // member reads link to accessors / declared properties, to methods and functions read as
+        // values (`cls.handler`, `tasks.add.delay`) and to classes named as values (`except E:`,
+        // `Cls.make()`); never to plain fields (that would explode the graph). Reads never fall
+        // back to name guessing, so only names in scope, imports and known receivers resolve.
+        RefKind::Read => |k| k == NodeKind::Property || k.is_callable() || k.is_type() && k != NodeKind::TypeAlias,
+        // `obj.prop = x` only means something for a declared property (its setter); a field write
+        // stays unrecorded
+        RefKind::Write => |k| k == NodeKind::Property,
         RefKind::Import => |k| k != NodeKind::File,
-        // a bare name passed as a value: a function, or a class (`isinstance(x, Foo)`, `register(Foo)`)
-        RefKind::Callback => |k| k.is_callable() || k.is_type() && k != NodeKind::TypeAlias,
+        // a name passed as a value: a function, or a class (`isinstance(x, Foo)`, `register(Foo)`),
+        // or a property whose getter runs right there (`decode(self.encoding)`); member reads in
+        // value positions are noted only this way (see `extract::drop_shadowed_reads`)
+        RefKind::Callback => |k| k.is_callable() || k.is_type() && k != NodeKind::TypeAlias || k == NodeKind::Property,
         RefKind::Overrides | RefKind::Dispatch | RefKind::Handles => |k| k.is_callable(),
         // raw emit sites are wired to listeners by the `triggers` synthesis, not by name resolution
         RefKind::Emit | RefKind::Triggers => |_| false,
+        // navigation sites are matched to page routes by path in a synthesis pass
+        RefKind::Navigate | RefKind::NavigatesTo => |_| false,
     }
 }
 
@@ -496,6 +551,33 @@ impl<'a> Rx<'a> {
         None
     }
 
+    /// Breadth-first through the include graph below `file`'s direct includes (which the glob
+    /// tier already checked): the first top-level match wins.
+    fn via_includes(&self, file: u32, name: &str, want: &dyn Fn(NodeKind) -> bool) -> Option<u32> {
+        let includes = |f: u32| -> Vec<u32> {
+            self.imports.get(&f).into_iter().flatten()
+                .filter_map(|(im, t)| match t { Target::File(g) if im.kind == ImportKind::Glob => Some(*g), _ => None }).collect()
+        };
+        let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::from([file]);
+        let mut level: Vec<u32> = includes(file);
+        seen.extend(level.iter().copied());
+        for _ in 0..8 {
+            let mut next = Vec::new();
+            for f in level {
+                for g in includes(f) {
+                    if seen.len() >= 512 { return None; }
+                    if seen.insert(g) {
+                        if let Some(n) = self.top_level(g, name, want) { return Some(n); }
+                        next.push(g);
+                    }
+                }
+            }
+            if next.is_empty() { return None; }
+            level = next;
+        }
+        None
+    }
+
     fn package_files(&self, file: u32) -> Vec<u32> {
         let f = &self.mem.files[file as usize];
         match f.lang {
@@ -546,6 +628,8 @@ impl<'a> Rx<'a> {
                 if im.kind == ImportKind::Glob && let Some(n) = self.in_target(t, name, want, 1) { return Some((n, 88)); }
             }
         }
+        // C/C++: headers included indirectly (`deflate.c` → deflate.h → zutil.h → zlib.h), nearest first
+        if matches!(lang, Lang::C | Lang::Cpp) && let Some(n) = self.via_includes(file, name, want) { return Some((n, 85)); }
         // 4. package visibility
         for f in self.package_files(file) {
             if f != file && let Some(n) = self.top_level(f, name, want) { return Some((n, 90)); }
@@ -607,6 +691,18 @@ impl<'a> Rx<'a> {
             return if v.len() == 1 { Some((v[0], 40)) } else { None };
         }
         if v.len() == 1 { return Some((v[0], if loose { 75 } else { 45 })); }
+        // one module reopened in many files (Ruby `module App`, C++ `namespace geo`) is one entity:
+        // bind to its canonical declaration, in the file named after it (`rack.rb` for `Rack`)
+        // or else the shortest path
+        if v.iter().all(|&c| matches!(self.mem.node(c).kind, NodeKind::Module | NodeKind::Namespace) && self.mem.node(c).qname == self.mem.node(v[0]).qname) {
+            let stem = snake_case(name);
+            let key = |c: u32| {
+                let p = &self.mem.file_of(c).path;
+                let file = p.rsplit('/').next().unwrap_or(p);
+                (file.split('.').next() != Some(stem.as_str()), p.len(), p.clone())
+            };
+            return v.iter().copied().min_by_key(|&c| key(c)).map(|c| (c, 80));
+        }
         if !loose { return None; }
         let score = |c: u32| {
             let n = self.mem.node(c);
@@ -641,7 +737,7 @@ impl<'a> Rx<'a> {
             return None; // external Go package
         }
         if segs.len() == 1 && self.is_external_binding(r.file, segs[0]) { return None; }
-        if matches!(r.kind, RefKind::Callback | RefKind::Read) { return None; }
+        if matches!(r.kind, RefKind::Callback | RefKind::Read | RefKind::Write) { return None; }
         // `Array.isArray`, `HashMap::with_capacity`, `os.path.join`: the qualifier is the language's
         // own library (it didn't resolve to a project symbol above), so a same-named project member
         // is never the target
@@ -721,6 +817,58 @@ impl<'a> Rx<'a> {
 
     /// Target + confidence, and for typed receivers the type the member was looked up on.
     fn resolve_ref(&self, r: &RefRow) -> (Option<(u32, u8)>, Option<u32>) {
+        let (hit, via) = self.resolve_ref_raw(r);
+        (hit.filter(|&(t, _)| !self.preprocessor_alternative(t)).map(|(t, c)| (self.prefer_definition(r.file, t), c)), via)
+    }
+
+    /// C/C++: a typedef / constant / variable defined more than once at the top of one file is a
+    /// set of `#if` alternatives (zlib's five `z_size_t`); which one applies depends on the build,
+    /// so no edge beats a guess.
+    fn preprocessor_alternative(&self, t: u32) -> bool {
+        let n = self.mem.node(t);
+        if !matches!(n.kind, NodeKind::TypeAlias | NodeKind::Constant | NodeKind::Variable) { return false; }
+        let f = &self.mem.files[n.file as usize];
+        if !matches!(f.lang, Lang::C | Lang::Cpp) { return false; }
+        self.mem.by_name.get(&mem::key(&n.name)).is_some_and(|cs| cs.iter().any(|&c| {
+            let m = self.mem.node(c);
+            c != t && m.file == n.file && m.kind == n.kind && m.name == n.name && m.parent == n.parent
+        }))
+    }
+
+    /// C/C++: a call bound to a function declared in a header goes to that function's one
+    /// definition in a source file (the body an agent wants to read), when there is exactly one.
+    fn prefer_definition(&self, from: u32, t: u32) -> u32 {
+        let n = self.mem.node(t);
+        if !matches!(n.kind, NodeKind::Function | NodeKind::Method | NodeKind::Constructor) { return t; }
+        let tf = &self.mem.files[n.file as usize];
+        if !matches!(tf.lang, Lang::C | Lang::Cpp) || !is_header(&tf.path) { return t; }
+        let from_test = self.mem.files[from as usize].is_test;
+        // the class a method belongs to: its out-of-line owner (`Circle::area`) or enclosing type
+        let owner = |x: u32| -> Option<String> {
+            let m = self.mem.node(x);
+            m.owner.as_deref().map(|o| o.rsplit("::").next().unwrap_or(o).to_string())
+                .or_else(|| self.mem.enclosing_type(x).map(|e| self.mem.node(e).name.clone()))
+        };
+        let want_owner = owner(t);
+        let Some(cands) = self.mem.by_name.get(&mem::key(&n.name)) else { return t };
+        let defs: Vec<u32> = cands.iter().copied().filter(|&c| {
+            let m = self.mem.node(c);
+            let f = &self.mem.files[m.file as usize];
+            c != t && m.kind == n.kind && m.name == n.name && owner(c) == want_owner
+                && matches!(f.lang, Lang::C | Lang::Cpp) && !is_header(&f.path) && (from_test || !f.is_test)
+        }).collect();
+        if defs.len() <= 1 { return defs.first().copied().unwrap_or(t); }
+        // several copies (vendored / contrib): the one beside the header, else the one shallowest
+        let dir = |c: u32| { let p = &self.mem.file_of(c).path; p.rsplit_once('/').map_or("", |(d, _)| d).to_string() };
+        let here: Vec<u32> = defs.iter().copied().filter(|&c| dir(c) == dir(t)).collect();
+        if here.len() == 1 { return here[0]; }
+        let depth = |c: u32| self.mem.file_of(c).path.matches('/').count();
+        let min = defs.iter().map(|&c| depth(c)).min().unwrap_or(0);
+        let top: Vec<u32> = defs.into_iter().filter(|&c| depth(c) == min).collect();
+        if top.len() == 1 { top[0] } else { t }
+    }
+
+    fn resolve_ref_raw(&self, r: &RefRow) -> (Option<(u32, u8)>, Option<u32>) {
         let want = want_for(r.kind);
         // Heritage from an out-of-line container (Rust `impl Trait for T`) — recv_type is the owner, not a receiver.
         let is_owner_heritage = matches!(r.kind, RefKind::Extends | RefKind::Implements) && self.mem.node(r.src).kind == NodeKind::File;
@@ -764,7 +912,7 @@ fn apply_scip(mem: &Mem, ix: &crate::scip::Index, refs: &[&RefRow], res: &mut [R
     };
     for i in order {
         let r = refs[i];
-        if !matches!(r.kind, RefKind::Call | RefKind::Instantiate | RefKind::TypeRef | RefKind::Extends | RefKind::Implements | RefKind::Read | RefKind::Callback) { continue; }
+        if !matches!(r.kind, RefKind::Call | RefKind::Instantiate | RefKind::TypeRef | RefKind::Extends | RefKind::Implements | RefKind::Read | RefKind::Write | RefKind::Callback) { continue; }
         let f = &mem.files[r.file as usize];
         if f.mtime > ix.mtime_ms { continue; }  // edited after the index was built: positions may be off
         let u = used.entry(r.file).or_default();
@@ -1017,7 +1165,7 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
                 format!("{base} AND r.id IN (SELECT id FROM refs WHERE file_id IN (SELECT id FROM scope_files)
                          UNION SELECT id FROM scope_refs
                          -- the partial heritage index only applies when its own predicate is repeated
-                         UNION SELECT id FROM refs WHERE kind IN (2, 3, 8, 11, 12) AND kind IN ({}, {})
+                         UNION SELECT id FROM refs WHERE kind IN (2, 3, 8, 11, 12, 14, 15) AND kind IN ({}, {})
                          -- CROSS JOIN pins the order: temp tables have no statistics
                          UNION {call_paths}))",
                     RefKind::Extends as i64, RefKind::Implements as i64)
@@ -1177,7 +1325,7 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
                 let (t, c, o, v, m) = by_id[i + 1];
                 // most bare-name arguments are plain values; keep only the ones that are functions
                 // (and remember the name, in case a later sync defines it)
-                if matches!(r.kind, RefKind::Callback | RefKind::Read) && t.is_none() {
+                if matches!(r.kind, RefKind::Callback | RefKind::Read | RefKind::Write) && t.is_none() {
                     // every name it depends on: its own, its receiver path, its qualifier
                     for k in Cache::ref_keys(crate::db::name_hash(&r.name), r.recv_type.as_deref(), r.qualifier.as_deref()) {
                         vn.execute(rusqlite::params![r.file_id, k])?;
@@ -1216,14 +1364,14 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
             let mut want: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
             let mut emit_rows: Vec<(i64, i64, String, i64)> = Vec::new();
             {
-                let mut q = tx.prepare("SELECT file_id, src_id, name, line FROM refs WHERE kind IN (2, 3, 8, 11, 12) AND kind = 11")?;
+                let mut q = tx.prepare("SELECT file_id, src_id, name, line FROM refs WHERE kind IN (2, 3, 8, 11, 12, 14, 15) AND kind = 11")?;
                 let mut rows = q.query([])?;
                 while let Some(r) = rows.next()? { emit_rows.push((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)); }
             }
             let mut have: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
             let mut stale = Vec::new();
             {
-                let mut q = tx.prepare("SELECT id, src_id, target_id FROM refs WHERE kind IN (2, 3, 8, 11, 12) AND kind = 12")?;
+                let mut q = tx.prepare("SELECT id, src_id, target_id FROM refs WHERE kind IN (2, 3, 8, 11, 12, 14, 15) AND kind = 12")?;
                 let mut rows = q.query([])?;
                 while let Some(r) = rows.next()? { have.insert((r.get(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0))); stale.push((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0))); }
             }
@@ -1239,12 +1387,45 @@ pub fn resolve_with(db: &mut Db, root: &Path, scope: Scope, mut cache: Option<&m
             for (id, s, t) in stale { if !want.contains(&(s, t)) { del.execute([id])?; } }
         }
         {
+            // navigates: every navigation site → the page route(s) its path matches best
+            let pages: Vec<(Vec<&str>, i64)> = mem.nodes.iter()
+                .filter(|n| n.alive && n.kind == NodeKind::Route && n.name.starts_with("PAGE "))
+                .map(|n| (path_segments(&n.name[5..]), n.id)).collect();
+            let mut want: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+            let mut sites: Vec<(i64, i64, String, i64)> = Vec::new();
+            {
+                let mut q = tx.prepare("SELECT file_id, src_id, name, line FROM refs WHERE kind IN (2, 3, 8, 11, 12, 14, 15) AND kind = 14")?;
+                let mut rows = q.query([])?;
+                while let Some(r) = rows.next()? { sites.push((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)); }
+            }
+            let mut have: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+            let mut stale = Vec::new();
+            {
+                let mut q = tx.prepare("SELECT id, src_id, target_id FROM refs WHERE kind IN (2, 3, 8, 11, 12, 14, 15) AND kind = 15")?;
+                let mut rows = q.query([])?;
+                while let Some(r) = rows.next()? { have.insert((r.get(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0))); stale.push((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?.unwrap_or(0))); }
+            }
+            let mut ins = tx.prepare("INSERT INTO refs(file_id,src_id,kind,name,name_h,line,col,target_id,confidence) VALUES(?,?,15,?,?,?,0,?,75)")?;
+            for (f, src, path, line) in &sites {
+                let segs = path_segments(path);
+                let scored: Vec<(usize, i64)> = pages.iter().filter_map(|(p, id)| route_match(p, &segs).map(|s| (s, *id))).collect();
+                let Some(best) = scored.iter().map(|(s, _)| *s).max() else { continue };
+                for &(_, id) in scored.iter().filter(|(s, _)| *s == best) {
+                    if want.insert((*src, id)) && !have.contains(&(*src, id)) {
+                        ins.execute(rusqlite::params![f, src, path, crate::db::name_hash(path), line, id])?;
+                    }
+                }
+            }
+            let mut del = tx.prepare("DELETE FROM refs WHERE id = ?")?;
+            for (id, s, t) in stale { if !want.contains(&(s, t)) { del.execute([id])?; } }
+        }
+        {
             // diff against what's stored (indexed by the partial heritage index) — write only changes
             let want: std::collections::HashSet<(i64, i64)> = overrides.iter().map(|&(m, x)| (mem.node(m).id, mem.node(x).id)).collect();
             let mut have: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
             let mut stale: Vec<i64> = Vec::new();
             {
-                let mut q = tx.prepare("SELECT id, src_id, target_id FROM refs WHERE kind IN (2, 3, 8, 11, 12) AND kind = 8")?;
+                let mut q = tx.prepare("SELECT id, src_id, target_id FROM refs WHERE kind IN (2, 3, 8, 11, 12, 14, 15) AND kind = 8")?;
                 let mut rows = q.query([])?;
                 while let Some(r) = rows.next()? {
                     let (id, s, t) = (r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<i64>>(2)?);

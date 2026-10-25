@@ -25,6 +25,8 @@ pub struct Candidate {
     pub lang: Lang,
     pub size: u64,
     pub mtime: i64,
+    /// `nexusweave.json` `deprioritize`: indexed, but ranked like generated code
+    pub low: bool,
 }
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
@@ -69,22 +71,54 @@ fn minified(src: &[u8]) -> bool {
     src.len() / lines > 400
 }
 
-/// Whether a project-relative path is excluded by default dirs or root-level ignore files.
+/// Whether a project-relative path is excluded by default dirs or ignore files. Like git, a
+/// `.gitignore` pattern doesn't apply to a file that is tracked anyway (zlib commits the
+/// `zconf.h` its `.gitignore` lists); `.nexusweaveignore` always applies.
 pub fn excluded(root: &Path, rel: &str) -> bool {
     let mut segs: Vec<&str> = rel.split('/').collect();
     segs.pop();
     if segs.iter().any(|s| DEFAULT_EXCLUDES.contains(s) || s.starts_with('.')) { return true; }
+    let cfg = crate::config::get(root);
+    if cfg.excluded(rel) || ignored_by(root, rel, &segs, &[".nexusweaveignore", ".xgraphignore"]) { return true; }
+    ignored_by(root, rel, &segs, &[".gitignore"]) && !tracked_ignored(root).contains(rel) && !cfg.included(rel)
+}
+
+fn ignored_by(root: &Path, rel: &str, dirs: &[&str], names: &[&str]) -> bool {
     let mut b = ignore::gitignore::GitignoreBuilder::new(root);
     let mut dir = root.to_path_buf();
-    for f in [".gitignore", ".nexusweaveignore", ".xgraphignore"] { let _ = b.add(dir.join(f)); }
-    for s in &segs {
+    for f in names { let _ = b.add(dir.join(f)); }
+    for s in dirs {
         dir = dir.join(s);
-        for f in [".gitignore", ".nexusweaveignore", ".xgraphignore"] { let p = dir.join(f); if p.exists() { let _ = b.add(p); } }
+        for f in names { let p = dir.join(f); if p.exists() { let _ = b.add(p); } }
     }
     match b.build() {
         Ok(gi) => gi.matched_path_or_any_parents(rel, false).is_ignore(),
         Err(_) => false,
     }
+}
+
+/// Files git tracks although an ignore rule matches them (`git ls-files -ci --exclude-standard`),
+/// relative to `root`; empty outside a git checkout or without git. Cached for a short while:
+/// the watcher asks on every event.
+pub fn tracked_ignored(root: &Path) -> std::sync::Arc<HashSet<String>> { tracked_ignored_ex(root, false) }
+
+type TrackedCache = Mutex<HashMap<PathBuf, (Instant, std::sync::Arc<HashSet<String>>)>>;
+static TRACKED: std::sync::OnceLock<TrackedCache> = std::sync::OnceLock::new();
+
+/// `fresh`: ask git now (discovery does, and refreshes the cache for the watcher).
+fn tracked_ignored_ex(root: &Path, fresh: bool) -> std::sync::Arc<HashSet<String>> {
+    use std::sync::Arc;
+    let cache = TRACKED.get_or_init(Default::default);
+    if !fresh && let Some((at, set)) = cache.lock().unwrap().get(root) && at.elapsed() < std::time::Duration::from_secs(30) { return set.clone(); }
+    let set: HashSet<String> = std::process::Command::new("git")
+        .arg("-C").arg(root).args(["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"])
+        .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()
+        .filter(|o| o.status.success())
+        .map(|o| o.stdout.split(|&b| b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).replace('\\', "/")).collect())
+        .unwrap_or_default();
+    let set = Arc::new(set);
+    cache.lock().unwrap().insert(root.to_path_buf(), (Instant::now(), set.clone()));
+    set
 }
 
 pub fn discover(root: &Path) -> Vec<Candidate> {
@@ -102,26 +136,59 @@ pub fn discover(root: &Path) -> Vec<Candidate> {
         true
     });
     let out = Mutex::new(Vec::new());
+    let cfg = crate::config::get(root);
     wb.build_parallel().run(|| {
         let out = &out;
         let root = &root_owned;
+        let cfg = &cfg;
         Box::new(move |res| {
             let Ok(e) = res else { return ignore::WalkState::Continue };
             if !e.file_type().is_some_and(|t| t.is_file()) { return ignore::WalkState::Continue; }
             let p = e.path();
             let Ok(rel) = p.strip_prefix(root) else { return ignore::WalkState::Continue };
             let rel = rel.to_string_lossy().replace('\\', "/");
-            let Some(lang) = Lang::from_path(&rel) else { return ignore::WalkState::Continue };
+            let Some(lang) = cfg.lang(&rel) else { return ignore::WalkState::Continue };
+            if cfg.excluded(&rel) { return ignore::WalkState::Continue; }
             let Ok(md) = e.metadata() else { return ignore::WalkState::Continue };
             if md.len() > MAX_FILE_SIZE || md.len() == 0 { return ignore::WalkState::Continue; }
             let mtime = md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
-            out.lock().unwrap().push(Candidate { rel, abs: p.to_path_buf(), lang, size: md.len(), mtime });
+            let low = cfg.deprioritized(&rel);
+            out.lock().unwrap().push(Candidate { rel, abs: p.to_path_buf(), lang, size: md.len(), mtime, low });
             ignore::WalkState::Continue
         })
     });
     let mut v = out.into_inner().unwrap();
+    // paths a .gitignore hid from the walk that belong in anyway: files git tracks regardless,
+    // and `nexusweave.json` `include` patterns
+    let mut extra: Vec<String> = tracked_ignored_ex(root, true).iter().cloned().collect();
+    if cfg.has_includes() { extra.extend(included_paths(root, &cfg)); }
+    if !extra.is_empty() {
+        let mut have: HashSet<String> = v.iter().map(|c| c.rel.clone()).collect();
+        for rel in extra {
+            if have.contains(&rel) || excluded(root, &rel) { continue; }
+            let Some(lang) = cfg.lang(&rel) else { continue };
+            let abs = root.join(&rel);
+            let Ok(md) = std::fs::symlink_metadata(&abs) else { continue };
+            if !md.is_file() || md.len() > MAX_FILE_SIZE || md.len() == 0 { continue; }
+            let mtime = md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
+            let low = cfg.deprioritized(&rel);
+            have.insert(rel.clone());
+            v.push(Candidate { rel, abs, lang, size: md.len(), mtime, low });
+        }
+    }
     v.sort_by(|a, b| a.rel.cmp(&b.rel));
     v
+}
+
+/// Files matching `nexusweave.json` `include` patterns, found by a walk that ignores .gitignore
+/// (default-excluded and hidden directories are still skipped).
+fn included_paths(root: &Path, cfg: &crate::config::Config) -> Vec<String> {
+    let mut wb = ignore::WalkBuilder::new(root);
+    wb.hidden(true).git_ignore(false).git_global(false).git_exclude(false).ignore(false).parents(false).follow_links(false);
+    wb.filter_entry(|e| e.depth() == 0 || !e.file_type().is_some_and(|t| t.is_dir()) || !DEFAULT_EXCLUDES.contains(&e.file_name().to_string_lossy().as_ref()));
+    wb.build().filter_map(Result::ok).filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+        .filter_map(|e| e.path().strip_prefix(root).ok().map(|r| r.to_string_lossy().replace('\\', "/")))
+        .filter(|rel| cfg.included(rel)).collect()
 }
 
 pub struct Parsed {
@@ -136,7 +203,7 @@ pub fn parse_file(c: &Candidate) -> Option<Parsed> {
 }
 
 fn parse_bytes(c: &Candidate, src: &[u8], hash: u64) -> Parsed {
-    let generated = is_generated(&c.rel, src);
+    let generated = c.low || is_generated(&c.rel, src);
     let ex = if minified(src) { FileExtraction::default() } else { crate::extract::extract(c.lang, &c.rel, src) };
     Parsed {
         meta: FileMeta { path: c.rel.clone(), lang: c.lang, hash, size: c.size, mtime: c.mtime, is_test: is_test_path(&c.rel), generated },
@@ -237,6 +304,7 @@ pub fn full_index(root: &Path, mut progress: impl FnMut(usize, usize)) -> Result
     st.ms_resolve = t2.elapsed().as_millis();
     db.set_meta("indexed_at", &now_ms().to_string())?;
     db.set_meta("version", env!("CARGO_PKG_VERSION"))?;
+    db.set_meta("config_hash", &crate::config::get(root).hash.to_string())?;
     let t = Instant::now();
     db.conn.execute_batch("INSERT INTO nodes_fts(nodes_fts) VALUES('optimize');")?;
     let t_opt = t.elapsed();
@@ -292,7 +360,10 @@ fn sync_inner(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Optio
     };
     if !path.exists() { return rebuild(&mut cache); }
     let mut db = Db::open(&path)?;
-    if !db.compatible() {
+    // built under other `nexusweave.json` settings (a remapped extension changes how unchanged
+    // files parse): rebuild
+    let cfg = crate::config::get(root);
+    if !db.compatible() || db.meta("config_hash")?.unwrap_or_else(|| "0".into()) != cfg.hash.to_string() {
         drop(db);
         return rebuild(&mut cache);
     }
@@ -310,11 +381,11 @@ fn sync_inner(root: &Path, only: Option<&[String]>, mut cache: Option<&mut Optio
         Some(paths) => paths.iter().filter_map(|rel| {
             if excluded(root, rel) { return None; }
             let abs = root.join(rel);
-            let lang = Lang::from_path(rel)?;
+            let lang = cfg.lang(rel)?;
             let md = std::fs::metadata(&abs).ok()?;
             if !md.is_file() || md.len() > MAX_FILE_SIZE || md.len() == 0 { return None; }
             let mtime = md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
-            Some(Candidate { rel: rel.clone(), abs, lang, size: md.len(), mtime })
+            Some(Candidate { rel: rel.clone(), abs, lang, size: md.len(), mtime, low: cfg.deprioritized(rel) })
         }).collect(),
     };
     st.files_scanned = cands.len();

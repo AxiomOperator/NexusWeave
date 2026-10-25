@@ -7,3 +7,6 @@ App.User -> App.Base
 GET /users -> UsersController.index
 UsersController -> UsersController.authenticate
 PostsController.show -> Post.shout
+# every segment of a qualified constant is a reference
+Scoped.build -> App
+Scoped.build -> App.User

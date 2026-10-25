@@ -18,6 +18,7 @@ Results append to a JSONL file, so an interrupted run resumes where it stopped:
   python3 bench/agent/run.py                       # 20 tasks x 2 conditions x 2 repeats = 80 sessions
   python3 bench/agent/run.py --tasks gin-abort --repeats 1    # a pilot
   python3 bench/agent/run.py --report bench/results/agent.jsonl
+  python3 bench/agent/run.py --judge-file bench/results/agent.jsonl   # LLM-grade existing answers
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import argparse
 import concurrent.futures as cf
 import json
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -60,7 +62,13 @@ def workspace(repo: str, cond: str, nexusweave: Path) -> Path:
     """A clean checkout per (repo, condition); only the nexusweave one carries an index."""
     ws = WORK / f"{repo}-{cond}"
     src = CACHE / "repos" / repo
-    commit = corpus()[repo]["commit"]
+    r = corpus()[repo]
+    commit = r["commit"]
+    if not (src / ".git").exists():
+        # agent-only repos (`accuracy = false`) aren't fetched by accuracy.py
+        src.mkdir(parents=True, exist_ok=True)
+        for cmd in (["git", "init", "-q"], ["git", "fetch", "-q", "--depth", "1", r["url"], commit], ["git", "checkout", "-q", "FETCH_HEAD"]):
+            subprocess.run(cmd, cwd=src, check=True)
     marker = ws / ".eval-ready"
     if marker.exists() and marker.read_text() == commit:
         return ws
@@ -95,6 +103,9 @@ def run_one(task: dict, cond: str, rep: int, args, nexusweave: Path) -> dict:
            "--setting-sources", "", "--no-session-persistence", "--max-budget-usd", str(args.budget)]
     if args.model:
         cmd += ["--model", args.model]
+    if args.instructions and cond == "nexusweave":
+        # what `nexusweave install --instructions` puts in CLAUDE.md (these sessions load no settings)
+        cmd += ["--append-system-prompt", subprocess.run([str(nexusweave), "install", "--print-instructions"], capture_output=True, text=True).stdout]
     t0 = time.time()
     try:
         p = subprocess.run(cmd, cwd=ws, capture_output=True, text=True, timeout=args.timeout, stdin=subprocess.DEVNULL)
@@ -104,6 +115,7 @@ def run_one(task: dict, cond: str, rep: int, args, nexusweave: Path) -> dict:
     wall = time.time() - t0
     tools: dict[str, int] = {}
     final: dict = {}
+    calls: dict[str, dict] = {}  # tool_use id -> call, in order
     for line in out.splitlines():
         try:
             ev = json.loads(line)
@@ -113,6 +125,14 @@ def run_one(task: dict, cond: str, rep: int, args, nexusweave: Path) -> dict:
             for c in ev.get("message", {}).get("content", []):
                 if c.get("type") == "tool_use":
                     tools[c["name"]] = tools.get(c["name"], 0) + 1
+                    calls[c.get("id", str(len(calls)))] = {"tool": c["name"], "input": c.get("input", {})}
+        elif ev.get("type") == "user":
+            for c in (ev.get("message", {}).get("content") or []):
+                if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                    body = c.get("content")
+                    if isinstance(body, list):
+                        body = "\n".join(x.get("text", "") for x in body if isinstance(x, dict))
+                    calls[c["tool_use_id"]]["output"] = body or ""
         elif ev.get("type") == "result":
             final = ev
     answer = final.get("result") or ""
@@ -126,7 +146,127 @@ def run_one(task: dict, cond: str, rep: int, args, nexusweave: Path) -> dict:
         "cost_usd": final.get("total_cost_usd", 0.0), "turns": final.get("num_turns", 0),
         "tool_calls": sum(tools.values()), "tools": tools, "wall_s": round(wall, 1),
         "model": args.model or "default", "answer": answer, "stderr": err[-2000:] if code else "",
+        "reads": classify_reads(list(calls.values()), ws),
     }
+
+
+HEADER = re.compile(r"^### (\S+)(?: — [^(\n]*)?\((entire file|lines ([\d, -]+) of (\d+)(?: — partly shown: (.*))?)\)", re.M)
+
+
+def classify_reads(calls: list[dict], ws: Path) -> list[dict]:
+    """For each Read after an explore/node call: was that range already shown in full
+    (`redundant`), in a file shown only in part (`cut_off`), or a file never shown (`new_file`)?"""
+    shown: dict[str, list[tuple[int, int]] | None] = {}  # path -> ranges, None = entire file
+    out = []
+    for c in calls:
+        if c["tool"].startswith("mcp__nexusweave__"):
+            for m in HEADER.finditer(c.get("output", "")):
+                path = m.group(1)
+                if m.group(2) == "entire file":
+                    shown[path] = None
+                elif shown.get(path, []) is not None:
+                    spans = []
+                    for part in m.group(3).split(","):
+                        a, _, b = part.strip().partition("-")
+                        if a.strip().isdigit():
+                            spans.append((int(a), int(b or a)))
+                    shown.setdefault(path, []).extend(spans)
+        elif c["tool"] == "Read" and shown:
+            fp = str(c["input"].get("file_path", ""))
+            rel = os.path.relpath(fp, ws) if os.path.isabs(fp) else fp
+            off = int(c["input"].get("offset") or 1)
+            lim = c["input"].get("limit")
+            end = off + int(lim) - 1 if lim else None
+            if rel not in shown:
+                kind = "new_file"
+            elif shown[rel] is None:
+                kind = "redundant"
+            else:
+                covered = end is not None and any(a <= off and end <= b for a, b in shown[rel])
+                kind = "redundant" if covered else "cut_off"
+            out.append({"path": rel, "offset": off, "limit": lim, "kind": kind})
+    return out
+
+
+JUDGE = """You are grading an answer to a question about the source code of the {repo} repository.
+
+Question:
+{prompt}
+
+Facts a complete answer must state (verified against the code; each line lists accepted spellings):
+{facts}
+
+Answer to grade:
+<answer>
+{answer}
+</answer>
+
+For each fact, decide whether the answer states it correctly (a passing mention in a wrong role does
+not count). Then list any claims in the answer that are clearly wrong about this code (not merely
+missing or vague). Reply with JSON only, no prose, exactly:
+{{"facts": [true or false for each fact, in order], "errors": ["short description", ...]}}"""
+
+
+def judge(task: dict, answer: str, model: str | None, timeout: int = 300) -> dict:
+    """LLM grade: per-fact verdicts and clearly wrong claims, from a separate tool-less session."""
+    facts = "\n".join(f"{i + 1}. " + " / ".join(alts) for i, alts in enumerate(task["rubric"]))
+    prompt = JUDGE.format(repo=task["repo"], prompt=task["prompt"], facts=facts, answer=answer[:20000])
+    cmd = ["claude", "-p", prompt, "--output-format", "json", "--setting-sources", "", "--no-session-persistence",
+           "--strict-mcp-config", "--mcp-config", '{"mcpServers": {}}', "--disallowedTools", *READ_TOOLS, *DENY]
+    if model:
+        cmd += ["--model", model]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        res = json.loads(p.stdout)
+        text = res.get("result") or ""
+        verdict = json.loads(text[text.find("{"):text.rfind("}") + 1])
+        marks = [bool(x) for x in verdict.get("facts", [])][:len(task["rubric"])]
+        errors = [str(e) for e in verdict.get("errors", [])]
+        score = sum(marks) / len(task["rubric"]) if marks else 0.0
+        return {"judge_score": score, "judge_errors": errors, "judge_cost_usd": res.get("total_cost_usd", 0.0)}
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, AttributeError) as e:
+        return {"judge_score": None, "judge_errors": [], "judge_failed": str(e)[:200]}
+
+
+def compare(base_path: Path, nw_path: Path, rounds: int = 10000) -> str:
+    """Per task: mean baseline vs mean NexusWeave cost and tokens; the overall ratio of summed
+    means, with a bootstrap 95% interval over tasks (tasks are the unit that varies)."""
+    import random
+    rows_b = [json.loads(l) for l in base_path.read_text().splitlines() if l.strip()]
+    rows_n = [json.loads(l) for l in nw_path.read_text().splitlines() if l.strip()]
+    def by_task(rows, cond):
+        out: dict[str, list[dict]] = {}
+        for r in rows:
+            if r["condition"] == cond and r["ok"]:
+                out.setdefault(r["task"], []).append(r)
+        return out
+    b, n = by_task(rows_b, "baseline"), by_task(rows_n, "nexusweave")
+    tasks = sorted(set(b) & set(n))
+    if not tasks:
+        return "no tasks with both conditions"
+    metrics = {"cost": lambda r: r["cost_usd"], "tokens": total_tokens, "uncached input": lambda r: r["input_tokens"] + r["cache_write"],
+               "tool calls": lambda r: r["tool_calls"], "wall": lambda r: r["wall_s"]}
+    out = [f"{len(tasks)} tasks; baseline {sum(len(b[t]) for t in tasks)} sessions ({base_path.name}), "
+           f"nexusweave {sum(len(n[t]) for t in tasks)} sessions ({nw_path.name})", "",
+           "| metric | baseline | nexusweave | change | 95% interval | tasks cheaper with nexusweave |", "|---|---:|---:|---:|---:|---:|"]
+    rng = random.Random(7)
+    for name, f in metrics.items():
+        mb = {t: statistics.mean(f(r) for r in b[t]) for t in tasks}
+        mn = {t: statistics.mean(f(r) for r in n[t]) for t in tasks}
+        ratio = lambda ts: sum(mn[t] for t in ts) / max(1e-12, sum(mb[t] for t in ts)) - 1
+        boots = sorted(ratio([rng.choice(tasks) for _ in tasks]) for _ in range(rounds))
+        lo, hi = boots[int(0.025 * rounds)], boots[int(0.975 * rounds) - 1]
+        wins = sum(1 for t in tasks if mn[t] < mb[t])
+        fmt = (lambda v: f"${v:.3f}") if name == "cost" else (lambda v: f"{v:,.0f}") if name in ("tokens", "uncached input") else (lambda v: f"{v:.1f}")
+        out.append(f"| {name} | {fmt(statistics.mean(mb.values()))} | {fmt(statistics.mean(mn.values()))} | {ratio(tasks):+.1%} | "
+                   f"{lo:+.1%} … {hi:+.1%} | {wins}/{len(tasks)} |")
+    out.append("")
+    out.append("| task | baseline cost | nexusweave cost | change |")
+    out.append("|---|---:|---:|---:|")
+    for t in tasks:
+        cb, cn = statistics.mean(r["cost_usd"] for r in b[t]), statistics.mean(r["cost_usd"] for r in n[t])
+        out.append(f"| {t} | ${cb:.3f} | ${cn:.3f} | {cn / cb - 1:+.0%} |")
+    return "\n".join(out)
 
 
 def total_tokens(r: dict) -> int:
@@ -179,6 +319,20 @@ def report(path: Path) -> str:
                 used[k] = used.get(k, 0) + v
     if used:
         out.append("\nnexusweave-condition tool use: " + ", ".join(f"{k} {v}" for k, v in sorted(used.items(), key=lambda kv: -kv[1])))
+    judged = [r for r in rows if r.get("judge_score") is not None]
+    if judged:
+        parts = []
+        for c in CONDITIONS:
+            js = [r for r in judged if r["condition"] == c]
+            if js:
+                errs = sum(len(r.get("judge_errors", [])) for r in js)
+                parts.append(f"{c} {statistics.mean(r['judge_score'] for r in js):.1%} ({errs} wrong claims in {len(js)} answers)")
+        out.append("\nLLM judge: " + "; ".join(parts))
+    reads = [x for r in rows if r["condition"] == "nexusweave" for x in r.get("reads", [])]
+    if reads:
+        kinds = {k: sum(1 for x in reads if x["kind"] == k) for k in ("redundant", "cut_off", "new_file")}
+        out.append("Reads after an explore/node answer: " + ", ".join(f"{k} {v}" for k, v in kinds.items())
+                   + " (redundant = already shown in full; cut_off = in a file shown only in part; new_file = never shown)")
     return "\n".join(out)
 
 
@@ -194,9 +348,30 @@ def main() -> None:
     ap.add_argument("--nexusweave", default=str(ROOT / "target/release/nexusweave"))
     ap.add_argument("--out", default=str(BENCH / "results/agent.jsonl"))
     ap.add_argument("--report", metavar="JSONL", help="only print the report for an existing results file")
+    ap.add_argument("--instructions", action="store_true", help="give nexusweave sessions the `install --instructions` text as a system prompt")
+    ap.add_argument("--compare", nargs=2, metavar=("BASELINE_JSONL", "NEXUSWEAVE_JSONL"),
+                    help="paired per-task cost/token comparison: baseline sessions from the first file, nexusweave from the second")
+    ap.add_argument("--judge", action="store_true", help="also grade each answer with an LLM judge (a few cents per session)")
+    ap.add_argument("--judge-model", help="model for the judge (default: Claude Code's default)")
+    ap.add_argument("--judge-file", metavar="JSONL", help="grade the answers in an existing results file (rewritten in place)")
     args = ap.parse_args()
     if args.report:
         print(report(Path(args.report)))
+        return
+    if args.compare:
+        print(compare(Path(args.compare[0]), Path(args.compare[1])))
+        return
+    if args.judge_file:
+        path = Path(args.judge_file)
+        tasks = {t["id"]: t for t in load_tasks()}
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+        todo = [r for r in rows if r.get("judge_score") is None and r["task"] in tasks]
+        print(f"judging {len(todo)} answers in {path}", flush=True)
+        with cf.ThreadPoolExecutor(args.parallel) as pool:
+            for r, v in zip(todo, pool.map(lambda r: judge(tasks[r["task"]], r["answer"], args.judge_model), todo)):
+                r.update(v)
+        path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        print(report(path))
         return
     nexusweave = Path(args.nexusweave).resolve()
     if not nexusweave.exists():
@@ -225,6 +400,8 @@ def main() -> None:
         futs = {pool.submit(run_one, t, c, rep, args, nexusweave): (t["id"], c, rep) for t, c, rep in jobs}
         for i, f in enumerate(cf.as_completed(futs), 1):
             r = f.result()
+            if args.judge:
+                r.update(judge(next(t for t in tasks if t["id"] == r["task"]), r["answer"], args.judge_model))
             with lock, out.open("a") as fh:
                 fh.write(json.dumps(r) + "\n")
             flag = "" if r["ok"] else f"  FAILED: {r['stderr'][-200:]}"

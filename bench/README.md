@@ -26,14 +26,21 @@ Each repo is pinned to a commit in `corpus.toml`, and the truth comes from a [SC
 | Python | scip-python (Pyright) | 0.6.8 |
 | Go | scip-go | v0.2.9 |
 | Rust | rust-analyzer `scip` | 2026-10-19 |
+| C / C++ | scip-clang (needs `compile_commands.json`, from CMake here) | v0.4.0 |
+| Ruby | scip-ruby (Sorbet) | v0.5.0 |
 
 SCIP indexes are cached per commit under `bench/.cache/scip/`. Use `--refresh` after bumping an
 indexer. `bench/scip.py` is a small dependency-free SCIP reader; the harness needs only the
 Python standard library.
 
-There is no comparable indexer setup in the corpus yet for C#, Java, C/C++, Ruby or PHP
-(scip-dotnet, scip-java, scip-clang and scip-ruby each need a full toolchain and build). Those
-languages are covered by the fixture tests in `tests/` only.
+scip-clang and scip-ruby ship prebuilt for Linux x86_64 only; `bench/setup.sh` skips them
+elsewhere. There is no indexer setup in the corpus yet for C#, Java, Kotlin, Swift, Dart, Scala,
+PHP or Lua (scip-dotnet and scip-java each need a full toolchain and build); those languages are
+covered by the fixture tests in `tests/` only.
+
+C ground truth follows one preprocessor configuration (the one the compilation database was
+built with); NexusWeave doesn't evaluate `#if`, so for a type defined in several `#if` branches
+it records no edge rather than guess (`preprocessor_alternative` in `src/resolve/mod.rs`).
 
 ## What is scored
 
@@ -72,13 +79,15 @@ Generated files outside the checkout (scip-go's build-cache test mains) are drop
 
 | repo | lang | truth refs | extracted | precision | recall |
 |---|---|---:|---:|---:|---:|
-| hono | typescript | 9,427 | 94.9% | 99.9% | 79.1% |
-| codegraph | typescript | 19,925 | 95.9% | 100.0% | 93.9% |
+| hono | typescript | 9,427 | 95.8% | 99.9% | 80.0% |
+| codegraph | typescript | 19,925 | 96.0% | 100.0% | 94.0% |
 | express | javascript | 343 | 91.5% | 100.0% | 89.8% |
-| flask | python | 1,143 | 78.3% | 100.0% | 75.7% |
-| httpx | python | 2,833 | 89.2% | 99.8% | 82.5% |
+| flask | python | 1,143 | 85.9% | 100.0% | 83.3% |
+| httpx | python | 2,833 | 91.5% | 99.8% | 84.8% |
 | gin | go | 5,564 | 98.8% | 99.9% | 96.5% |
 | ripgrep | rust | 19,393 | 92.2% | 98.6% | 81.8% |
+| zlib | c | 1,730 | 90.5% | 98.7% | 70.7% |
+| rack | ruby | 6,925 | 94.7% | 98.7% | 85.5% |
 
 Edges with confidence ≥ 90 are 99–100% precise in every repo. The low-confidence fallbacks are
 now mostly right too: below 50 they are 82% precise on gin (14 of 17), 92–97% on codegraph,

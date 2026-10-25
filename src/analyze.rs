@@ -1,6 +1,6 @@
 //! Whole-graph analyses: dead code, import cycles, entry points, hotspots.
 
-use crate::query::{Graph, SYM_COLS, Sym, sym_row};
+use crate::query::{Graph, SYM_COLS, SYM_N, Sym, sym_row};
 use anyhow::Result;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -148,7 +148,7 @@ impl Graph {
              WHERE f.is_test = 0 AND (n.kind IN (19, 20)
                 OR (n.kind = 9 AND n.name = 'main')
                 OR (n.exported = 1 AND n.kind IN (3, 4, 5, 6, 9) AND n.parent_id IN (SELECT id FROM nodes WHERE kind = 0)
-                    AND (f.path LIKE '%index.%' OR f.path LIKE '%/lib.rs' OR f.path = 'lib.rs' OR f.path LIKE '%__init__.py'
+                    AND (f.path LIKE '%index.%' OR f.path LIKE '%/lib.rs' OR f.path = 'lib.rs' OR f.path LIKE '%\\_\\_init\\_\\_.py' ESCAPE '\\'
                          OR f.path LIKE '%/main.%' OR f.path LIKE 'main.%')))
              ORDER BY n.kind DESC, f.path, n.start_line LIMIT ?1");
         let mut st = self.db.conn.prepare(&sql)?;
@@ -175,7 +175,7 @@ impl Graph {
              FROM nodes n JOIN files f ON f.id = n.file_id
              WHERE n.kind IN (3, 4, 9, 10, 11) AND f.is_test = 0 AND f.generated = 0");
         let mut st = self.db.conn.prepare(&sql)?;
-        let mut v: Vec<Hotspot> = st.query_map([], |r| Ok((sym_row(r)?, r.get::<_, i64>(14)?)))?
+        let mut v: Vec<Hotspot> = st.query_map([], |r| Ok((sym_row(r)?, r.get::<_, i64>(SYM_N)?)))?
             .filter_map(|r| r.ok()).filter(|(_, fan)| *fan > 0)
             .map(|(s, fan)| {
                 let lines = s.end_line - s.start_line + 1;

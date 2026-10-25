@@ -159,7 +159,7 @@ fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// step must equal a fresh full index.
 #[test]
 fn cached_resolver_all_languages() {
-    for lang in ["ts", "py", "go", "rust", "java", "csharp", "cpp", "ruby", "php", "kotlin", "swift", "dart", "scala", "lua", "vue", "svelte"] {
+    for lang in ["ts", "py", "go", "rust", "java", "csharp", "cpp", "ruby", "php", "kotlin", "swift", "dart", "scala", "lua", "vue", "svelte", "react"] {
         let d = std::env::temp_dir().join(format!("nexusweave-cache-{lang}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(lang), &d);

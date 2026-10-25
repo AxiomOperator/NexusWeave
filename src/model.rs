@@ -89,6 +89,13 @@ int_enum!(
     Emit = 11 => "emits",
     // emit site → every event node with that name (synthesized)
     Triggers = 12 => "triggers",
+    // assignment to a property: runs its setter (`self.debug = x`); only properties are targets
+    Write = 13 => "writes",
+    // raw navigation site: navigate("/users/42"), <Link to="/settings"> (never resolved itself; the
+    // resolver synthesizes `navigates` to the page routes the path matches)
+    Navigate = 14 => "navigation",
+    // navigation site → page route (synthesized)
+    NavigatesTo = 15 => "navigates",
 });
 
 int_enum!(Lang {

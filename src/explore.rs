@@ -81,6 +81,8 @@ struct Local {
 }
 
 fn tiers(files: i64) -> (usize, usize) {
+    // smaller budgets on small repos were tried and measured: no cost change, fewer tool calls
+    // saved (enhancements.md §8)
     match files {
         0..=150 => (12_000, 4),
         151..=1000 => (16_000, 6),
@@ -157,7 +159,7 @@ impl Graph {
             // A word that happens to name many symbols is weak evidence; a unique symbol is strong.
             let strength = if t.is_symbol { 12.0 } else { 3.0 } / (n as f64).sqrt();
             for s in defs.into_iter().take(if t.is_symbol { 4 } else { 2 }) {
-                let w = if s.is_test { strength * 0.4 } else { strength };
+                let w = if s.is_test { strength * 0.4 } else { strength } * if s.low { 0.5 } else { 1.0 };
                 // any exact definition match is a flow endpoint, even a plain word like `audit`
                 seeds.push(Seed { sym: s, score: w, named: true });
             }
@@ -247,6 +249,7 @@ impl Graph {
             let Some(s) = local.syms.get(id) else { continue };
             let mut m = *m;
             if s.is_test && !query_mentions_tests { m *= 0.25; }
+            if s.low { m *= 0.4; }
             *file_mass.entry(s.path.clone()).or_default() += m;
         }
         let mut flow_nodes: HashSet<i64> = HashSet::new();
@@ -353,6 +356,8 @@ impl Graph {
                 section.clear();
             }
             if section.is_empty() { continue; }
+            // say exactly what was shown, so the agent knows whether a follow-up read is needed
+            section.insert_str(section.find('\n').unwrap_or(0), &coverage(&ranges, lines.len() as u32, &syms));
             if let Some(seen) = &opts.seen {
                 let mut seen = seen.lock().unwrap();
                 let (todo, done) = seen.split(path, hash, &ranges);
@@ -573,6 +578,20 @@ fn pick_ranges(syms: &[(Sym, f64)], lines: &[&str], alloc: usize, anchor: Option
         }
     }
     (merged, names)
+}
+
+/// Header note for a file section: the whole file, or which lines, plus the symbols whose
+/// bodies were cut off (the only reason to read that file further).
+fn coverage(ranges: &[(u32, u32)], total: u32, syms: &[(Sym, f64)]) -> String {
+    let covered = |a: u32, b: u32| ranges.iter().any(|&(x, y)| x <= a && b <= y);
+    if covered(1, total.max(1)) { return " (entire file)".to_string(); }
+    let spans = ranges.iter().map(|(a, b)| if a == b { a.to_string() } else { format!("{a}-{b}") }).collect::<Vec<_>>().join(", ");
+    let mut cut: Vec<String> = syms.iter().map(|(s, _)| s)
+        .filter(|s| ranges.iter().any(|&(a, b)| (a..=b).contains(&s.start_line)) && !covered(s.start_line, s.end_line))
+        .map(|s| format!("{} (to line {})", s.name, s.end_line)).collect();
+    cut.dedup();
+    let cut = if cut.is_empty() { " — every symbol shown is complete".to_string() } else { format!(" — partly shown: {}", cut.into_iter().take(6).collect::<Vec<_>>().join(", ")) };
+    format!(" (lines {spans} of {total}{cut})")
 }
 
 fn render_file(path: &str, lines: &[&str], ranges: &[(u32, u32)], names: &[String], lang: &str) -> String {

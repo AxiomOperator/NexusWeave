@@ -34,7 +34,7 @@ Every limitation in section 2 and every roadmap item in section 3 is now impleme
 | 3.7 event topics | ✅ | see section 2 row | — |
 | 3.8 analysis views | ✅ | `src/analyze.rs`, viewer Insights tab | — |
 | 3.9 viewer upgrades | ✅ | Routes, Flow (trails, Markdown/Mermaid export), file code view | — |
-| 3.10 shared daemon | ✅ | `src/daemon.rs` (Unix; Windows serves in-process) | — |
+| 3.10 shared daemon | ✅ | `src/daemon.rs` (Unix socket; on Windows token-authenticated loopback TCP) | — |
 | 3.11 more languages | ✅ | `extract/{kotlin,swift,dart,scala,lua,sfc}.rs` | fixtures + warm-sync equivalence for all seven |
 | 3.12 distribution | ✅ | `release.yml`, `scripts/install.sh`, `nexusweave upgrade`, CI on Linux/macOS/Windows | — |
 | 3.13 Claude Code hook | ✅ | `src/hook.rs`, `nexusweave install --hooks` | — |
@@ -276,9 +276,10 @@ The benchmark also caught several problems in the scorer and the ground truth, a
 
 | gap | where | idea |
 |---|---|---|
-| Property reads of `@property` / getters (`self.debug`, `url.port`) | Python ~25% of misses; TS accessors are excluded from the score | model property reads of accessor members as `reads` edges |
+| ~~Names read as values~~ ✅ | Python: `cls.handler` / `tasks.add` reads, `except E:` / `raise E`, class qualifiers (`Cls.make()`), returned closures, tuples/sets and assignment right sides as value positions, properties passed as arguments | done: `reads` edges may target methods, functions and classes (never by name guessing); flask recall **75.7 → 83.3%**, httpx **82.5 → 84.8%**, hono 79.1 → 79.9%, precision unchanged or higher (fixture `py/app/values.py`) |
+| ~~Property writes~~ ✅ | Python `self.debug = x` through a setter | new `writes` edge kind: assignment targets that resolve only to declared properties (a plain field write records nothing); flask 83.3 → 83.7%, httpx 84.8 → 85.5% |
 | Unknown receivers in tests (`response.url`, `client.timeout`, `c.req.param()`) | httpx, hono | return-type stubs for test clients (enhancement 6), and inferring the types of untyped parameters from call sites |
-| Low-confidence name fallback for unknown receivers is 18% precise on flask and 74% on gin | Python, Go | drop or demote it for those languages, or only allow it when the receiver name matches the owner type |
+| ~~Low-confidence name fallback for unknown receivers~~ re-measured | Python, Go | the 18% / 74% figures predate later fixes: the `<50` band is now 4/4 correct on flask and 14/17 on gin, so dropping it would lose more correct edges than wrong ones; kept |
 | Object-literal keys matching interface members (`{ mkdir: vi.fn() }`) | TS tests | contextual typing of object literals against a declared interface |
 
 ## 5. Review pass with NexusWeave itself
@@ -302,6 +303,25 @@ NexusWeave was used to review its own code and the vscode index. These were foun
 
 Recall rose on four repos (codegraph 92.8 → 93.9, express 86.9 → 89.8, flask 73.8 → 75.7,
 httpx 81.1 → 82.5) with precision unchanged or higher.
+
+## 5b. C and Ruby ground truth (review pass, 2026-10-24)
+
+zlib (scip-clang) and rack (scip-ruby) joined the corpus. First measurement: C 87.4% precision /
+47.8% recall, Ruby 98.1% / 56.9%. Fixed, each confirmed in error samples:
+
+| bug | effect | fix |
+|---|---|---|
+| A file tracked by git but matched by `.gitignore` was skipped (zlib commits the `zconf.h` it ignores) | every zlib typedef unresolved | tracked files are indexed, as git sees them (`git ls-files -ci`); `.nexusweaveignore` still wins |
+| Storage / export macros (`local`, `ZEXPORT`, `FAR`, `z_const`) made tree-sitter drop whole C functions | `inflate()` swallowed the rest of `inflate.c`; static `gz_open` missing, calls bound to a test file's copy | macros detected from the parse errors and blanked (same length), then re-parsed while it shrinks the error area |
+| `#if` / `#else` inside an expression | parse errors that spill into the rest of the file | such conditional groups are flattened to their first branch for parsing |
+| Calls bound to header prototypes | the agent was pointed at `zlib.h`, not the body | calls through a header declaration go to its one definition (nearest copy if vendored) |
+| Only direct `#include`s were searched | names declared two headers down fell to the global guess | transitive includes, nearest first |
+| `_t` names were never referenced | `z_crc_t`, `z_word_t` invisible | only standard C/POSIX `_t` typedefs are skipped |
+| A typedef with several `#if` alternatives was guessed | wrong branch | no edge (the right one depends on the build) |
+| Ruby `Rack::Utils` referenced only `Utils`; reopened modules were ambiguous | 1,861 `Rack` refs missing | every segment is a ref; a reopened module binds to its canonical file |
+
+Now: C 98.7% / 70.7%, Ruby 98.7% / 85.5%. Biggest remaining C gap: macro-generated code and types
+defined only in some `#if` branches.
 
 ## 6. Agent evaluation (roadmap 3.3)
 
@@ -334,7 +354,89 @@ The token-efficiency claim holds for tool calls and large repos. On small repos 
 for cost. Next steps, each measurable with the harness:
 
 1. Size explore's budget to the repository: small repos get small answers.
-2. Make the answer self-sufficient enough that the follow-up `Read` isn't needed (or say so).
-3. List `nexusweave_explore` eagerly instead of behind `ToolSearch`.
-4. Harder tasks, where grep struggles: cross-file dispatch, callers through interfaces, impact
-   on large repos (vscode, django). Grade with an LLM judge as well as the keyword rubric.
+2. Say when the answer is self-sufficient: each file section's header now states "entire
+   file", or the exact line ranges shown and which symbols are only partly shown (to which line),
+   and the server instructions tell agents to read further only for those. **Measured, no effect:**
+   `Read` calls per NexusWeave session went from 2.0 to 2.2 (second run below).
+   **Diagnosed with traces** (pilot, 24 sessions, NexusWeave condition, ~$5): of 51 Reads, 27 came
+   *before* the first explore call (the tool loads lazily behind `ToolSearch`), and of the 24
+   after one, **0 re-read code already shown**: 11 read past a cut-off body, 13 opened files the
+   answer never included. So there is no redundant re-reading to remove; the follow-up Reads
+   fetch code explore didn't show. The levers are coverage (more of the cut-off seed bodies,
+   better file recall) and eager tool listing (client side), not de-duplication.
+   Tried and reverted: giving named functions their whole body (budget permitting). A second
+   traced pilot showed reads past cut-off bodies going *up* (11 → 20) and tokens +4%; no benefit.
+3. List `nexusweave_explore` eagerly instead of behind `ToolSearch` (client behavior; nothing to
+   change server-side).
+4. ✅ Harder tasks authored (`gin-render-impls`, `httpx-transport-dispatch`,
+   `flask-add-url-rule-impact`, `ripgrep-sink-dispatch`): implementations of interfaces/traits,
+   runtime transport dispatch, and impact through deferred calls, each fact checked at the pinned
+   commit. Run, and they saturated too (100% in both conditions).
+5. ✅ LLM judge: `run.py --judge` (or `--judge-file results.jsonl` for saved answers) grades each
+   answer with a separate tool-less session: per-fact verdicts plus clearly wrong claims
+   (~$0.07 per answer). Tasks on vscode / django: not added.
+
+**Second run (2026-10-24, 24 tasks × 2 conditions × 2 = 96 sessions, ~$20):** rubric 100% in both
+conditions again; NexusWeave vs baseline: tool calls −25%, turns −21%, tokens −5%, wall −5%,
+cost +4% (first run: −30% / −26% / −12% / −10% / +5%). Cheaper than baseline on the largest repo
+(codegraph: `cg-index-flow` $0.85 → $0.68, `cg-watcher` $0.35 → $0.21), dearer on most small ones.
+
+## 7. Parity pass vs codegraph (2026-10-24)
+
+Done: `nexusweave.json` (extensions, exclude, include, deprioritize); `install --instructions`
+(managed section in CLAUDE.md / AGENTS.md / GEMINI.md) and `--allow` (Claude Code permission
+rule); Kiro and VS Code install targets; frontend page routes and `navigates` edges (React Router,
+Vue Router, Angular route objects, Next.js / Nuxt / SvelteKit file routes), fixture `react`.
+
+Still behind codegraph: language count (16 vs ~40), backend routes for Drupal / Play /
+Axum-actix-Rocket / Vapor / Astro, mobile bridging (Swift↔Objective-C, React Native), an npm-style
+library API, signed release provenance, and its published agent-efficiency numbers.
+
+## 8. Does NexusWeave save cost? (2026-10-24)
+
+`run.py --compare BASELINE.jsonl NEXUSWEAVE.jsonl` pairs sessions by task and reports the change
+with a bootstrap 95% interval over tasks.
+
+**96-session run (no instructions):** cost +3.9% (−6.2% … +15.8%), tokens −4.6% (−17.8% … +14.6%),
+uncached input +12.6% (−3.1% … +33.4%), tool calls −24.8% (−36.2% … −13.2%). Only the tool-call
+saving is clearly real. By repo: codegraph (1.2k files) **−24% cost**; every repo of 80–300 files
+**+1% to +22%**, and on each of those NexusWeave sessions take *more* uncached input than baseline
+(httpx 17.5k vs 12.0k) — explore output arrives as fresh, full-price input that replaces less
+reading than it costs.
+
+**Instruction pilot** (`run.py --instructions`: the `install --instructions` text as a system
+prompt; 24 sessions vs the same baseline): cost **+12.0%** (−1.5% … +28.4%), uncached input
+**+26.3%** (+6.5% … +53.3%), tool calls −22.3%. Agents called explore more (1.12 vs 0.96 per
+session) and were shown more of the right files (reads of never-shown files 13 → 3) but read no
+less (2.12 Reads per session either way). So the instruction section is opt-in and *not*
+recommended for cost.
+
+Conclusion: today NexusWeave saves tool calls everywhere and money only on larger repos. The
+lever is how much explore sends on small repos (default budget 12k chars ≤150 files, 16k ≤1000),
+not how often agents call it.
+
+**Budget pilot** (default explore budget 12k → 5k chars for ≤150 files, 16k → 8k for ≤1,000;
+larger repos unchanged; 24 sessions vs the same baseline, answers LLM-judged): cost **−10.7%**
+(−21.5% … +3.5%), cheaper on **17/24** tasks, uncached input −11.9%, tokens −11.5%, tool calls
+−17.7%. Answer quality unchanged: rubric 100%, LLM judge 100% (2 wrong claims in 24 answers vs 1
+for the old-budget pilot). Agents read a little more (3.0 Reads per session vs 2.1) and pay less.
+**Confirmation run** (smaller budgets, both conditions × 2 repeats = 96 sessions, LLM-judged,
+~$25): cost **+2.0%** (−11.2% … +15.9%), cheaper on 8/24 tasks, tokens −2.3%, tool calls only −7.8%
+(−20.1% … +6.8%); quality equal (judge 100% both, 2 vs 3 wrong claims in 48 answers). By repo:
+codegraph −32%, every smaller repo +4% to +32%. The pilot's −10.7% was noise. Smaller budgets don't
+change cost and halve the tool-call saving (agents read more instead), so the original budgets are
+restored.
+
+**Large repos** (django ~2.4k files, vscode ~15k; 8 verified tasks × 2 conditions × 2 = 32
+sessions, LLM-judged, ~$11): cost **+13.7%** (+3.4% … +25.4%), cheaper on 1/8 tasks; uncached input
+**+39%** (+23% … +60%, higher on every task); tool calls **−46%** (−57% … −32%); wall time **−17%**
+(−28% … −6%); quality equal (rubric and judge 100% both, no wrong claims). The expectation that
+savings grow with repo size did not hold.
+
+**Answer to "does it save cost?"** No, not at current output sizes: across 32 tasks on 9 repos it
+costs about the same to 14% more per question (only codegraph's tasks came out cheaper, −24% and
+−32%). What it reliably saves is agent effort and time: 25–46% fewer tool calls and up to 17% less
+wall time, with answer quality unchanged. The cost driver is the same everywhere: explore output
+is full-price uncached input that outweighs the reading it replaces. The next lever to test is a
+more compact answer on large repos (signatures and call sites instead of whole bodies), measured
+with `run.py --compare`; smaller budgets alone (§8, budget runs) did not help on small repos.

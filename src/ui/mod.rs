@@ -80,7 +80,7 @@ fn api(g: &Graph, path: &str, q: &HashMap<String, String>) -> Result<Value> {
             let src = g.read_source(&p).unwrap_or_default();
             let lines: Vec<&str> = src.lines().collect();
             let from = q.get("from").and_then(|s| s.parse::<usize>().ok()).unwrap_or(1).max(1);
-            let to = q.get("to").and_then(|s| s.parse::<usize>().ok()).unwrap_or(lines.len()).min(lines.len()).min(from + 3000);
+            let to = q.get("to").and_then(|s| s.parse::<usize>().ok()).unwrap_or(lines.len()).min(lines.len()).min(from.saturating_add(3000));
             json!({"path": p, "from": from, "lines": lines.get(from - 1..to).unwrap_or(&[]), "total": lines.len()})
         }
         "/api/file" => {
@@ -147,7 +147,7 @@ fn api(g: &Graph, path: &str, q: &HashMap<String, String>) -> Result<Value> {
         "/api/dir" => {
             // files under a directory prefix, largest first
             let dir = q.get("path").map(|p| p.trim_matches('/').to_string()).unwrap_or_default();
-            let pat = if dir.is_empty() || dir == "(root)" { "%".to_string() } else { format!("{}/%", dir.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")) };
+            let pat = if dir.is_empty() || dir == "(root)" { "%".to_string() } else { format!("{}/%", crate::like_escape(&dir)) };
             let mut st = g.db.conn.prepare("SELECT path, node_count - 1, lang, is_test FROM files WHERE path LIKE ? ESCAPE '\\' ORDER BY node_count DESC LIMIT 400")?;
             let rows = st.query_map([&pat], |r| Ok(json!({"path": r.get::<_, String>(0)?, "symbols": r.get::<_, i64>(1)?,
                 "lang": crate::model::Lang::from_i64(r.get(2)?).map(|l| l.as_str()).unwrap_or(""), "test": r.get::<_, bool>(3)?})))?;
@@ -247,36 +247,57 @@ fn flow(g: &Graph, from: &[Sym], to: &[Sym]) -> Result<Vec<Sym>> {
     Ok(path.into_iter().filter_map(|i| g.sym(i).ok().flatten()).collect())
 }
 
+/// Request threads: a slow query (a large module map, an explore) doesn't stall the others.
+const WORKERS: usize = 4;
+
 pub fn serve(root: &Path, port: u16, open: bool) -> Result<()> {
-    let mut g = Graph::open(root)?;
+    // opened (and rebuilt if stale) once up front, so errors surface here; each worker then has
+    // its own connection, since one SQLite connection serves one thread at a time
+    let first = Graph::open(root)?;
     let server = tiny_http::Server::http(("127.0.0.1", port)).map_err(|e| anyhow::anyhow!("cannot bind 127.0.0.1:{port}: {e}"))?;
     let url = format!("http://127.0.0.1:{port}/");
     eprintln!("NexusWeave viewer for {} at {url}", root.display());
     if open { open_browser(&url); }
     let allowed = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
-    for req in server.incoming_requests() {
-        // DNS-rebinding guard: only answer requests addressed to loopback.
-        let host_ok = req.headers().iter().find(|h| h.field.equiv("Host")).is_some_and(|h| allowed.iter().any(|a| a == h.value.as_str()));
-        if !host_ok {
-            let _ = req.respond(tiny_http::Response::from_string("forbidden").with_status_code(403));
-            continue;
+    let mut first = Some(first);
+    std::thread::scope(|s| {
+        for _ in 0..WORKERS {
+            let g = match first.take() { Some(g) => g, None => Graph::open(root)? };
+            let (server, allowed) = (&server, &allowed);
+            s.spawn(move || {
+                let mut g = g;
+                for req in server.incoming_requests() { respond(&mut g, root, allowed, req); }
+            });
         }
-        let url = req.url().to_string();
-        let path = url.split('?').next().unwrap_or("/").to_string();
-        let resp = if path == "/" || path == "/index.html" {
-            tiny_http::Response::from_string(INDEX_HTML).with_header(hdr("Content-Type", "text/html; charset=utf-8"))
-        } else if let Some((_, font)) = FONTS.iter().find(|(p, _)| *p == path) {
-            tiny_http::Response::from_data(font.to_vec()).with_header(hdr("Content-Type", "font/woff2"))
-        } else if path.starts_with("/api/") {
-            if g.is_replaced() && let Ok(n) = Graph::open(root) { g = n; } // re-indexed meanwhile
-            let body = match api(&g, &path, &qs(&url)) { Ok(v) => v.to_string(), Err(e) => json!({"error": format!("{e:#}")}).to_string() };
-            tiny_http::Response::from_string(body).with_header(hdr("Content-Type", "application/json"))
-        } else {
-            tiny_http::Response::from_string("not found").with_status_code(404)
-        };
-        let _ = req.respond(resp.with_header(hdr("Cache-Control", "no-store")).with_header(hdr("X-Content-Type-Options", "nosniff")));
+        Ok(())
+    })
+}
+
+fn respond(g: &mut Graph, root: &Path, allowed: &[String], req: tiny_http::Request) {
+    // DNS-rebinding guard: only answer requests addressed to loopback.
+    let host_ok = req.headers().iter().find(|h| h.field.equiv("Host")).is_some_and(|h| allowed.iter().any(|a| a == h.value.as_str()));
+    if !host_ok {
+        let _ = req.respond(tiny_http::Response::from_string("forbidden").with_status_code(403));
+        return;
     }
-    Ok(())
+    let url = req.url().to_string();
+    let path = url.split('?').next().unwrap_or("/").to_string();
+    let resp = if path == "/" || path == "/index.html" {
+        tiny_http::Response::from_string(INDEX_HTML).with_header(hdr("Content-Type", "text/html; charset=utf-8"))
+    } else if let Some((_, font)) = FONTS.iter().find(|(p, _)| *p == path) {
+        tiny_http::Response::from_data(font.to_vec()).with_header(hdr("Content-Type", "font/woff2"))
+    } else if path.starts_with("/api/") {
+        if g.is_replaced() && let Ok(n) = Graph::open(root) { *g = n; } // re-indexed meanwhile
+        let body = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| api(g, &path, &qs(&url)))) {
+            Ok(Ok(v)) => v.to_string(),
+            Ok(Err(e)) => json!({"error": format!("{e:#}")}).to_string(),
+            Err(_) => json!({"error": "internal error"}).to_string(),
+        };
+        tiny_http::Response::from_string(body).with_header(hdr("Content-Type", "application/json"))
+    } else {
+        tiny_http::Response::from_string("not found").with_status_code(404)
+    };
+    let _ = req.respond(resp.with_header(hdr("Cache-Control", "no-store")).with_header(hdr("X-Content-Type-Options", "nosniff")));
 }
 
 fn hdr(k: &str, v: &str) -> tiny_http::Header { tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap() }
@@ -290,9 +311,11 @@ fn open_browser(url: &str) {
 mod tests {
     use super::*;
 
-    fn fixture() -> (std::path::PathBuf, Graph) {
+    fn fixture() -> (std::path::PathBuf, Graph) { fixture_named("api") }
+
+    fn fixture_named(name: &str) -> (std::path::PathBuf, Graph) {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ts");
-        let dir = std::env::temp_dir().join(format!("nexusweave-ui-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("nexusweave-ui-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         fn copy(a: &Path, b: &Path) {
             std::fs::create_dir_all(b).unwrap();
@@ -336,6 +359,39 @@ mod tests {
         assert!(!call(&g, "/api/dir", &[("path", "src")])["files"].as_array().unwrap().is_empty());
         // `_` and `%` in a directory name are literal, not LIKE wildcards
         assert!(call(&g, "/api/dir", &[("path", "s_c")])["files"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn get(port: u16, host: &str, path: &str) -> String {
+        use std::io::{Read, Write};
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(c, "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").unwrap();
+        let mut out = String::new();
+        c.read_to_string(&mut out).unwrap();
+        out
+    }
+
+    /// The real server: parallel requests are all answered, foreign Host headers refused.
+    #[test]
+    fn server_answers_concurrently() {
+        let (dir, _g) = fixture_named("srv");
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let root = dir.clone();
+        std::thread::spawn(move || serve(&root, port, false));
+        let host = format!("127.0.0.1:{port}");
+        for _ in 0..100 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let replies: Vec<String> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..12).map(|i| {
+                let host = &host;
+                s.spawn(move || get(port, host, if i % 2 == 0 { "/api/modules?depth=2" } else { "/api/search?q=UserService" }))
+            }).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for r in &replies { assert!(r.starts_with("HTTP/1.1 200") && !r.contains("\"error\""), "{r}"); }
+        assert!(get(port, "evil.example:80", "/api/stats").starts_with("HTTP/1.1 403"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

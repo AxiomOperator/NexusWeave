@@ -6,6 +6,7 @@
 set -eu
 
 REPO="${NEXUSWEAVE_REPO:-AxiomOperator/NexusWeave}"
+API="${NEXUSWEAVE_API:-https://api.github.com}"   # override for testing against a mock
 DIR="${NEXUSWEAVE_INSTALL_DIR:-$HOME/.local/bin}"
 TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 
@@ -24,17 +25,19 @@ case "$(uname -m)" in
   *) err "unsupported architecture $(uname -m)" ;;
 esac
 target="$arch-$os"
-asset="nexusweave-$target.tar.gz"
 
+# the token goes to curl through a config on stdin, not argv (visible to other users via `ps`)
 api() {
-  if [ -n "$TOKEN" ]; then curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: $1" "$2"
+  if [ -n "$TOKEN" ]; then
+    printf 'header = "Authorization: Bearer %s"\n' "$(printf '%s' "$TOKEN" | tr -d '"\\\n')" \
+      | curl -fsSL --config - -H "Accept: $1" "$2"
   else curl -fsSL -H "Accept: $1" "$2"; fi
 }
 
 # accept 0.2.0 as well as v0.2.0
 if [ -n "${NEXUSWEAVE_VERSION:-}" ]; then rel="tags/v${NEXUSWEAVE_VERSION#v}"; else rel=latest; fi
 hint=""; [ -n "$TOKEN" ] || hint=" (private repository? export GITHUB_TOKEN)"
-json=$(api application/vnd.github+json "https://api.github.com/repos/$REPO/releases/$rel") \
+json=$(api application/vnd.github+json "$API/repos/$REPO/releases/$rel") \
   || err "cannot read release $rel of $REPO$hint"
 
 # asset API URL for a file name (the API URL, unlike browser_download_url, works for private
@@ -44,21 +47,39 @@ asset_url() {
     /"url": *"[^"]*\/releases\/assets\// { u = $0; sub(/.*"url": *"/, "", u); sub(/".*/, "", u) }
     /"name": *"/ { n = $0; sub(/.*"name": *"/, "", n); sub(/".*/, "", n); if (n == want && u != "") { print u; exit } }'
 }
-url=$(asset_url "$asset"); [ -n "$url" ] || err "no build for $target in this release"
 sums=$(asset_url SHA256SUMS); [ -n "$sums" ] || err "release has no SHA256SUMS"
-
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-api application/octet-stream "$url" > "$tmp/$asset" || err "downloading $asset failed"
 api application/octet-stream "$sums" > "$tmp/SHA256SUMS" || err "downloading SHA256SUMS failed"
 
-want=$(grep " \*\{0,1\}$asset\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)
-if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$tmp/$asset" | cut -d' ' -f1)
-else got=$(shasum -a 256 "$tmp/$asset" | cut -d' ' -f1); fi
-[ -n "$want" ] && [ "$want" = "$got" ] || err "checksum mismatch for $asset"
+# download, verify and unpack one build into $tmp/<target>/; fails if the release lacks it
+fetch() {
+  a="nexusweave-$1.tar.gz"
+  u=$(asset_url "$a"); [ -n "$u" ] || return 1
+  api application/octet-stream "$u" > "$tmp/$a" || err "downloading $a failed"
+  want=$(grep " \*\{0,1\}$a\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)
+  if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum "$tmp/$a" | cut -d' ' -f1)
+  else got=$(shasum -a 256 "$tmp/$a" | cut -d' ' -f1); fi
+  [ -n "$want" ] && [ "$want" = "$got" ] || err "checksum mismatch for $a"
+  mkdir -p "$tmp/$1" && tar -xzf "$tmp/$a" -C "$tmp/$1"
+}
 
-tar -xzf "$tmp/$asset" -C "$tmp"
+fetch "$target" || err "no build for $target in this release"
+bin="$tmp/$target/nexusweave"
+# the gnu build needs glibc 2.35+; on older systems use the static musl build when there is one.
+# A binary that runs but has the loader warn (an optional newer symbol version) counts as broken:
+# the warning would print on every run.
+runs() {
+  v=$("$1" --version 2>&1) && [ "$(printf '%s\n' "$v" | wc -l)" -eq 1 ] || return 1
+  case "$v" in "nexusweave "*) return 0 ;; *) return 1 ;; esac
+}
+if [ "$os" = unknown-linux-gnu ] && ! runs "$bin"; then
+  musl="$arch-unknown-linux-musl"
+  fetch "$musl" || err "$target doesn't run here (glibc older than 2.35?) and this release has no $musl build"
+  bin="$tmp/$musl/nexusweave"
+  echo "note: the glibc build doesn't run on this system; installing the static $musl build"
+fi
 mkdir -p "$DIR"
-mv "$tmp/nexusweave" "$DIR/nexusweave"
+mv "$bin" "$DIR/nexusweave"
 chmod 755 "$DIR/nexusweave"
 echo "installed $("$DIR/nexusweave" --version) to $DIR/nexusweave"
 case ":$PATH:" in *":$DIR:"*) ;; *) echo "note: add $DIR to your PATH" ;; esac

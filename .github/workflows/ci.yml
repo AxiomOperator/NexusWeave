@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # run on any branch from the Actions tab or `gh workflow run ci --ref <branch>`
+  workflow_dispatch:
 
 jobs:
   test:
@@ -20,8 +22,8 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - if: runner.os == 'Linux'
-        run: cargo clippy --release --all-targets -- -D warnings
-      - run: cargo test --release
+        run: cargo clippy --release --locked --all-targets -- -D warnings
+      - run: cargo test --release --locked
 
   accuracy:
     # Resolution accuracy against compiler-grade SCIP indexes; fails on precision/recall regressions.
@@ -38,7 +40,7 @@ jobs:
           # indexers, checkouts and ground-truth SCIP indexes are keyed by the pinned versions/commits
           path: bench/.cache
           key: bench-${{ hashFiles('bench/setup.sh', 'bench/corpus.toml') }}
-      - run: cargo build --release
+      - run: cargo build --release --locked
       - run: bench/setup.sh
       - run: python3 bench/accuracy.py --check bench/baseline.json
       - if: always()

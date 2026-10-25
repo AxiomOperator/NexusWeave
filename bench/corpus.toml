@@ -1,7 +1,7 @@
 # Accuracy benchmark corpus. Every entry is pinned to a commit so results are comparable
 # across nexusweave versions. `indexer` produces the ground truth (a SCIP index).
 #
-#   indexer = "scip-typescript" | "scip-python" | "scip-go" | "rust-analyzer"
+#   indexer = "scip-typescript" | "scip-python" | "scip-go" | "rust-analyzer" | "scip-clang" | "scip-ruby"
 #   args    = extra indexer arguments
 #   prepare = shell commands run once in the checkout before indexing (dependency fetches)
 
@@ -54,3 +54,37 @@ lang = "rust"
 url = "https://github.com/BurntSushi/ripgrep"
 commit = "6892bc2b7efe5909cbbeec8f757ed2c4c76b1d30"
 indexer = "rust-analyzer"
+
+[[repo]]
+name = "zlib"
+lang = "c"
+url = "https://github.com/madler/zlib"
+commit = "767c4c947852e143f582c85f14cf573411df1b35"
+indexer = "scip-clang"
+# scip-clang reads a compilation database; nexusweave picks up its include paths too
+# (zlib's CMake renames the in-tree zconf.h for out-of-source builds; put it back for indexing)
+prepare = ["cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null && cp build/compile_commands.json . && git checkout -- zconf.h"]
+
+[[repo]]
+name = "rack"
+lang = "ruby"
+url = "https://github.com/rack/rack"
+commit = "412b7e5250612e8b23095eee65ee3268addb4776"
+indexer = "scip-ruby"
+
+# Agent evaluation only (bench/agent/run.py): large repos, where tool savings should matter most.
+# `accuracy = false`: no compiler ground truth (a vscode SCIP index takes too long for CI).
+
+[[repo]]
+name = "django"
+lang = "python"
+url = "https://github.com/django/django"
+commit = "0e128d524d0a7c55a955570d6e5da983ac6ce6c7"
+accuracy = false
+
+[[repo]]
+name = "vscode"
+lang = "typescript"
+url = "https://github.com/microsoft/vscode"
+commit = "86db3b69224f75a786f815684bc96fc0eb5d9300"
+accuracy = false

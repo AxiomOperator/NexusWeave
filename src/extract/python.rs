@@ -235,15 +235,47 @@ impl LangHooks for Py {
                 }
                 Visit::Continue
             }
+            // `except (KeyError, errors.NoApp) as e:`
+            "except_clause" | "except_group_clause" => {
+                let mut c = n.walk();
+                if let Some(e) = n.named_children(&mut c).find(|x| x.kind() != "block") {
+                    let e = if e.kind() == "as_pattern" { e.named_child(0).unwrap_or(e) } else { e };
+                    if e.kind() == "tuple" {
+                        let mut c = e.walk();
+                        let items: Vec<_> = e.named_children(&mut c).collect();
+                        for x in items { cx.note_read(x); }
+                    } else {
+                        cx.note_read(e);
+                    }
+                }
+                Visit::Continue
+            }
+            // `raise E1` (a call `raise E1()` is an instantiation already)
+            "raise_statement" => {
+                if let Some(e) = n.named_child(0) { cx.note_read(e); }
+                Visit::Continue
+            }
+            // `return wrapped_view`: a decorator hands its inner function out
+            "return_statement" => {
+                if let Some(e) = n.named_child(0).filter(|e| e.kind() == "identifier") { cx.note_value(e); }
+                Visit::Continue
+            }
             // `obj.prop` read (not a call target, not an assignment target): links to accessors
             "attribute" => {
+                // a class used as a qualifier: `AppContext.from_environ()`, `Recorder.called = True`
+                if let Some(o) = n.child_by_field_name("object").filter(|o| o.kind() == "identifier")
+                    && cx.text(o).chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                    cx.note_read(o);
+                }
                 let parent = n.parent();
                 let is_callee = parent.is_some_and(|p| p.kind() == "call" && p.child_by_field_name("function").is_some_and(|f| f.id() == n.id()));
                 let is_target = parent.is_some_and(|p| matches!(p.kind(), "assignment" | "augmented_assignment") && p.child_by_field_name("left").is_some_and(|l| l.id() == n.id()));
-                if !is_callee && !is_target
+                if !is_callee
                     && let (Some(o), Some(a)) = (n.child_by_field_name("object"), n.child_by_field_name("attribute")) {
                     let (o, a) = (cx.text(o), cx.text(a));
-                    cx.add_ref(RefKind::Read, a, Some(short_qual(o)), n.child_by_field_name("attribute").unwrap());
+                    // an assignment target writes through a property setter (`self.debug = x`)
+                    let kind = if is_target { RefKind::Write } else { RefKind::Read };
+                    cx.add_ref(kind, a, Some(short_qual(o)), n.child_by_field_name("attribute").unwrap());
                 }
                 Visit::Continue
             }
