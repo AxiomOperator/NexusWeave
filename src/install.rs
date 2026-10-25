@@ -140,6 +140,12 @@ fn codex_toml_text(s: &str, exe: Option<&str>) -> String {
     out
 }
 
+/// Claude Code registration. `alwaysLoad`: list the tools up front instead of behind a tool search
+/// (deferred tools cost an extra round trip, and agents grep first; enhancements.md §10).
+fn claude_entry() -> Value {
+    json!({"type": "stdio", "command": exe(), "args": ["serve"], "alwaysLoad": true})
+}
+
 fn apply(agent: &Agent, h: &Path, add: bool) -> Result<String> {
     let entry = json!({"command": exe(), "args": ["serve"]});
     match agent.key {
@@ -150,13 +156,13 @@ fn apply(agent: &Agent, h: &Path, add: bool) -> Result<String> {
                     let _ = std::process::Command::new("claude").args(["mcp", "remove", "--scope", "user", name]).output();
                 }
                 if add {
-                    let o = std::process::Command::new("claude").args(["mcp", "add", "--scope", "user", "nexusweave", "--", &exe(), "serve"]).output()?;
+                    let o = std::process::Command::new("claude").args(["mcp", "add-json", "--scope", "user", "nexusweave", &claude_entry().to_string()]).output()?;
                     if !o.status.success() { anyhow::bail!("{}", String::from_utf8_lossy(&o.stderr)); }
                 }
                 Ok("via `claude mcp` (user scope)".into())
             } else {
                 let p = h.join(".claude.json");
-                set_json_server(&p, "mcpServers", add.then_some(entry))?;
+                set_json_server(&p, "mcpServers", add.then(claude_entry))?;
                 Ok(p.display().to_string())
             }
         }

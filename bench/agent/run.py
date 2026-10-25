@@ -45,6 +45,8 @@ CONDITIONS = ("baseline", "nexusweave", "codegraph")
 # codegraph (colbymchenry/codegraph) for head-to-head runs: needs `codegraph` on PATH; not in the
 # default --conditions
 CODEGRAPH = shutil.which("codegraph") or "codegraph"
+# set by --deferred-nexusweave: register the NexusWeave server without alwaysLoad (pre-0.2.1 installs)
+DEFERRED_NEXUSWEAVE = False
 SUFFIX = ("\n\nAnswer from the code in this repository. Name the specific functions, methods and types "
           "involved. Do not modify any files.")
 READ_TOOLS = ["Read", "Grep", "Glob"]
@@ -53,8 +55,43 @@ DENY = ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Agent
 lock = threading.Lock()
 
 
+SUITES = {"questions": "agent/tasks.toml", "impact": "agent/impact_tasks.toml"}
+SUITE = "questions"
+
+
 def load_tasks() -> list[dict]:
-    return tomllib.loads((BENCH / "agent/tasks.toml").read_text())["task"]
+    return tomllib.loads((BENCH / SUITES[SUITE]).read_text())["task"]
+
+
+SITE = re.compile(r"(/?[\w@+\-\[\]().]+(?:/[\w@+\-\[\]().]+)*\.\w+):(\d+)")
+
+
+def site_score(answer: str, truth: list[str], ws: Path) -> dict:
+    """Precision / recall of the `path:line` sites an answer lists against compiler ground truth.
+    Sites come from the answer's last fenced block (else the whole answer); a listed site matches a
+    true one in the same file within 2 lines, one to one."""
+    blocks = re.findall(r"```[^\n]*\n(.*?)```", answer, re.S)
+    text = blocks[-1] if blocks else answer
+    prefix = str(ws).rstrip("/") + "/"
+    listed = []
+    for path, line in SITE.findall(text):
+        path = path.removeprefix(prefix).removeprefix("./")
+        if (path, int(line)) not in listed:
+            listed.append((path, int(line)))
+    want: dict[str, list[int]] = {}
+    for s in truth:
+        p, _, l = s.rpartition(":")
+        want.setdefault(p, []).append(int(l))
+    hit = 0
+    for path, line in listed:
+        cands = want.get(path, [])
+        best = min(cands, key=lambda t: abs(t - line), default=None)
+        if best is not None and abs(best - line) <= 2:
+            cands.remove(best)
+            hit += 1
+    p = hit / len(listed) if listed else 0.0
+    r = hit / len(truth) if truth else 0.0
+    return {"site_precision": p, "site_recall": r, "site_f1": 2 * p * r / (p + r) if p + r else 0.0, "sites_listed": len(listed)}
 
 
 def corpus() -> dict[str, dict]:
@@ -90,7 +127,9 @@ def mcp_config(cond: str, ws: Path, nexusweave: Path) -> Path:
     cfg = WORK / f"mcp-{ws.name}.json"
     servers = {}
     if cond == "nexusweave":
-        servers = {"nexusweave": {"command": str(nexusweave), "args": ["serve", "--path", str(ws), "--no-watch"]}}
+        # as `nexusweave install` registers it with Claude Code (alwaysLoad); --deferred-nexusweave drops it
+        servers = {"nexusweave": {"type": "stdio", "command": str(nexusweave), "args": ["serve", "--path", str(ws), "--no-watch"],
+                                  **({} if DEFERRED_NEXUSWEAVE else {"alwaysLoad": True})}}
     elif cond == "codegraph":
         # as `codegraph install` registers it (alwaysLoad: its tool is listed eagerly, not deferred)
         servers = {"codegraph": {"type": "stdio", "command": CODEGRAPH, "args": ["serve", "--mcp", "--path", str(ws), "--no-watch"],
@@ -148,7 +187,8 @@ def run_one(task: dict, cond: str, rep: int, args, nexusweave: Path) -> dict:
             final = ev
     answer = final.get("result") or ""
     u = final.get("usage") or {}
-    s, missed = score(answer, task["rubric"])
+    sites = site_score(answer, task["sites"], ws) if "sites" in task else {}
+    s, missed = (sites["site_f1"], []) if sites else score(answer, task["rubric"])
     return {
         "task": task["id"], "repo": task["repo"], "kind": task["kind"], "condition": cond, "repeat": rep,
         "score": s, "missed": missed, "ok": code == 0 and not final.get("is_error", False),
@@ -157,7 +197,7 @@ def run_one(task: dict, cond: str, rep: int, args, nexusweave: Path) -> dict:
         "cost_usd": final.get("total_cost_usd", 0.0), "turns": final.get("num_turns", 0),
         "tool_calls": sum(tools.values()), "tools": tools, "wall_s": round(wall, 1),
         "model": args.model or "default", "answer": answer, "stderr": err[-2000:] if code else "",
-        "reads": classify_reads(list(calls.values()), ws),
+        "reads": classify_reads(list(calls.values()), ws), **sites,
     }
 
 
@@ -257,6 +297,9 @@ def compare(base_path: Path, nw_path: Path, vs: str = "nexusweave", rounds: int 
         return "no tasks with both conditions"
     metrics = {"cost": lambda r: r["cost_usd"], "tokens": total_tokens, "uncached input": lambda r: r["input_tokens"] + r["cache_write"],
                "tool calls": lambda r: r["tool_calls"], "wall": lambda r: r["wall_s"]}
+    if all("site_recall" in r for t in tasks for r in b[t] + n[t]):
+        metrics = {"site recall": lambda r: r["site_recall"], "site precision": lambda r: r["site_precision"],
+                   "site F1": lambda r: r["site_f1"], **metrics}
     out = [f"{len(tasks)} tasks; baseline {sum(len(b[t]) for t in tasks)} sessions ({base_path.name}), "
            f"{vs} {sum(len(n[t]) for t in tasks)} sessions ({nw_path.name})", "",
            f"| metric | baseline | {vs} | change | 95% interval | tasks cheaper with {vs} |", "|---|---:|---:|---:|---:|---:|"]
@@ -268,7 +311,16 @@ def compare(base_path: Path, nw_path: Path, vs: str = "nexusweave", rounds: int 
         boots = sorted(ratio([rng.choice(tasks) for _ in tasks]) for _ in range(rounds))
         lo, hi = boots[int(0.025 * rounds)], boots[int(0.975 * rounds) - 1]
         wins = sum(1 for t in tasks if mn[t] < mb[t])
-        fmt = (lambda v: f"${v:.3f}") if name == "cost" else (lambda v: f"{v:,.0f}") if name in ("tokens", "uncached input") else (lambda v: f"{v:.1f}")
+        fmt = (lambda v: f"${v:.3f}") if name == "cost" else (lambda v: f"{v:,.0f}") if name in ("tokens", "uncached input") \
+            else (lambda v: f"{v:.1%}") if name.startswith("site") else (lambda v: f"{v:.1f}")
+        if name.startswith("site"):
+            # quality: higher is better; report the absolute change in points
+            diff = lambda ts: statistics.mean(mn[t] - mb[t] for t in ts)
+            boots = sorted(diff([rng.choice(tasks) for _ in tasks]) for _ in range(rounds))
+            better = sum(1 for t in tasks if mn[t] > mb[t])
+            out.append(f"| {name} | {fmt(statistics.mean(mb.values()))} | {fmt(statistics.mean(mn.values()))} | {diff(tasks) * 100:+.1f} pts | "
+                       f"{boots[int(0.025 * rounds)] * 100:+.1f} … {boots[int(0.975 * rounds) - 1] * 100:+.1f} pts | {better}/{len(tasks)} better |")
+            continue
         out.append(f"| {name} | {fmt(statistics.mean(mb.values()))} | {fmt(statistics.mean(mn.values()))} | {ratio(tasks):+.1%} | "
                    f"{lo:+.1%} … {hi:+.1%} | {wins}/{len(tasks)} |")
     out.append("")
@@ -330,6 +382,12 @@ def report(path: Path) -> str:
                 used[k] = used.get(k, 0) + v
     if used:
         out.append("\nnexusweave-condition tool use: " + ", ".join(f"{k} {v}" for k, v in sorted(used.items(), key=lambda kv: -kv[1])))
+    sited = [r for r in rows if "site_recall" in r]
+    if sited:
+        out.append("\nCall sites vs compiler truth (mean per session): " + "; ".join(
+            f"{c} recall {statistics.mean(r['site_recall'] for r in sited if r['condition'] == c):.1%}, "
+            f"precision {statistics.mean(r['site_precision'] for r in sited if r['condition'] == c):.1%}"
+            for c in CONDITIONS if any(r["condition"] == c for r in sited)))
     judged = [r for r in rows if r.get("judge_score") is not None]
     if judged:
         parts = []
@@ -350,6 +408,8 @@ def report(path: Path) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tasks", help="comma-separated task ids (default: all)")
+    ap.add_argument("--suite", choices=list(SUITES), default="questions",
+                    help="questions: explain/flow tasks (keyword rubric); impact: call sites graded against compiler truth")
     ap.add_argument("--conditions", default="baseline,nexusweave", help=f"comma list of {', '.join(CONDITIONS)}")
     ap.add_argument("--repeats", type=int, default=2)
     ap.add_argument("--model", help="model for every session (default: Claude Code's default)")
@@ -359,6 +419,7 @@ def main() -> None:
     ap.add_argument("--nexusweave", default=str(ROOT / "target/release/nexusweave"))
     ap.add_argument("--out", default=str(BENCH / "results/agent.jsonl"))
     ap.add_argument("--report", metavar="JSONL", help="only print the report for an existing results file")
+    ap.add_argument("--deferred-nexusweave", action="store_true", help="register NexusWeave without alwaysLoad (as installs before 0.2.1 did)")
     ap.add_argument("--instructions", action="store_true", help="give nexusweave sessions the `install --instructions` text as a system prompt")
     ap.add_argument("--compare", nargs=2, metavar=("BASELINE_JSONL", "NEXUSWEAVE_JSONL"),
                     help="paired per-task cost/token comparison: baseline sessions from the first file, the --vs condition from the second")
@@ -367,6 +428,9 @@ def main() -> None:
     ap.add_argument("--judge-model", help="model for the judge (default: Claude Code's default)")
     ap.add_argument("--judge-file", metavar="JSONL", help="grade the answers in an existing results file (rewritten in place)")
     args = ap.parse_args()
+    global DEFERRED_NEXUSWEAVE, SUITE
+    DEFERRED_NEXUSWEAVE = args.deferred_nexusweave
+    SUITE = args.suite
     if args.report:
         print(report(Path(args.report)))
         return
