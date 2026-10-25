@@ -457,3 +457,33 @@ with `run.py --compare`; smaller budgets alone (§8, budget runs) did not help o
   repeated paired runs (§8).
 - **Deferred by decision, not open defects:** the codegraph parity items in §7, ground truth for
   Java / C# / Kotlin / Swift / Dart / Scala / PHP / Lua, rustfmt in CI, and a first release tag.
+
+## 10. Head-to-head with codegraph (2026-10-25)
+
+codegraph 1.6.2 (installed as its own installer registers it, with `alwaysLoad`; telemetry off)
+ran through the same harness: 32 tasks × 2 repeats = 64 sessions, LLM-judged, ~$18; compared
+against the same baseline sessions as NexusWeave (`run.py --conditions codegraph`,
+`--compare … --vs codegraph`).
+
+| vs baseline | NexusWeave small/mid | codegraph small/mid | NexusWeave django+vscode | codegraph django+vscode |
+|---|---:|---:|---:|---:|
+| cost | +3.9% (−6 … +16) | +3.0% (−6 … +15) | +17.0% (+7 … +28) | +19.3% (+6 … +35) |
+| tokens | −4.6% | −13.3% | +1.5% | −6.9% |
+| tool calls | −24.8% | **−43.9%** | −46.5% | **−56.2%** |
+| wall time | −4.6% | **−10.0%** | −15.1% | −14.1% |
+| quality | 100% | 100% (judge: 4 wrong claims / 64) | 100% | 100% |
+
+Cost: a tie, and neither saves money; codegraph's published −44% did not replicate. codegraph
+saves more tool calls and (on small repos) time: its tool is listed eagerly (`alwaysLoad`, zero
+`ToolSearch` calls) where NexusWeave's is deferred.
+
+**Graph accuracy, same scorer and SCIP truth** (`bench/codegraph_accuracy.py` converts
+`.codegraph/codegraph.db` into the scorer's tables): NexusWeave has higher precision on all 9 repos
+(98.6–100% vs 86.6–100%) and higher recall on 8 (e.g. hono 80.0 vs 42.3%, ripgrep 81.8 vs 35.2%,
+zlib 70.7 vs 27.1%, rack 85.5 vs 7.4%); on codegraph's own repo and express they are close.
+Sampled codegraph errors are genuine: library calls bound to same-named project methods, the wrong
+receiver (`RouterGroup.Use` for `Engine.Use`), no type references for struct fields.
+
+Takeaways: on agent cost/time the tools are equivalent; NexusWeave's graph is substantially more
+accurate (which the read-only tasks don't reward, since both reach 100%). Immediate fix to copy:
+register NexusWeave's MCP server with `alwaysLoad` in Claude Code.

@@ -41,7 +41,10 @@ ROOT = Path(__file__).resolve().parents[2]
 BENCH = ROOT / "bench"
 CACHE = BENCH / ".cache"
 WORK = CACHE / "agent"
-CONDITIONS = ("baseline", "nexusweave")
+CONDITIONS = ("baseline", "nexusweave", "codegraph")
+# codegraph (colbymchenry/codegraph) for head-to-head runs: needs `codegraph` on PATH; not in the
+# default --conditions
+CODEGRAPH = shutil.which("codegraph") or "codegraph"
 SUFFIX = ("\n\nAnswer from the code in this repository. Name the specific functions, methods and types "
           "involved. Do not modify any files.")
 READ_TOOLS = ["Read", "Grep", "Glob"]
@@ -77,13 +80,21 @@ def workspace(repo: str, cond: str, nexusweave: Path) -> Path:
     subprocess.run(["git", "-C", str(ws), "checkout", "-q", commit], check=True)
     if cond == "nexusweave":
         subprocess.run([str(nexusweave), "index", "-q", str(ws)], check=True, capture_output=True)
+    elif cond == "codegraph":
+        subprocess.run([CODEGRAPH, "init", "--yes", str(ws)], check=True, capture_output=True, env={**os.environ, "CODEGRAPH_TELEMETRY": "0"})
     marker.write_text(commit)
     return ws
 
 
 def mcp_config(cond: str, ws: Path, nexusweave: Path) -> Path:
     cfg = WORK / f"mcp-{ws.name}.json"
-    servers = {"nexusweave": {"command": str(nexusweave), "args": ["serve", "--path", str(ws), "--no-watch"]}} if cond == "nexusweave" else {}
+    servers = {}
+    if cond == "nexusweave":
+        servers = {"nexusweave": {"command": str(nexusweave), "args": ["serve", "--path", str(ws), "--no-watch"]}}
+    elif cond == "codegraph":
+        # as `codegraph install` registers it (alwaysLoad: its tool is listed eagerly, not deferred)
+        servers = {"codegraph": {"type": "stdio", "command": CODEGRAPH, "args": ["serve", "--mcp", "--path", str(ws), "--no-watch"],
+                                 "alwaysLoad": True, "env": {"CODEGRAPH_TELEMETRY": "0"}}}
     cfg.write_text(json.dumps({"mcpServers": servers}))
     return cfg
 
@@ -96,7 +107,7 @@ def score(answer: str, rubric: list[list[str]]) -> tuple[float, list[str]]:
 
 def run_one(task: dict, cond: str, rep: int, args, nexusweave: Path) -> dict:
     ws = workspace(task["repo"], cond, nexusweave)
-    allowed = READ_TOOLS + (["mcp__nexusweave"] if cond == "nexusweave" else [])
+    allowed = READ_TOOLS + ({"nexusweave": ["mcp__nexusweave"], "codegraph": ["mcp__codegraph"]}.get(cond, []))
     cmd = ["claude", "-p", task["prompt"] + SUFFIX, "--output-format", "stream-json", "--verbose",
            "--strict-mcp-config", "--mcp-config", str(mcp_config(cond, ws, nexusweave)),
            "--allowedTools", *allowed, "--disallowedTools", *DENY,
@@ -228,7 +239,7 @@ def judge(task: dict, answer: str, model: str | None, timeout: int = 300) -> dic
         return {"judge_score": None, "judge_errors": [], "judge_failed": str(e)[:200]}
 
 
-def compare(base_path: Path, nw_path: Path, rounds: int = 10000) -> str:
+def compare(base_path: Path, nw_path: Path, vs: str = "nexusweave", rounds: int = 10000) -> str:
     """Per task: mean baseline vs mean NexusWeave cost and tokens; the overall ratio of summed
     means, with a bootstrap 95% interval over tasks (tasks are the unit that varies)."""
     import random
@@ -240,15 +251,15 @@ def compare(base_path: Path, nw_path: Path, rounds: int = 10000) -> str:
             if r["condition"] == cond and r["ok"]:
                 out.setdefault(r["task"], []).append(r)
         return out
-    b, n = by_task(rows_b, "baseline"), by_task(rows_n, "nexusweave")
+    b, n = by_task(rows_b, "baseline"), by_task(rows_n, vs)
     tasks = sorted(set(b) & set(n))
     if not tasks:
         return "no tasks with both conditions"
     metrics = {"cost": lambda r: r["cost_usd"], "tokens": total_tokens, "uncached input": lambda r: r["input_tokens"] + r["cache_write"],
                "tool calls": lambda r: r["tool_calls"], "wall": lambda r: r["wall_s"]}
     out = [f"{len(tasks)} tasks; baseline {sum(len(b[t]) for t in tasks)} sessions ({base_path.name}), "
-           f"nexusweave {sum(len(n[t]) for t in tasks)} sessions ({nw_path.name})", "",
-           "| metric | baseline | nexusweave | change | 95% interval | tasks cheaper with nexusweave |", "|---|---:|---:|---:|---:|---:|"]
+           f"{vs} {sum(len(n[t]) for t in tasks)} sessions ({nw_path.name})", "",
+           f"| metric | baseline | {vs} | change | 95% interval | tasks cheaper with {vs} |", "|---|---:|---:|---:|---:|---:|"]
     rng = random.Random(7)
     for name, f in metrics.items():
         mb = {t: statistics.mean(f(r) for r in b[t]) for t in tasks}
@@ -261,7 +272,7 @@ def compare(base_path: Path, nw_path: Path, rounds: int = 10000) -> str:
         out.append(f"| {name} | {fmt(statistics.mean(mb.values()))} | {fmt(statistics.mean(mn.values()))} | {ratio(tasks):+.1%} | "
                    f"{lo:+.1%} … {hi:+.1%} | {wins}/{len(tasks)} |")
     out.append("")
-    out.append("| task | baseline cost | nexusweave cost | change |")
+    out.append(f"| task | baseline cost | {vs} cost | change |")
     out.append("|---|---:|---:|---:|")
     for t in tasks:
         cb, cn = statistics.mean(r["cost_usd"] for r in b[t]), statistics.mean(r["cost_usd"] for r in n[t])
@@ -339,7 +350,7 @@ def report(path: Path) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tasks", help="comma-separated task ids (default: all)")
-    ap.add_argument("--conditions", default=",".join(CONDITIONS))
+    ap.add_argument("--conditions", default="baseline,nexusweave", help=f"comma list of {', '.join(CONDITIONS)}")
     ap.add_argument("--repeats", type=int, default=2)
     ap.add_argument("--model", help="model for every session (default: Claude Code's default)")
     ap.add_argument("--budget", type=float, default=3.0, help="max USD per session")
@@ -350,7 +361,8 @@ def main() -> None:
     ap.add_argument("--report", metavar="JSONL", help="only print the report for an existing results file")
     ap.add_argument("--instructions", action="store_true", help="give nexusweave sessions the `install --instructions` text as a system prompt")
     ap.add_argument("--compare", nargs=2, metavar=("BASELINE_JSONL", "NEXUSWEAVE_JSONL"),
-                    help="paired per-task cost/token comparison: baseline sessions from the first file, nexusweave from the second")
+                    help="paired per-task cost/token comparison: baseline sessions from the first file, the --vs condition from the second")
+    ap.add_argument("--vs", default="nexusweave", choices=[c for c in CONDITIONS if c != "baseline"], help="condition --compare measures against baseline")
     ap.add_argument("--judge", action="store_true", help="also grade each answer with an LLM judge (a few cents per session)")
     ap.add_argument("--judge-model", help="model for the judge (default: Claude Code's default)")
     ap.add_argument("--judge-file", metavar="JSONL", help="grade the answers in an existing results file (rewritten in place)")
@@ -359,7 +371,7 @@ def main() -> None:
         print(report(Path(args.report)))
         return
     if args.compare:
-        print(compare(Path(args.compare[0]), Path(args.compare[1])))
+        print(compare(Path(args.compare[0]), Path(args.compare[1]), args.vs))
         return
     if args.judge_file:
         path = Path(args.judge_file)
